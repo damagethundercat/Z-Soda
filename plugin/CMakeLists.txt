@@ -70,7 +70,15 @@ if(ZSODA_WITH_AE_SDK)
     list(APPEND ZSODA_PLUGIN_TARGETS zsoda_aex)
   elseif(APPLE)
     add_library(zsoda_plugin_bundle MODULE ${ZSODA_PLUGIN_SOURCES})
-    set_target_properties(zsoda_plugin_bundle PROPERTIES OUTPUT_NAME "ZSoda" PREFIX "")
+    set_target_properties(
+      zsoda_plugin_bundle
+      PROPERTIES
+        BUNDLE TRUE
+        BUNDLE_EXTENSION "plugin"
+        MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/ae/Info.plist.in"
+        OUTPUT_NAME "ZSoda"
+        PREFIX ""
+    )
     list(APPEND ZSODA_PLUGIN_TARGETS zsoda_plugin_bundle)
   endif()
 endif()

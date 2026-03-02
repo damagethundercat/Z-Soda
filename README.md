@@ -53,7 +53,7 @@ Current runtime note:
 - Final-mile `.aex/.plugin` packaging path is documented in `docs/build/README.md`.
 - With `ZSODA_WITH_AE_SDK=ON`, CMake exposes native packaging targets:
   - Windows: `zsoda_aex` (`ZSoda.aex`)
-  - macOS: `zsoda_plugin_bundle` (module target for bundle wiring)
+  - macOS: `zsoda_plugin_bundle` (`ZSoda.plugin` bundle target with `Info.plist`)
 - Current workspace is Linux/WSL2 without `cmake`, AE SDK, MSBuild, or Xcode, so native packaging commands are not executable here.
 
 ## Build & Test

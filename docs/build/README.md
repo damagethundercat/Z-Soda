@@ -11,7 +11,7 @@ This document records the packaging path from CMake build output to After Effect
   - `cmake` always builds `zsoda_plugin` (static library).
   - with `ZSODA_WITH_AE_SDK=ON` on native host:
     - Windows target `zsoda_aex` is generated (`ZSoda.aex`)
-    - macOS target `zsoda_plugin_bundle` is generated (`ZSoda.dylib` module target; bundle metadata wiring remains pending)
+    - macOS target `zsoda_plugin_bundle` is generated (`ZSoda.plugin` bundle target with `Info.plist`)
   - Commands below include both:
     - what you can run now (scaffold verification)
     - final-mile packaging steps to apply when AE SDK-linked targets are added
@@ -106,7 +106,7 @@ cmake --build build-mac --config Release --target zsoda_plugin_bundle
 
 Current expected artifacts:
 - `build-mac/plugin/Release/libzsoda_plugin.a` (or generator-specific static library output)
-- `build-mac/plugin/Release/ZSoda.dylib` (`zsoda_plugin_bundle` target; `.plugin` bundle packaging is still pending)
+- `build-mac/plugin/Release/ZSoda.plugin` (`zsoda_plugin_bundle` target)
 
 Final-mile packaging path (after AE SDK target wiring lands):
 

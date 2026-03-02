@@ -3,8 +3,8 @@
 이 문서는 작업 진행도와 남은 작업을 공유하기 위한 운영 문서입니다.
 
 ## 1. 전체 진행률
-- 전체 진행률: **93%** (`PLAN.md`의 `P1`~`P5` 기준, 패키징 타깃 정의까지 확장)
-- 마지막 업데이트: **2026-03-02** (AE 패키징 타깃(`zsoda_aex`/`zsoda_plugin_bundle`) CMake 반영)
+- 전체 진행률: **94%** (`PLAN.md`의 `P1`~`P5` 기준, macOS 번들 메타데이터까지 반영)
+- 마지막 업데이트: **2026-03-02** (macOS `.plugin` 번들 속성/`Info.plist` 반영)
 - 갱신 원칙: **작업 단위 완료 시 즉시 업데이트**
 
 ## 2. 현재 작업 상태
@@ -44,6 +44,7 @@
 - [x] `D27` ONNX Runtime 스캐폴드의 모델 경로 검증/전처리 준비/진단 문자열 확장 + `PF_Cmd_RENDER` 추출 스캐폴드(안전 프레임 해시/픽셀 포맷 후보 계산) 고도화 및 회귀 테스트 통과 (`plugin/inference/OnnxRuntimeBackend.cpp`, `plugin/inference/ManagedInferenceEngine.cpp`, `plugin/ae/AeHostAdapter*`, `tests/test_inference_engine.cpp`, `tests/test_ae_router.cpp`)
 - [x] `D28` ORT API 옵션 경로 추가(`ZSODA_WITH_ONNX_RUNTIME_API`) 및 실제 세션 생성/실행 파이프라인(전처리 NCHW + 출력 정규화/리사이즈) 통합, CMake 옵션/문서 확장, 비-API 회귀 테스트 재통과 (`plugin/inference/OnnxRuntimeBackend.cpp`, `plugin/CMakeLists.txt`, `README.md`, `docs/build/README.md`, `tests/test_inference_engine.cpp`)
 - [x] `D29` CMake에 AE SDK 기반 패키징 타깃 정의 추가(Windows `zsoda_aex`, macOS `zsoda_plugin_bundle`) 및 빌드 문서 동기화 (`plugin/CMakeLists.txt`, `README.md`, `docs/build/README.md`)
+- [x] `D30` macOS `zsoda_plugin_bundle`에 `.plugin` 번들 속성/`Info.plist` 템플릿 연결 및 패키징 문서 반영 (`plugin/CMakeLists.txt`, `plugin/ae/Info.plist.in`, `README.md`, `docs/build/README.md`)
 
 ## 4. 남은 작업
 1. `P3` 구현: AE 파라미터와 모델 선택 UI(`model_id`)를 실제 핸들러에 연결
@@ -55,7 +56,7 @@
 7. ORT API 경로의 네이티브 실검증 (현재 환경은 ORT 헤더/라이브러리 부재로 API ON 빌드 미검증)
 8. CMake 기반 빌드/테스트 루트 검증 (`cmake` 도구 설치 후 재검증)
 9. ORT 백엔드 GPU 프로바이더(CUDA/DirectML/Metal/CoreML) 분기 연결 및 OS별 fallback 정책 문서화
-10. macOS `.plugin` 번들 구조(Contents/Info.plist/실행 바이너리)와 코드서명/노타리 최종 경로 마감
+10. macOS 코드서명/노타리 최종 경로 마감 및 배포용 번들 검증
 
 ## 5. 이슈 및 리스크
 - 플러그인 스캐폴드는 구축되었지만 AE SDK 실제 엔트리/파라미터 바인딩은 아직 스텁 단계임.
