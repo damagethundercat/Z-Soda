@@ -68,7 +68,14 @@ copy /Y "%ORT_DLL_DIR%\onnxruntime.dll" "C:\Program Files\Adobe\Common\Plug-ins\
 if exist "build-win\plugin\Release\ZSoda.aex" (echo BUILD_AEX: OK) else (echo BUILD_AEX: MISSING)
 if exist "C:\Program Files\Adobe\Common\Plug-ins\7.0\MediaCore\ZSoda.aex" (echo MEDIA_AEX: OK) else (echo MEDIA_AEX: MISSING)
 if exist "C:\Program Files\Adobe\Common\Plug-ins\7.0\MediaCore\onnxruntime.dll" (echo MEDIA_ORT_DLL: OK) else (echo MEDIA_ORT_DLL: MISSING)
+if exist "build-win\plugin\Release\ZSoda.pdb" (echo PDB: OK) else (echo PDB: MISSING)
+if exist "build-win\plugin\Release\ZSoda.map" (echo MAP: OK) else (echo MAP: MISSING)
 ```
+
+덤프 역추적 필수 산출물:
+- `build-win\plugin\Release\ZSoda.pdb`
+- `build-win\plugin\Release\ZSoda.map`
+- 둘 중 하나라도 누락이면 WinDbg/VS에서 `ZSoda.aex+RVA`를 함수 단위로 확정하기 어려워진다.
 
 ## 4-1) 명시적 ORT 로딩 전략 (필수)
 

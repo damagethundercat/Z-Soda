@@ -4,7 +4,7 @@
 
 ## 1. 전체 진행률
 - 전체 진행률: **99%** (`PLAN.md`의 `P1`~`P5` 기준, `P3/P4/P5`는 마무리 단계)
-- 마지막 업데이트: **2026-03-03** (ORT 런타임 충돌 구조적 해결 1차 통합: 동적 로더/빌드 모드/문서/테스트 반영)
+- 마지막 업데이트: **2026-03-03** (크래시 재분석 대응: ORT 로더 통합 정리 + Windows PDB/MAP 심볼화 경로 강화)
 - 갱신 원칙: **작업 단위 완료 시 즉시 업데이트**
 
 ## 2. 현재 작업 상태
@@ -93,3 +93,4 @@
 - [x] `D51` Session wrap-up for WSL handoff: pushed `main` to `origin` with commits `320e0c7` (AE PiPL/outflags sync fixes) and `6ce6329` (Windows `ZSoda.aex` artifact). Current blocker remains runtime DLL conflict risk (`onnxruntime.dll` version/load path) and intermittent AE PluginCache `Ignore` state for `ZSoda.aex`.
 - [x] `D52` ORT 크래시 재분석 결과를 기반으로 구조적 해결 전략 확정: Adobe ORT(1.17)와 플러그인 ORT(1.24.2) 충돌 가능성을 핵심 원인으로 기록하고, 명시적 ORT 로딩/버전 협상/폴백 보장을 위한 멀티 에이전트 병렬 작업 착수 (`docs/research/2026-03-03-ort-runtime-collision-analysis.md`)
 - [x] `D53` 구조적 해결 1차 통합: ORT 명시적 동적 로더(`OrtDynamicLoader`) 추가, OnnxRuntimeBackend 초기화 경로 리팩터링(로더 협상 실패 시 fallback reason 반환), CMake에 direct-link 모드/런타임 DLL 경로 힌트 추가, 빌드/패키징 스크립트의 ORT DLL 누락 검증 강화, ORT 충돌 대응 운영 문서/테스트 보강 (`plugin/inference/OrtDynamicLoader.*`, `plugin/inference/OnnxRuntimeBackend.cpp`, `plugin/CMakeLists.txt`, `tools/build_aex.ps1`, `tools/package_plugin.ps1`, `docs/build/ORT_RUNTIME_ISOLATION_PLAN.md`, `tests/test_inference_engine.cpp`)
+- [x] `D54` 덤프 역추적성 강화: Windows `.aex` 타깃에 `/Zi + /DEBUG:FULL + /MAP` 적용, `build_aex.ps1`에서 `ZSoda.pdb`/`ZSoda.map` 산출 검사 및 해시 출력, 핸드오프 문서에 PDB/MAP 필수 수집 절차 반영 (`plugin/CMakeLists.txt`, `tools/build_aex.ps1`, `docs/build/LOCAL_AGENT_HANDOFF.md`, `docs/build/README.md`)

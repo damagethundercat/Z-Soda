@@ -108,6 +108,20 @@ function Find-Artifact {
   throw "Failed to locate artifact '$Name'. Checked candidates:`n$candidatesText"
 }
 
+function Find-OptionalArtifact {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string[]]$Candidates
+  )
+
+  foreach ($candidate in $Candidates) {
+    if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+      return (Resolve-Path -LiteralPath $candidate).Path
+    }
+  }
+  return $null
+}
+
 function Print-ArtifactInfo {
   param(
     [Parameter(Mandatory = $true)]
@@ -258,10 +272,28 @@ $aex = Find-Artifact -Name "ZSoda.aex" -Candidates @(
   (Join-Path $buildDirAbs ("plugin\{0}\ZSoda.aex" -f $Config)),
   (Join-Path $buildDirAbs "plugin\ZSoda.aex")
 )
+$pdb = Find-OptionalArtifact -Candidates @(
+  (Join-Path $buildDirAbs ("plugin\{0}\ZSoda.pdb" -f $Config)),
+  (Join-Path $buildDirAbs "plugin\ZSoda.pdb")
+)
+$map = Find-OptionalArtifact -Candidates @(
+  (Join-Path $buildDirAbs ("plugin\{0}\ZSoda.map" -f $Config)),
+  (Join-Path $buildDirAbs "plugin\ZSoda.map")
+)
 
 Write-Host "==> Build Succeeded"
 Print-ArtifactInfo -Label "zsoda_plugin" -Path $pluginLib
 Print-ArtifactInfo -Label "zsoda_aex" -Path $aex
+if ($pdb) {
+  Print-ArtifactInfo -Label "zsoda_pdb" -Path $pdb
+} else {
+  Write-Warning "ZSoda.pdb not found; dump symbolization may be limited."
+}
+if ($map) {
+  Print-ArtifactInfo -Label "zsoda_map" -Path $map
+} else {
+  Write-Warning "ZSoda.map not found; RVA->function mapping may be limited."
+}
 
 $stagedOrtRuntimePath = $null
 if ($ortRuntimeDllAbs) {

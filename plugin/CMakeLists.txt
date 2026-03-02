@@ -97,6 +97,15 @@ if(ZSODA_WITH_AE_SDK)
   if(WIN32)
     add_library(zsoda_aex MODULE ${ZSODA_PLUGIN_SOURCES})
     set_target_properties(zsoda_aex PROPERTIES OUTPUT_NAME "ZSoda" PREFIX "" SUFFIX ".aex")
+    if(MSVC)
+      target_compile_options(zsoda_aex PRIVATE /Zi)
+      target_link_options(
+        zsoda_aex
+        PRIVATE
+          /DEBUG:FULL
+          /MAP:$<TARGET_FILE_DIR:zsoda_aex>/ZSoda.map
+      )
+    endif()
 
     set(ZSODA_PIPL_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/ae/ZSodaPiPL.r")
     if(NOT EXISTS "${ZSODA_PIPL_SOURCE}")

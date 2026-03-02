@@ -117,6 +117,8 @@ cmake --build build-win --config Release --target zsoda_aex
 Current expected artifacts:
 - `build-win/plugin/Release/zsoda_plugin.lib`
 - `build-win/plugin/Release/ZSoda.aex` (`zsoda_aex` target)
+- `build-win/plugin/Release/ZSoda.pdb` (덤프 심볼화용)
+- `build-win/plugin/Release/ZSoda.map` (RVA 오프셋 매핑용)
 
 Final-mile packaging path (after AE SDK target wiring lands):
 
