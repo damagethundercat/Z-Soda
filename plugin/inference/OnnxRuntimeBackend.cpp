@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cstdint>
 #include <filesystem>
 #include <limits>
 #include <memory>
@@ -13,7 +14,10 @@
 #include <vector>
 
 #if defined(ZSODA_WITH_ONNX_RUNTIME_API) && ZSODA_WITH_ONNX_RUNTIME_API
+#define ORT_API_MANUAL_INIT
 #include <onnxruntime_cxx_api.h>
+#undef ORT_API_MANUAL_INIT
+#include "inference/OrtDynamicLoader.h"
 #endif
 
 namespace zsoda::inference {
@@ -71,7 +75,10 @@ std::string ToLowerCopy(std::string_view text) {
   return lowered;
 }
 
-std::string BuildBackendName(RuntimeBackend active_backend) {
+std::string BuildBackendName(RuntimeBackend active_backend,
+                             std::string_view runtime_version = {},
+                             std::string_view runtime_library_path = {},
+                             std::string_view provider_note = {}) {
 #if defined(ZSODA_WITH_ONNX_RUNTIME_API) && ZSODA_WITH_ONNX_RUNTIME_API
   std::string name = "OnnxRuntimeBackend[";
 #else
@@ -79,8 +86,57 @@ std::string BuildBackendName(RuntimeBackend active_backend) {
 #endif
   name.append(RuntimeBackendName(active_backend));
   name.push_back(']');
+  if (!runtime_version.empty() || !runtime_library_path.empty() || !provider_note.empty()) {
+    name.append(" (");
+    bool has_segment = false;
+    if (!runtime_version.empty()) {
+      name.append("runtime=");
+      name.append(runtime_version);
+      has_segment = true;
+    }
+    if (!runtime_library_path.empty()) {
+      if (has_segment) {
+        name.append(", ");
+      }
+      name.append("library=");
+      name.append(runtime_library_path);
+      has_segment = true;
+    }
+    if (!provider_note.empty()) {
+      if (has_segment) {
+        name.append(", ");
+      }
+      name.append(provider_note);
+    }
+    name.push_back(')');
+  }
   return name;
 }
+
+std::string BuildProviderNote(RuntimeBackend requested_backend, RuntimeBackend active_backend) {
+  if (requested_backend == RuntimeBackend::kAuto || requested_backend == active_backend) {
+    return {};
+  }
+  std::string note = "provider_request=";
+  note.append(RuntimeBackendName(requested_backend));
+  note.append("->");
+  note.append(RuntimeBackendName(active_backend));
+  note.append(" (provider wiring pending)");
+  return note;
+}
+
+#if defined(ZSODA_WITH_ONNX_RUNTIME_API) && ZSODA_WITH_ONNX_RUNTIME_API
+std::string ResolveConfiguredOrtLibraryPath(const RuntimeOptions& options) {
+  if (!options.onnxruntime_library_path.empty()) {
+    return options.onnxruntime_library_path;
+  }
+#if defined(ZSODA_ONNXRUNTIME_DLL_PATH_HINT_SET) && ZSODA_ONNXRUNTIME_DLL_PATH_HINT_SET
+  return std::string(ZSODA_ONNXRUNTIME_DLL_PATH_HINT);
+#else
+  return {};
+#endif
+}
+#endif
 
 ModelPipelineProfile ResolvePipelineProfile(const std::string& model_id) {
   if (model_id.rfind("depth-anything-v3", 0) == 0) {
@@ -590,14 +646,50 @@ bool ExtractDepthOutput(const Ort::Value& output, RawDepthOutput* raw_output, st
 
 class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
  public:
-  explicit OnnxRuntimeBackendScaffold(RuntimeBackend requested_backend)
-      : active_backend_(ResolveActiveBackend(requested_backend)),
-        backend_name_(BuildBackendName(active_backend_)) {}
+  explicit OnnxRuntimeBackendScaffold(RuntimeOptions options)
+      : options_(std::move(options)),
+        requested_backend_(options_.preferred_backend),
+        active_backend_(ResolveActiveBackend(requested_backend_)),
+        provider_note_(BuildProviderNote(requested_backend_, active_backend_)),
+        backend_name_(BuildBackendName(active_backend_, "", "", provider_note_)) {}
 
   const char* Name() const override { return backend_name_.c_str(); }
 
   bool Initialize(std::string* error) override {
 #if defined(ZSODA_WITH_ONNX_RUNTIME_API) && ZSODA_WITH_ONNX_RUNTIME_API
+    const std::string configured_library_path = ResolveConfiguredOrtLibraryPath(options_);
+#if defined(ZSODA_ONNXRUNTIME_DIRECT_LINK) && !ZSODA_ONNXRUNTIME_DIRECT_LINK
+    if (configured_library_path.empty()) {
+      initialized_ = false;
+      if (error != nullptr) {
+        *error = "onnx runtime dynamic loader failed: configured library path is empty in "
+                 "structural mode";
+      }
+      return false;
+    }
+#endif
+
+    const std::uint32_t requested_api_version =
+        options_.onnxruntime_api_version > 0
+            ? static_cast<std::uint32_t>(options_.onnxruntime_api_version)
+            : static_cast<std::uint32_t>(ORT_API_VERSION);
+
+    loader_ = std::make_unique<OrtDynamicLoader>();
+    std::string loader_error;
+    if (!loader_->Load(configured_library_path, requested_api_version, &loader_error)) {
+      initialized_ = false;
+      if (error != nullptr) {
+        *error = loader_error.empty() ? "onnx runtime dynamic loader failed" : loader_error;
+      }
+      return false;
+    }
+    Ort::InitApi(loader_->Api());
+    loader_diagnostics_ = loader_->Diagnostics();
+    backend_name_ = BuildBackendName(active_backend_,
+                                     loader_->RuntimeVersionString(),
+                                     loader_->LoadedLibraryPath(),
+                                     provider_note_);
+
     try {
       env_ = std::make_unique<Ort::Env>(ORT_LOGGING_LEVEL_WARNING, "zsoda-ort");
       session_options_ = std::make_unique<Ort::SessionOptions>();
@@ -607,10 +699,12 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
     } catch (const Ort::Exception& ex) {
       initialized_ = false;
       if (error != nullptr) {
-        *error = std::string("onnx runtime initialize failed: ") + ex.what();
+        *error = WithRuntimeDiagnostics(std::string("onnx runtime initialize failed: ") + ex.what());
       }
       return false;
     }
+#else
+    loader_diagnostics_.clear();
 #endif
 
     initialized_ = true;
@@ -672,7 +766,7 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
 #if defined(ZSODA_WITH_ONNX_RUNTIME_API) && ZSODA_WITH_ONNX_RUNTIME_API
     if (env_ == nullptr || session_options_ == nullptr) {
       if (error != nullptr) {
-        *error = "onnx runtime backend is not initialized";
+        *error = WithRuntimeDiagnostics("onnx runtime backend is not initialized");
       }
       return false;
     }
@@ -697,7 +791,7 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
                             &resolved_input_height,
                             &io_error)) {
         if (error != nullptr) {
-          *error = io_error;
+          *error = WithRuntimeDiagnostics(io_error);
         }
         return false;
       }
@@ -716,7 +810,7 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
       input_name_.clear();
       output_name_.clear();
       if (error != nullptr) {
-        *error = std::string("onnx runtime session create failed: ") + ex.what();
+        *error = WithRuntimeDiagnostics(std::string("onnx runtime session create failed: ") + ex.what());
       }
       return false;
     }
@@ -773,7 +867,7 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
 #if defined(ZSODA_WITH_ONNX_RUNTIME_API) && ZSODA_WITH_ONNX_RUNTIME_API
     if (session_ == nullptr || input_name_.empty() || output_name_.empty()) {
       if (error != nullptr) {
-        *error = "onnx runtime backend has no active session";
+        *error = WithRuntimeDiagnostics("onnx runtime backend has no active session");
       }
       return false;
     }
@@ -819,7 +913,7 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
       }
     } catch (const Ort::Exception& ex) {
       if (error != nullptr) {
-        *error = std::string("onnx runtime run failed: ") + ex.what();
+        *error = WithRuntimeDiagnostics(std::string("onnx runtime run failed: ") + ex.what());
       }
       return false;
     }
@@ -855,8 +949,23 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
   RuntimeBackend ActiveBackend() const override { return active_backend_; }
 
  private:
+  [[nodiscard]] std::string WithRuntimeDiagnostics(std::string_view message) const {
+    if (loader_diagnostics_.empty()) {
+      return std::string(message);
+    }
+    std::string combined(message);
+    combined.append(" [");
+    combined.append(loader_diagnostics_);
+    combined.push_back(']');
+    return combined;
+  }
+
+  RuntimeOptions options_;
+  RuntimeBackend requested_backend_ = RuntimeBackend::kAuto;
   RuntimeBackend active_backend_ = RuntimeBackend::kCpu;
+  std::string provider_note_;
   std::string backend_name_;
+  std::string loader_diagnostics_;
   bool initialized_ = false;
   std::string active_model_id_;
   std::string active_model_path_;
@@ -864,6 +973,7 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
   int model_input_width_ = 0;
   int model_input_height_ = 0;
 #if defined(ZSODA_WITH_ONNX_RUNTIME_API) && ZSODA_WITH_ONNX_RUNTIME_API
+  std::unique_ptr<OrtDynamicLoader> loader_;
   std::unique_ptr<Ort::Env> env_;
   std::unique_ptr<Ort::SessionOptions> session_options_;
   std::unique_ptr<Ort::Session> session_;
@@ -876,7 +986,7 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
 
 std::unique_ptr<IOnnxRuntimeBackend> CreateOnnxRuntimeBackend(const RuntimeOptions& options,
                                                               std::string* error) {
-  auto backend = std::make_unique<OnnxRuntimeBackendScaffold>(options.preferred_backend);
+  auto backend = std::make_unique<OnnxRuntimeBackendScaffold>(options);
   std::string init_error;
   if (!backend->Initialize(&init_error)) {
     if (error != nullptr) {

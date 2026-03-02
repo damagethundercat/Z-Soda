@@ -13,6 +13,7 @@ Depth Scanner-style After Effects plugin scaffold.
 - Local Windows agent handoff guide: `docs/build/LOCAL_AGENT_HANDOFF.md`
 - AE smoke test guide: `docs/build/AE_SMOKE_TEST.md`
 - ORT runtime deploy note: `docs/build/ORT_RUNTIME_DEPLOY.md`
+- ORT runtime isolation plan: `docs/build/ORT_RUNTIME_ISOLATION_PLAN.md`
 - Windows `.aex` build helper script: `tools/build_aex.ps1`
 
 ## Current Layout

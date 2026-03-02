@@ -12,6 +12,8 @@ This document records the packaging path from CMake build output to After Effect
   - `docs/build/AE_SMOKE_TEST.md`
 - ORT runtime deploy note:
   - `docs/build/ORT_RUNTIME_DEPLOY.md`
+- ORT runtime isolation plan (DLL collision prevention):
+  - `docs/build/ORT_RUNTIME_ISOLATION_PLAN.md`
 - Packaging helper scripts:
   - `tools/build_aex.ps1` (Windows CMake configure/build + `.aex` 해시 출력)
   - `tools/package_plugin.sh`
@@ -44,6 +46,31 @@ This document records the packaging path from CMake build output to After Effect
   - Windows: Visual Studio 2022 (MSVC v143, x64)
   - macOS: Xcode (AppleClang)
 - Optional model package root for runtime testing: `ZSODA_MODEL_ROOT`
+
+## 명시적 ORT 로딩 전략 (DLL 충돌 방지)
+
+배경 문제:
+- AE 프로세스에 Adobe ORT 1.17.x가 먼저 로드된 상태에서, 플러그인이 ORT 1.24.x 기준으로 초기화하면 API/ABI 충돌이 발생할 수 있다.
+- 대표 증상: `The requested API version [24] is not available ... [1, 17]`
+
+원칙:
+- `onnxruntime.dll` implicit link 제거(Import Table 의존 제거)
+- 플러그인 내부에서 ORT DLL 절대경로를 계산해 `LoadLibraryExW`로 명시적 로드
+- `OrtGetApiBase()->GetApi(ORT_API_VERSION)` API 버전 협상 실패 시 안전 fallback(패스스루/빈 출력)으로 전환
+
+운영 시 확인할 로그:
+- ORT 모듈 실제 경로
+- ORT 파일 버전
+- 요청 API 버전 및 협상 결과
+- fallback 원인
+
+단계별 적용:
+1. Phase 0: 경로/버전/협상 로깅 추가(기준선 수집)
+2. Phase 1: explicit loader opt-in 도입
+3. Phase 2: explicit loader 기본값 전환
+4. Phase 3: implicit 링크 경로 제거
+
+상세 설계/검증/롤아웃은 `docs/build/ORT_RUNTIME_ISOLATION_PLAN.md`를 기준으로 한다.
 
 ## CMake Options (Packaging-Oriented)
 
@@ -186,7 +213,7 @@ Copy-Item "build-win/plugin/Release/ZSoda.aex" `
   - `zsoda_aex` 빌드 성공
   - `MediaCore` 경로 복사 후 AE에서 플러그인 로드 확인
 
-## 실패 시 점검 5항목
+## 실패 시 점검 6항목
 
 1. `AE_Effect.h` 미검출:
    - 증상: configure 단계에서 AE SDK include 경로 관련 오류
@@ -203,6 +230,10 @@ Copy-Item "build-win/plugin/Release/ZSoda.aex" `
 5. MediaCore 복사 실패(권한/경로):
    - 증상: `Copy-Item` 접근 거부 또는 경로 오류
    - 점검: 관리자 권한 PowerShell 사용, `C:\Program Files\Adobe\Common\Plug-ins\7.0\MediaCore` 존재 확인
+6. ORT DLL 충돌(Adobe 1.17.x vs Plugin 1.24.x):
+   - 증상: `The requested API version [24] is not available ... [1, 17]`, 초기화 실패/비정상 종료
+   - 점검: 플러그인 로그의 ORT 모듈 경로/파일 버전/API 협상 결과 확인
+   - 기대 동작: 충돌 시 crash 대신 fallback 출력
 
 ## 산출물 확인 명령
 

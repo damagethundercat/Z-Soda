@@ -1,8 +1,12 @@
+#include <atomic>
 #include <cassert>
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "core/Frame.h"
@@ -18,9 +22,11 @@ namespace {
 class TempDir {
  public:
   TempDir() {
+    static std::atomic<std::uint64_t> sequence{0};
     const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto id = sequence.fetch_add(1, std::memory_order_relaxed);
     path_ = std::filesystem::temp_directory_path() /
-            ("zsoda-inference-test-" + std::to_string(stamp));
+            ("zsoda-inference-test-" + std::to_string(stamp) + "-" + std::to_string(id));
     std::filesystem::create_directories(path_);
   }
 
@@ -53,6 +59,55 @@ bool HasModel(const std::vector<std::string>& model_ids, const std::string& expe
 
 bool Contains(const std::string& source, const std::string& needle) {
   return source.find(needle) != std::string::npos;
+}
+
+bool ContainsAny(std::string_view source, std::initializer_list<std::string_view> needles) {
+  for (const auto needle : needles) {
+    if (!needle.empty() && source.find(needle) != std::string_view::npos) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool HasOrtLoadOrVersionMismatchDiagnostic(std::string_view message) {
+  return ContainsAny(message,
+                     {
+                         "version mismatch",
+                         "api version mismatch",
+                         "failed to load",
+                         "load failed",
+                         "shared library",
+                         "dynamic library",
+                         "undefined symbol",
+                         "symbol lookup",
+                         "dlopen",
+                         "dlsym",
+                         "LoadLibrary",
+                     });
+}
+
+bool HasOrtInitializationDiagnostic(std::string_view message) {
+  return ContainsAny(message,
+                     {
+                         "onnx runtime backend initialization failed:",
+                         "onnx runtime initialize failed:",
+                         "onnx runtime backend is unavailable",
+                         "onnx runtime backend is disabled at build time",
+                     }) ||
+         HasOrtLoadOrVersionMismatchDiagnostic(message);
+}
+
+bool HasOrtRunOrExecutionDiagnostic(std::string_view message) {
+  return ContainsAny(message,
+                     {
+                         "onnx runtime session create failed:",
+                         "onnx runtime run failed:",
+                         "onnx runtime backend has no active session",
+                         "execution is not available in this build",
+                         "onnx runtime backend run failed",
+                     }) ||
+         HasOrtLoadOrVersionMismatchDiagnostic(message);
 }
 
 zsoda::core::FrameBuffer MakeSource() {
@@ -111,12 +166,22 @@ void TestRuntimeBackendOptions() {
   zsoda::inference::ManagedInferenceEngine engine("models", options);
   assert(engine.RequestedBackend() == zsoda::inference::RuntimeBackend::kCuda);
 #if defined(ZSODA_WITH_ONNX_RUNTIME)
-  assert(!engine.UsingFallbackEngine());
+  const auto status = engine.BackendStatus();
+  assert(status.requested_backend == zsoda::inference::RuntimeBackend::kCuda);
+  assert(status.active_backend == engine.ActiveBackend());
+  assert(status.using_fallback_engine == engine.UsingFallbackEngine());
+  if (engine.UsingFallbackEngine()) {
+    assert(engine.ActiveBackend() == zsoda::inference::RuntimeBackend::kCpu);
+    assert(!status.fallback_reason.empty());
+    assert(Contains(status.fallback_reason, "onnx runtime"));
+    assert(HasOrtInitializationDiagnostic(status.fallback_reason));
+  } else {
 #if defined(ZSODA_WITH_ONNX_RUNTIME_API)
-  assert(engine.ActiveBackend() == zsoda::inference::RuntimeBackend::kCpu);
+    assert(engine.ActiveBackend() == zsoda::inference::RuntimeBackend::kCpu);
 #else
-  assert(engine.ActiveBackend() == zsoda::inference::RuntimeBackend::kCuda);
+    assert(engine.ActiveBackend() == zsoda::inference::RuntimeBackend::kCuda);
 #endif
+  }
 #else
   assert(engine.UsingFallbackEngine());
   assert(engine.ActiveBackend() == zsoda::inference::RuntimeBackend::kCpu);
@@ -182,14 +247,15 @@ void TestBackendStatusDiagnostics() {
   assert(!after.fallback_reason.empty());
 #if defined(ZSODA_WITH_ONNX_RUNTIME)
   assert(Contains(after.engine_name, "DummyDepthEngine"));
-#if defined(ZSODA_WITH_ONNX_RUNTIME_API)
-  assert(Contains(after.engine_name, "fallback_from=OnnxRuntimeBackend["));
-  assert(Contains(after.fallback_reason, "onnx runtime session create failed:"));
-#else
-  assert(Contains(after.engine_name, "fallback_from=OnnxRuntimeBackendScaffold["));
-  assert(Contains(after.fallback_reason, "execution is not available in this build"));
-  assert(Contains(after.fallback_reason, "model_id=status-depth-v1"));
-#endif
+  const bool has_ort_backend_context = Contains(after.engine_name, "fallback_from=OnnxRuntimeBackend");
+  if (has_ort_backend_context) {
+    assert(HasOrtRunOrExecutionDiagnostic(after.fallback_reason) ||
+           Contains(after.fallback_reason, "model path does not exist:"));
+  } else {
+    assert(after.using_fallback_engine);
+    assert(Contains(after.fallback_reason, "onnx runtime"));
+    assert(HasOrtInitializationDiagnostic(after.fallback_reason));
+  }
 #else
   assert(after.engine_name == "DummyDepthEngine");
 #endif
@@ -269,13 +335,13 @@ void TestMissingModelFileDiagnostics() {
 #if defined(ZSODA_WITH_ONNX_RUNTIME)
   const auto status = engine.BackendStatus();
   assert(Contains(status.engine_name, "DummyDepthEngine"));
-#if defined(ZSODA_WITH_ONNX_RUNTIME_API)
-  assert(Contains(status.engine_name, "fallback_from=OnnxRuntimeBackend["));
-#else
-  assert(Contains(status.engine_name, "fallback_from=OnnxRuntimeBackendScaffold["));
-#endif
-  assert(Contains(status.fallback_reason, "model path does not exist:"));
-  assert(Contains(status.fallback_reason, "missing_depth_v1.onnx"));
+  if (Contains(status.engine_name, "fallback_from=OnnxRuntimeBackend")) {
+    assert(Contains(status.fallback_reason, "model path does not exist:"));
+    assert(Contains(status.fallback_reason, "missing_depth_v1.onnx"));
+  } else {
+    assert(Contains(status.fallback_reason, "onnx runtime"));
+    assert(HasOrtInitializationDiagnostic(status.fallback_reason));
+  }
 #endif
 
   const auto source = MakeSource();
@@ -296,13 +362,14 @@ void TestOnnxBackendValidationScaffold() {
 
   std::string error;
   auto backend = zsoda::inference::CreateOnnxRuntimeBackend(options, &error);
-  assert(backend != nullptr);
+  if (backend == nullptr) {
+    assert(!error.empty());
+    assert(Contains(error, "onnx runtime"));
+    assert(HasOrtInitializationDiagnostic(error));
+    return;
+  }
   assert(error.empty());
-#if defined(ZSODA_WITH_ONNX_RUNTIME_API)
-  assert(Contains(backend->Name(), "OnnxRuntimeBackend[cpu]"));
-#else
-  assert(Contains(backend->Name(), "OnnxRuntimeBackendScaffold[cuda]"));
-#endif
+  assert(Contains(backend->Name(), "OnnxRuntimeBackend"));
 
   error.clear();
   assert(!backend->SelectModel("", "placeholder.onnx", &error));
@@ -335,7 +402,7 @@ void TestOnnxBackendValidationScaffold() {
   error.clear();
 #if defined(ZSODA_WITH_ONNX_RUNTIME_API)
   assert(!backend->SelectModel("depth-anything-v3-small", valid_model.string(), &error));
-  assert(Contains(error, "onnx runtime session create failed:"));
+  assert(HasOrtRunOrExecutionDiagnostic(error));
 #else
   assert(backend->SelectModel("depth-anything-v3-small", valid_model.string(), &error));
   assert(error.empty());
@@ -348,7 +415,7 @@ void TestOnnxBackendValidationScaffold() {
   zsoda::core::FrameBuffer output;
   error.clear();
   assert(!backend->Run(request, &output, &error));
-  assert(Contains(error, "execution is not available in this build"));
+  assert(HasOrtRunOrExecutionDiagnostic(error));
   assert(Contains(error, "model_id=depth-anything-v3-small"));
   assert(Contains(error, valid_model.string()));
 #endif

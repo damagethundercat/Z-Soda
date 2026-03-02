@@ -8,6 +8,15 @@ param(
   [Parameter(Mandatory = $true)]
   [string]$OrtLibrary,
 
+  [ValidateSet("AUTO", "ON", "OFF")]
+  [string]$OrtDirectLinkMode = "OFF",
+
+  [switch]$EnableOrtApi,
+
+  [string]$OrtRuntimeDllPath,
+
+  [switch]$RequireOrtRuntimeDll,
+
   [string]$BuildDir = "build-win-aex",
 
   [ValidateSet("Debug", "Release", "RelWithDebInfo", "MinSizeRel")]
@@ -114,6 +123,38 @@ function Print-ArtifactInfo {
   Write-Host "  sha256: $($hash.Hash.ToLowerInvariant())"
 }
 
+function Resolve-OrtRuntimeDll {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$OrtLibraryPath,
+
+    [string]$ExplicitDllPath
+  )
+
+  if (-not [string]::IsNullOrWhiteSpace($ExplicitDllPath)) {
+    $explicitAbs = Resolve-AbsolutePath -Path $ExplicitDllPath
+    Assert-Path -Path $explicitAbs -PathType Leaf -Message "ORT runtime DLL not found: $explicitAbs"
+    return $explicitAbs
+  }
+
+  $libraryDir = Split-Path -Path $OrtLibraryPath -Parent
+  if ([string]::IsNullOrWhiteSpace($libraryDir)) {
+    return $null
+  }
+
+  $candidates = @(
+    (Join-Path $libraryDir "onnxruntime.dll"),
+    (Join-Path $libraryDir "..\bin\onnxruntime.dll")
+  )
+  foreach ($candidate in $candidates) {
+    if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+      return (Resolve-Path -LiteralPath $candidate).Path
+    }
+  }
+
+  return $null
+}
+
 $runningOnWindows = $false
 if (Get-Variable -Name IsWindows -ErrorAction SilentlyContinue) {
   $runningOnWindows = [bool]$IsWindows
@@ -147,10 +188,29 @@ if (-not (Test-Path -LiteralPath $ortHeaderDirect -PathType Leaf) -and
   throw "onnxruntime_cxx_api.h not found under ORT include dir: $ortIncludeDirAbs"
 }
 
+$ortRuntimeDllAbs = Resolve-OrtRuntimeDll -OrtLibraryPath $ortLibraryAbs -ExplicitDllPath $OrtRuntimeDllPath
+if ($null -eq $ortRuntimeDllAbs) {
+  $warn = "onnxruntime.dll was not resolved (checked explicit path and OrtLibrary neighbors). Runtime package may miss ORT DLL."
+  if ($RequireOrtRuntimeDll) {
+    throw $warn
+  }
+  Write-Warning $warn
+}
+
 if ($Clean -and (Test-Path -LiteralPath $buildDirAbs)) {
   Remove-Item -LiteralPath $buildDirAbs -Recurse -Force
 }
 New-Item -ItemType Directory -Path $buildDirAbs -Force | Out-Null
+
+if (-not $EnableOrtApi) {
+  Write-Host "ORT mode: structural-safe (ZSODA_WITH_ONNX_RUNTIME_API=OFF)"
+}
+if ($EnableOrtApi -and $OrtDirectLinkMode -eq "OFF") {
+  Write-Host "ORT mode: API enabled with structural dynamic-loader path (direct link OFF)."
+}
+if (-not $EnableOrtApi -and $OrtDirectLinkMode -eq "ON") {
+  Write-Warning "OrtDirectLinkMode=ON is ignored because EnableOrtApi is not set."
+}
 
 if ($CopyToMediaCore) {
   if ([string]::IsNullOrWhiteSpace($MediaCoreDir)) {
@@ -168,11 +228,15 @@ $configureArgs = @(
   "-DZSODA_BUILD_TESTS=OFF",
   "-DZSODA_WITH_AE_SDK=ON",
   "-DZSODA_WITH_ONNX_RUNTIME=ON",
-  "-DZSODA_WITH_ONNX_RUNTIME_API=ON",
+  "-DZSODA_WITH_ONNX_RUNTIME_API=$([int]$EnableOrtApi.IsPresent)",
+  "-DZSODA_ONNXRUNTIME_DIRECT_LINK_MODE=$OrtDirectLinkMode",
   "-DAE_SDK_INCLUDE_DIR=$aeSdkIncludeDirAbs",
   "-DONNXRUNTIME_INCLUDE_DIR=$ortIncludeDirAbs",
   "-DONNXRUNTIME_LIBRARY=$ortLibraryAbs"
 )
+if ($ortRuntimeDllAbs) {
+  $configureArgs += "-DZSODA_ONNXRUNTIME_DLL_PATH_HINT=$ortRuntimeDllAbs"
+}
 if ($Generator -like "Visual Studio*") {
   $configureArgs += @("-A", $Platform)
 }
@@ -199,9 +263,28 @@ Write-Host "==> Build Succeeded"
 Print-ArtifactInfo -Label "zsoda_plugin" -Path $pluginLib
 Print-ArtifactInfo -Label "zsoda_aex" -Path $aex
 
+$stagedOrtRuntimePath = $null
+if ($ortRuntimeDllAbs) {
+  $aexDir = Split-Path -Path $aex -Parent
+  $stagedOrtRuntimePath = Join-Path $aexDir "onnxruntime.dll"
+  Copy-Item -LiteralPath $ortRuntimeDllAbs -Destination $stagedOrtRuntimePath -Force
+  Print-ArtifactInfo -Label "staged_ort_dll" -Path $stagedOrtRuntimePath
+} else {
+  Write-Warning "onnxruntime.dll was not staged next to ZSoda.aex."
+}
+
 if ($CopyToMediaCore) {
   $mediaCoreOutput = Join-Path $MediaCoreDir "ZSoda.aex"
   Copy-Item -LiteralPath $aex -Destination $mediaCoreOutput -Force
   $mediaCoreOutputAbs = Resolve-AbsolutePath -Path $mediaCoreOutput
   Print-ArtifactInfo -Label "mediacore_copy" -Path $mediaCoreOutputAbs
+
+  if ($ortRuntimeDllAbs) {
+    $mediaCoreDllOutput = Join-Path $MediaCoreDir "onnxruntime.dll"
+    Copy-Item -LiteralPath $ortRuntimeDllAbs -Destination $mediaCoreDllOutput -Force
+    $mediaCoreDllOutputAbs = Resolve-AbsolutePath -Path $mediaCoreDllOutput
+    Print-ArtifactInfo -Label "mediacore_ort_dll" -Path $mediaCoreDllOutputAbs
+  } else {
+    Write-Warning "MediaCore copy requested but onnxruntime.dll is unavailable."
+  }
 }

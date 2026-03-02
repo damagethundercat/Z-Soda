@@ -7,6 +7,9 @@ set(AE_SDK_ROOT "" CACHE PATH "Path to Adobe After Effects SDK root")
 set(AE_SDK_INCLUDE_DIR "" CACHE PATH "Directory containing AE_Effect.h")
 set(ONNXRUNTIME_INCLUDE_DIR "" CACHE PATH "Directory containing onnxruntime_cxx_api.h")
 set(ONNXRUNTIME_LIBRARY "" CACHE FILEPATH "Path to ONNX Runtime library binary")
+set(ZSODA_ONNXRUNTIME_DIRECT_LINK_MODE "OFF" CACHE STRING "ONNX Runtime direct link mode: AUTO, ON, OFF")
+set_property(CACHE ZSODA_ONNXRUNTIME_DIRECT_LINK_MODE PROPERTY STRINGS AUTO ON OFF)
+set(ZSODA_ONNXRUNTIME_DLL_PATH_HINT "" CACHE STRING "Optional runtime path hint for onnxruntime.dll")
 
 set(ZSODA_PLUGIN_SOURCES
   ae/AeHostAdapter.cpp
@@ -27,7 +30,26 @@ set(ZSODA_PLUGIN_SOURCES
 add_library(zsoda_plugin STATIC ${ZSODA_PLUGIN_SOURCES})
 set(ZSODA_PLUGIN_TARGETS zsoda_plugin)
 
+string(TOUPPER "${ZSODA_ONNXRUNTIME_DIRECT_LINK_MODE}" ZSODA_ONNXRUNTIME_DIRECT_LINK_MODE_UPPER)
+if(NOT ZSODA_ONNXRUNTIME_DIRECT_LINK_MODE_UPPER MATCHES "^(AUTO|ON|OFF)$")
+  message(FATAL_ERROR "ZSODA_ONNXRUNTIME_DIRECT_LINK_MODE must be AUTO, ON, or OFF")
+endif()
+
+set(ZSODA_ONNXRUNTIME_DIRECT_LINK OFF)
+if(ZSODA_ONNXRUNTIME_DIRECT_LINK_MODE_UPPER STREQUAL "ON")
+  set(ZSODA_ONNXRUNTIME_DIRECT_LINK ON)
+elseif(ZSODA_ONNXRUNTIME_DIRECT_LINK_MODE_UPPER STREQUAL "AUTO")
+  if(ZSODA_WITH_ONNX_RUNTIME_API)
+    set(ZSODA_ONNXRUNTIME_DIRECT_LINK ON)
+  endif()
+endif()
+
+set(ZSODA_ENABLE_ONNXRUNTIME_API OFF)
 if(ZSODA_WITH_ONNX_RUNTIME_API)
+  set(ZSODA_ENABLE_ONNXRUNTIME_API ON)
+endif()
+
+if(ZSODA_ENABLE_ONNXRUNTIME_API)
   if(NOT ZSODA_WITH_ONNX_RUNTIME)
     message(FATAL_ERROR "ZSODA_WITH_ONNX_RUNTIME_API=ON requires ZSODA_WITH_ONNX_RUNTIME=ON")
   endif()
@@ -43,13 +65,21 @@ if(ZSODA_WITH_ONNX_RUNTIME_API)
   if(NOT ONNXRUNTIME_HEADER_DIR)
     message(FATAL_ERROR "ONNXRUNTIME_INCLUDE_DIR must contain onnxruntime_cxx_api.h (directly or under onnxruntime/core/session): ${ONNXRUNTIME_INCLUDE_DIR}")
   endif()
-  if(NOT ONNXRUNTIME_LIBRARY)
-    message(FATAL_ERROR "ZSODA_WITH_ONNX_RUNTIME_API=ON requires ONNXRUNTIME_LIBRARY")
-  endif()
-  if(NOT EXISTS "${ONNXRUNTIME_LIBRARY}")
-    message(FATAL_ERROR "ONNXRUNTIME_LIBRARY not found: ${ONNXRUNTIME_LIBRARY}")
+  if(ZSODA_ONNXRUNTIME_DIRECT_LINK)
+    if(NOT ONNXRUNTIME_LIBRARY)
+      message(FATAL_ERROR "Direct-link mode requires ONNXRUNTIME_LIBRARY")
+    endif()
+    if(NOT EXISTS "${ONNXRUNTIME_LIBRARY}")
+      message(FATAL_ERROR "ONNXRUNTIME_LIBRARY not found: ${ONNXRUNTIME_LIBRARY}")
+    endif()
+  else()
+    message(STATUS "ONNX Runtime API enabled with structural dynamic-load mode (no direct link).")
   endif()
 endif()
+
+set(ZSODA_ONNXRUNTIME_DLL_PATH_HINT_ESCAPED "${ZSODA_ONNXRUNTIME_DLL_PATH_HINT}")
+string(REPLACE "\\" "\\\\" ZSODA_ONNXRUNTIME_DLL_PATH_HINT_ESCAPED "${ZSODA_ONNXRUNTIME_DLL_PATH_HINT_ESCAPED}")
+string(REPLACE "\"" "\\\"" ZSODA_ONNXRUNTIME_DLL_PATH_HINT_ESCAPED "${ZSODA_ONNXRUNTIME_DLL_PATH_HINT_ESCAPED}")
 
 if(ZSODA_WITH_AE_SDK)
   if(NOT AE_SDK_INCLUDE_DIR)
@@ -118,15 +148,28 @@ foreach(target_name IN LISTS ZSODA_PLUGIN_TARGETS)
     target_sources(${target_name}
       PRIVATE
         inference/OnnxRuntimeBackend.cpp
+        inference/OrtDynamicLoader.cpp
     )
     target_compile_definitions(${target_name} PUBLIC ZSODA_WITH_ONNX_RUNTIME=1)
   endif()
 
-  if(ZSODA_WITH_ONNX_RUNTIME_API)
+  if(ZSODA_ENABLE_ONNXRUNTIME_API)
     target_include_directories(${target_name} PUBLIC "${ONNXRUNTIME_HEADER_DIR}")
-    target_link_libraries(${target_name} PUBLIC "${ONNXRUNTIME_LIBRARY}")
+    if(ZSODA_ONNXRUNTIME_DIRECT_LINK)
+      target_link_libraries(${target_name} PUBLIC "${ONNXRUNTIME_LIBRARY}")
+    endif()
     target_compile_definitions(${target_name} PUBLIC ZSODA_WITH_ONNX_RUNTIME_API=1)
+  else()
+    target_compile_definitions(${target_name} PUBLIC ZSODA_WITH_ONNX_RUNTIME_API=0)
   endif()
+
+  target_compile_definitions(
+    ${target_name}
+    PUBLIC
+      ZSODA_ONNXRUNTIME_DIRECT_LINK=$<BOOL:${ZSODA_ONNXRUNTIME_DIRECT_LINK}>
+      ZSODA_ONNXRUNTIME_DLL_PATH_HINT=\"${ZSODA_ONNXRUNTIME_DLL_PATH_HINT_ESCAPED}\"
+      ZSODA_ONNXRUNTIME_DLL_PATH_HINT_SET=$<BOOL:${ZSODA_ONNXRUNTIME_DLL_PATH_HINT}>
+  )
 
   target_include_directories(${target_name}
     PUBLIC

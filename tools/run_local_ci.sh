@@ -28,6 +28,11 @@ g++ -std=c++20 -DZSODA_WITH_ONNX_RUNTIME=1 -Iplugin \
   -o /tmp/zsoda_tests_ort
 /tmp/zsoda_tests_ort
 
+echo "[2.5/3] compile ORT dynamic loader unit"
+g++ -std=c++20 -Iplugin \
+  -c plugin/inference/OrtDynamicLoader.cpp \
+  -o /tmp/zsoda_ort_loader.o
+
 echo "[3/3] build+run perf harness smoke checks"
 g++ -std=c++20 -Iplugin \
   plugin/ae/AeHostAdapter.cpp plugin/ae/AeCommandRouter.cpp plugin/ae/AeParams.cpp plugin/ae/AePluginEntry.cpp \

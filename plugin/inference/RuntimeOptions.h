@@ -18,6 +18,8 @@ enum class RuntimeBackend {
 struct RuntimeOptions {
   RuntimeBackend preferred_backend = RuntimeBackend::kAuto;
   std::string model_manifest_path;
+  std::string onnxruntime_library_path;
+  int onnxruntime_api_version = 0;
 };
 
 [[nodiscard]] inline const char* RuntimeBackendName(RuntimeBackend backend) {

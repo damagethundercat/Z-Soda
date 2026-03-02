@@ -9,6 +9,7 @@
   - `tools\build_aex.ps1`
   - `tools\package_plugin.ps1`
   - `docs\build\AE_SMOKE_TEST.md`
+  - `docs\build\ORT_RUNTIME_ISOLATION_PLAN.md`
 
 ## 2) 시작 전 동기화
 
@@ -60,7 +61,7 @@ copy /Y "%ORT_DLL_DIR%\onnxruntime.dll" "C:\Program Files\Adobe\Common\Plug-ins\
 
 주의:
 - `C:\Program Files\Adobe\Common\Plug-ins\7.0\MediaCore` 쓰기 시 `Access is denied`가 나오면 **관리자 권한 PowerShell/CMD**로 재실행해야 한다.
-- 테스트/실행 중 `The requested API version [24] is not available ... [1, 17]`가 나오면 구버전 ORT DLL(`C:\Windows\System32\onnxruntime.dll`)이 먼저 로드된 상황일 수 있으므로, 실행 파일 폴더(예: 테스트 exe 폴더, 필요 시 AE 실행 폴더)에 빌드에 사용한 ORT 버전 DLL을 우선 배치한다.
+- 테스트/실행 중 `The requested API version [24] is not available ... [1, 17]`가 나오면 Adobe ORT 1.17.x와 plugin ORT 1.24.x 충돌 가능성이 높다. 임시 복사로 우회하지 말고 아래 `명시적 ORT 로딩 전략` 기준으로 점검한다.
 
 결과 확인:
 ```cmd
@@ -68,6 +69,37 @@ if exist "build-win\plugin\Release\ZSoda.aex" (echo BUILD_AEX: OK) else (echo BU
 if exist "C:\Program Files\Adobe\Common\Plug-ins\7.0\MediaCore\ZSoda.aex" (echo MEDIA_AEX: OK) else (echo MEDIA_AEX: MISSING)
 if exist "C:\Program Files\Adobe\Common\Plug-ins\7.0\MediaCore\onnxruntime.dll" (echo MEDIA_ORT_DLL: OK) else (echo MEDIA_ORT_DLL: MISSING)
 ```
+
+## 4-1) 명시적 ORT 로딩 전략 (필수)
+
+목표:
+- Adobe 번들 ORT(1.17.x)와 플러그인 ORT(1.24.x) 충돌을 구조적으로 차단한다.
+
+핵심 원칙:
+- `onnxruntime.dll` implicit link(import table 의존) 제거
+- 플러그인에서 ORT DLL 절대경로를 계산해 `LoadLibraryExW`로 명시적 로드
+- `OrtGetApiBase()->GetApi(ORT_API_VERSION)` 협상 실패 시 추론 비활성화 + 안전 fallback
+
+운영 체크:
+- 로그에 아래 4개가 반드시 남아야 함
+  - 로드된 ORT 모듈 절대경로
+  - ORT 파일 버전(예: 1.24.x)
+  - 요청/협상 API 버전(예: request 24)
+  - fallback 사유(로드/심볼/협상 실패)
+
+PowerShell 확인 예시(관리자 권한 권장):
+```powershell
+$p = Get-Process AfterFX -ErrorAction SilentlyContinue
+if ($p) {
+  $mods = Get-Process -Id $p.Id -Module | Where-Object { $_.ModuleName -ieq "onnxruntime.dll" }
+  $mods | Select-Object ModuleName, FileName,
+    @{N="FileVersion";E={$_.FileVersionInfo.FileVersion}}
+}
+```
+
+판정 기준:
+- 정상: ORT 모듈 경로가 플러그인 배포 경로(예: `...\ZSoda\...\runtime\onnxruntime.dll`)이고 API 협상 성공
+- 비정상: `System32`/Adobe 경로 ORT가 잡히거나 API 협상 실패. 이 경우 crash 대신 fallback 출력이어야 함
 
 ## 5) AE 스모크 테스트
 
@@ -131,6 +163,7 @@ if exist "C:\Program Files\Adobe\Common\Plug-ins\7.0\MediaCore\onnxruntime.dll" 
    - `Plugin Loading.log`
    - Sentry `__sentry-breadcrumb1`
    - loaded module list (`AfterFX.exe` + exact `onnxruntime.dll` path/version)
+4. Follow phased rollout in `docs/build/ORT_RUNTIME_ISOLATION_PLAN.md` (Phase 0 -> 3) and keep fallback behavior enabled until Phase 2 validation completes.
 
 ### Notes
 - Local build/output folders (`build-win*`, `dist/`, `Microsoft/`) are intentionally not committed.

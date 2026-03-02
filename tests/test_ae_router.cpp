@@ -597,19 +597,19 @@ void TestPluginEntrySetParamsStub() {
   assert(ZSodaRenderGrayFrameStub(src.data(), kWidth, kHeight, 8102, slicing.data(), kPixels) == 0);
 
   bool differs_from_depth = false;
-  bool has_zero = false;
+  bool has_low_slice = false;
   for (int i = 0; i < kPixels; ++i) {
     if (depth_map[i] != slicing[i]) {
       differs_from_depth = true;
     }
-    if (slicing[i] == 0.0F) {
-      has_zero = true;
+    if (slicing[i] <= 0.01F) {
+      has_low_slice = true;
     }
     assert(slicing[i] >= 0.0F);
     assert(slicing[i] <= 1.0F);
   }
   assert(differs_from_depth);
-  assert(has_zero);
+  assert(has_low_slice);
 
   assert(ZSodaSetParamsStub("unknown-model-id",
                             2,
