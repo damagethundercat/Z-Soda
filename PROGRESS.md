@@ -3,8 +3,8 @@
 이 문서는 작업 진행도와 남은 작업을 공유하기 위한 운영 문서입니다.
 
 ## 1. 전체 진행률
-- 전체 진행률: **98%** (`PLAN.md`의 `P1`~`P5` 기준, 로컬/CI 자동 검증 경로까지 반영)
-- 마지막 업데이트: **2026-03-02** (GitHub Actions + 로컬 CI 스크립트 추가)
+- 전체 진행률: **99%** (`PLAN.md`의 `P1`~`P5` 기준, AE SDK 파라미터 바인딩 스캐폴드 고도화)
+- 마지막 업데이트: **2026-03-02** (`PF_Cmd_USER_CHANGED_PARAM` 매핑 + params[] 추출 경로 반영)
 - 갱신 원칙: **작업 단위 완료 시 즉시 업데이트**
 
 ## 2. 현재 작업 상태
@@ -49,10 +49,11 @@
 - [x] `D32` `RenderParams.vram_budget_mb` 도입 + 다운스케일 fallback에서 VRAM budget 기반 축소 비율 선택 로직 추가(캐시 키 반영 포함) 및 회귀 테스트 통과 (`plugin/core/RenderPipeline.*`, `plugin/core/Cache.*`, `plugin/ae/AeParams.*`, `tests/test_render_pipeline.cpp`, `tests/test_ae_params.cpp`)
 - [x] `D33` 네이티브 빌드 산출물 수집용 패키징 스크립트 추가(`tools/package_plugin.sh`, `tools/package_plugin.ps1`) 및 빌드 문서/README 동기화 (`docs/build/README.md`, `README.md`)
 - [x] `D34` 로컬/CI 공용 검증 스크립트(`tools/run_local_ci.sh`) 및 GitHub Actions 워크플로(`.github/workflows/ci.yml`) 추가, 로컬 실행 통과
+- [x] `D35` AE SDK 경로에 `PF_Cmd_USER_CHANGED_PARAM` -> `AeCommand::kUpdateParams` 매핑 추가, `params[]` 기반 `AeParamValues` 추출/렌더 override 연결, 스텁 파라미터 설정 API(`ZSodaSetParamsStub`) 및 회귀 테스트 보강 (`plugin/ae/AeHostAdapter.*`, `plugin/ae/AePluginEntry.cpp`, `tests/test_ae_router.cpp`)
 
 ## 4. 남은 작업
-1. `P3` 구현: AE 파라미터와 모델 선택 UI(`model_id`)를 실제 핸들러에 연결
-2. `P3` 구현: AE SDK 실제 `PF_Cmd_*` 경로에 라우터/파라미터 연결
+1. `P3` 구현: AE 파라미터와 모델 선택 UI(`model_id`)를 실제 `PARAM_SETUP` 등록 코드(`PF_ADD_*`)와 연결
+2. `P3` 구현: AE SDK 실제 `PF_Cmd_*` 경로에 라우터/파라미터 연결(현재 USER_CHANGED/RENDER 추출 스캐폴드 반영, PARAM_SETUP 실등록 남음)
 3. `P3` 구현: `PF_Cmd_RENDER` payload에서 `PixelConversion` 경로를 SDK 픽셀 타입 힌트까지 사용해 16/32 bpc 확정률 추가 개선
 4. `P4` 잔여: OOM/백엔드 실패 원인별 정책 세분화(타일 자동 축소 + VRAM 힌트 기반 다운스케일 비율은 반영 완료, SDK/OS별 메모리 신호 연계 남음)
 5. `P5` 구축: 성능/회귀/장시간 안정성 테스트 파이프라인 정리(로컬/CI 기본 자동화 완료, 네이티브 host 검증 파이프라인 추가 필요)

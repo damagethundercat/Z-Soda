@@ -1,6 +1,7 @@
 #include "ae/AeHostAdapter.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <limits>
 
@@ -125,6 +126,136 @@ bool TryReadLayerWorld(const PF_LayerDef* world,
   return true;
 }
 
+constexpr std::array<const char*, 4> kFallbackModelIdOrder = {
+    "depth-anything-v3-small",
+    "depth-anything-v3-base",
+    "depth-anything-v3-large",
+    "midas-dpt-large",
+};
+
+const PF_ParamDef* GetParam(const PF_ParamDef* const* params, AeParamId id) {
+  if (params == nullptr) {
+    return nullptr;
+  }
+  return params[static_cast<int>(id)];
+}
+
+bool TryReadPopupValue(const PF_ParamDef* param, int* value_out) {
+  if (param == nullptr || value_out == nullptr) {
+    return false;
+  }
+  *value_out = static_cast<int>(param->u.pd.value);
+  return true;
+}
+
+bool TryReadCheckboxValue(const PF_ParamDef* param, bool* value_out) {
+  if (param == nullptr || value_out == nullptr) {
+    return false;
+  }
+  *value_out = param->u.bd.value != 0;
+  return true;
+}
+
+bool TryReadFloatSliderValue(const PF_ParamDef* param, float* value_out) {
+  if (param == nullptr || value_out == nullptr) {
+    return false;
+  }
+  *value_out = static_cast<float>(param->u.fs_d.value);
+  return true;
+}
+
+bool TryReadIntegerSliderValue(const PF_ParamDef* param, int* value_out) {
+  float value = 0.0F;
+  if (!TryReadFloatSliderValue(param, &value)) {
+    return false;
+  }
+  *value_out = static_cast<int>(std::lround(value));
+  return true;
+}
+
+bool TryExtractPfCmdParamValues(const AeSdkEntryPayload& payload,
+                                AeParamValues* values_out,
+                                std::string* error) {
+  if (values_out == nullptr) {
+    SetError(error, "missing sdk params output");
+    return false;
+  }
+  if (payload.params == nullptr) {
+    SetError(error, "missing sdk params table");
+    return false;
+  }
+
+  AeParamValues values = DefaultAeParams();
+  bool any_param_read = false;
+
+  int popup_value = 0;
+  if (TryReadPopupValue(GetParam(payload.params, AeParamId::kModel), &popup_value)) {
+    any_param_read = true;
+    const int model_index = std::clamp(popup_value - 1, 0,
+                                       static_cast<int>(kFallbackModelIdOrder.size()) - 1);
+    values.model_id = kFallbackModelIdOrder[model_index];
+  }
+
+  if (TryReadPopupValue(GetParam(payload.params, AeParamId::kQuality), &popup_value)) {
+    any_param_read = true;
+    values.quality = std::clamp(popup_value, 1, 3);
+  }
+
+  if (TryReadPopupValue(GetParam(payload.params, AeParamId::kOutputMode), &popup_value)) {
+    any_param_read = true;
+    values.output_mode = (popup_value >= 2) ? AeOutputMode::kSlicing : AeOutputMode::kDepthMap;
+  }
+
+  bool checkbox_value = false;
+  if (TryReadCheckboxValue(GetParam(payload.params, AeParamId::kInvert), &checkbox_value)) {
+    any_param_read = true;
+    values.invert = checkbox_value;
+  }
+  if (TryReadCheckboxValue(GetParam(payload.params, AeParamId::kCacheEnable), &checkbox_value)) {
+    any_param_read = true;
+    values.cache_enabled = checkbox_value;
+  }
+
+  float float_value = 0.0F;
+  if (TryReadFloatSliderValue(GetParam(payload.params, AeParamId::kMinDepth), &float_value)) {
+    any_param_read = true;
+    values.min_depth = float_value;
+  }
+  if (TryReadFloatSliderValue(GetParam(payload.params, AeParamId::kMaxDepth), &float_value)) {
+    any_param_read = true;
+    values.max_depth = float_value;
+  }
+  if (TryReadFloatSliderValue(GetParam(payload.params, AeParamId::kSoftness), &float_value)) {
+    any_param_read = true;
+    values.softness = float_value;
+  }
+
+  int int_value = 0;
+  if (TryReadIntegerSliderValue(GetParam(payload.params, AeParamId::kTileSize), &int_value)) {
+    any_param_read = true;
+    values.tile_size = int_value;
+  }
+  if (TryReadIntegerSliderValue(GetParam(payload.params, AeParamId::kOverlap), &int_value)) {
+    any_param_read = true;
+    values.overlap = int_value;
+  }
+  if (TryReadIntegerSliderValue(GetParam(payload.params, AeParamId::kVramBudgetMb), &int_value)) {
+    any_param_read = true;
+    values.vram_budget_mb = int_value;
+  }
+
+  if (!any_param_read) {
+    SetError(error, "sdk params table does not contain readable values");
+    return false;
+  }
+
+  *values_out = values;
+  if (error != nullptr) {
+    error->clear();
+  }
+  return true;
+}
+
 bool WireParamSetupPayload(const AeSdkEntryPayload& payload,
                            AeDispatchContext* dispatch,
                            std::string* error) {
@@ -134,6 +265,23 @@ bool WireParamSetupPayload(const AeSdkEntryPayload& payload,
 
   // Extension point: decode PF_Cmd_PARAMS_SETUP host payload and populate
   // dispatch->command.params_update when parameter defaults need synchronization.
+  return true;
+}
+
+bool WireParamUpdatePayload(const AeSdkEntryPayload& payload,
+                            AeDispatchContext* dispatch,
+                            std::string* error) {
+  InitializeSdkHostDispatch(payload, AeCommand::kUpdateParams, dispatch, error);
+
+  AeParamValues params = DefaultAeParams();
+  if (!TryExtractPfCmdParamValues(payload, &params, nullptr)) {
+    // Keep host responsiveness: skip unsupported payloads without failing host command.
+    dispatch->command.command = AeCommand::kUnknown;
+    return true;
+  }
+
+  dispatch->params_update = params;
+  dispatch->command.params_update = &dispatch->params_update;
   return true;
 }
 
@@ -382,6 +530,14 @@ AeCommand MapPfCommand(PF_Cmd command) {
       return AeCommand::kGlobalSetup;
     case PF_Cmd_PARAMS_SETUP:
       return AeCommand::kParamsSetup;
+#if defined(PF_Cmd_USER_CHANGED_PARAM)
+    case PF_Cmd_USER_CHANGED_PARAM:
+      return AeCommand::kUpdateParams;
+#endif
+#if defined(PF_Cmd_UPDATE_PARAMS_UI)
+    case PF_Cmd_UPDATE_PARAMS_UI:
+      return AeCommand::kParamsSetup;
+#endif
     case PF_Cmd_RENDER:
       return AeCommand::kRender;
     default:
@@ -405,6 +561,8 @@ bool BuildSdkDispatch(const AeSdkEntryPayload& payload,
   switch (mapped) {
     case AeCommand::kParamsSetup:
       return WireParamSetupPayload(payload, dispatch, error);
+    case AeCommand::kUpdateParams:
+      return WireParamUpdatePayload(payload, dispatch, error);
     case AeCommand::kRender:
       return WireRenderPayload(payload, dispatch, error);
     default:
@@ -486,6 +644,12 @@ bool TryExtractPfCmdRenderPayload(const AeSdkEntryPayload& payload,
   frame_hash_seed.host_output = payload.output;
   scaffold->frame_hash = ComputeSafeFrameHash(frame_hash_seed);
   scaffold->host_render.frame_hash = scaffold->frame_hash;
+
+  AeParamValues params_override = DefaultAeParams();
+  if (TryExtractPfCmdParamValues(payload, &params_override, nullptr)) {
+    scaffold->host_render.params_override = params_override;
+    scaffold->has_params_override = true;
+  }
 
   int candidate_width = 0;
   std::size_t candidate_row_bytes = 0;

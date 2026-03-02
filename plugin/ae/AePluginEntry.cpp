@@ -85,6 +85,43 @@ extern "C" int ZSodaSetModelIdStub(const char* model_id) {
   return zsoda::ae::GetRouter().Handle(context) ? 0 : -1;
 }
 
+extern "C" int ZSodaSetParamsStub(const char* model_id,
+                                  int quality,
+                                  int output_mode,
+                                  int invert,
+                                  float min_depth,
+                                  float max_depth,
+                                  float softness,
+                                  int cache_enabled,
+                                  int tile_size,
+                                  int overlap,
+                                  int vram_budget_mb) {
+  auto params = zsoda::ae::GetRouter().CurrentParams();
+  if (model_id != nullptr && model_id[0] != '\0') {
+    params.model_id = model_id;
+  }
+  params.quality = quality;
+  params.output_mode =
+      output_mode == static_cast<int>(zsoda::ae::AeOutputMode::kSlicing)
+          ? zsoda::ae::AeOutputMode::kSlicing
+          : zsoda::ae::AeOutputMode::kDepthMap;
+  params.invert = invert != 0;
+  params.min_depth = min_depth;
+  params.max_depth = max_depth;
+  params.softness = softness;
+  params.cache_enabled = cache_enabled != 0;
+  params.tile_size = tile_size;
+  params.overlap = overlap;
+  params.vram_budget_mb = vram_budget_mb;
+
+  std::string error;
+  zsoda::ae::AeCommandContext context;
+  context.command = zsoda::ae::AeCommand::kUpdateParams;
+  context.params_update = &params;
+  context.error = &error;
+  return zsoda::ae::GetRouter().Handle(context) ? 0 : -1;
+}
+
 extern "C" int ZSodaRenderGrayFrameStub(const float* src,
                                         int width,
                                         int height,

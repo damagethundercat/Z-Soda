@@ -20,6 +20,17 @@ extern "C" int ZSodaRenderGrayFrameStub(const float* src,
                                         std::uint64_t frame_hash,
                                         float* out,
                                         int out_size);
+extern "C" int ZSodaSetParamsStub(const char* model_id,
+                                  int quality,
+                                  int output_mode,
+                                  int invert,
+                                  float min_depth,
+                                  float max_depth,
+                                  float softness,
+                                  int cache_enabled,
+                                  int tile_size,
+                                  int overlap,
+                                  int vram_budget_mb);
 extern "C" int ZSodaRenderHostBufferStub(const void* src,
                                          int width,
                                          int height,
@@ -544,9 +555,89 @@ void TestRenderGrayFrameStubHostBufferBridge() {
   }
 }
 
+void TestPluginEntrySetParamsStub() {
+  assert(ZSodaEffectMainStub(1) == 0);
+  assert(ZSodaSetParamsStub("depth-anything-v3-small",
+                            2,
+                            static_cast<int>(zsoda::ae::AeOutputMode::kDepthMap),
+                            0,
+                            0.2F,
+                            0.8F,
+                            0.1F,
+                            1,
+                            256,
+                            16,
+                            128) == 0);
+
+  constexpr int kWidth = 8;
+  constexpr int kHeight = 8;
+  constexpr int kPixels = kWidth * kHeight;
+  std::vector<float> src(kPixels, 0.0F);
+  for (int y = 0; y < kHeight; ++y) {
+    for (int x = 0; x < kWidth; ++x) {
+      src[y * kWidth + x] = static_cast<float>(x + y) / static_cast<float>(kWidth + kHeight - 2);
+    }
+  }
+
+  std::vector<float> depth_map(kPixels, 0.0F);
+  std::vector<float> slicing(kPixels, 0.0F);
+  assert(ZSodaRenderGrayFrameStub(src.data(), kWidth, kHeight, 8101, depth_map.data(), kPixels) == 0);
+
+  assert(ZSodaSetParamsStub("depth-anything-v3-small",
+                            2,
+                            static_cast<int>(zsoda::ae::AeOutputMode::kSlicing),
+                            0,
+                            0.45F,
+                            0.55F,
+                            0.0F,
+                            1,
+                            256,
+                            16,
+                            128) == 0);
+  assert(ZSodaRenderGrayFrameStub(src.data(), kWidth, kHeight, 8102, slicing.data(), kPixels) == 0);
+
+  bool differs_from_depth = false;
+  bool has_zero = false;
+  for (int i = 0; i < kPixels; ++i) {
+    if (depth_map[i] != slicing[i]) {
+      differs_from_depth = true;
+    }
+    if (slicing[i] == 0.0F) {
+      has_zero = true;
+    }
+    assert(slicing[i] >= 0.0F);
+    assert(slicing[i] <= 1.0F);
+  }
+  assert(differs_from_depth);
+  assert(has_zero);
+
+  assert(ZSodaSetParamsStub("unknown-model-id",
+                            2,
+                            static_cast<int>(zsoda::ae::AeOutputMode::kDepthMap),
+                            0,
+                            0.2F,
+                            0.8F,
+                            0.1F,
+                            1,
+                            256,
+                            16,
+                            128) == -1);
+}
+
 void TestPluginEntryBridgePath() {
   assert(ZSodaEffectMainStub(1) == 0);
   assert(ZSodaSetModelIdStub("depth-anything-v3-large") == 0);
+  assert(ZSodaSetParamsStub("depth-anything-v3-large",
+                            2,
+                            static_cast<int>(zsoda::ae::AeOutputMode::kDepthMap),
+                            0,
+                            0.0F,
+                            1.0F,
+                            0.1F,
+                            1,
+                            512,
+                            32,
+                            0) == 0);
 
   constexpr int kWidth = 8;
   constexpr int kHeight = 8;
@@ -579,6 +670,17 @@ void TestPluginEntryBridgePath() {
 void TestPluginEntryHostBufferBridgePath() {
   assert(ZSodaEffectMainStub(1) == 0);
   assert(ZSodaSetModelIdStub("depth-anything-v3-small") == 0);
+  assert(ZSodaSetParamsStub("depth-anything-v3-small",
+                            2,
+                            static_cast<int>(zsoda::ae::AeOutputMode::kDepthMap),
+                            0,
+                            0.0F,
+                            1.0F,
+                            0.1F,
+                            1,
+                            512,
+                            32,
+                            0) == 0);
 
   constexpr int kWidth = 3;
   constexpr int kHeight = 2;
@@ -641,6 +743,7 @@ void RunAeRouterTests() {
   TestRouterPayloadValidation();
   TestPluginEntryValidation();
   TestRenderGrayFrameStubHostBufferBridge();
+  TestPluginEntrySetParamsStub();
   TestPluginEntryBridgePath();
   TestPluginEntryHostBufferBridgePath();
 }

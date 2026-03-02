@@ -93,6 +93,7 @@ struct AeSdkRenderPayloadScaffold {
   bool output_is_valid = false;
   bool dimensions_match = false;
   AeHostRenderBridgePayload host_render{};
+  bool has_params_override = false;
   bool has_host_buffers = false;
   std::uint64_t frame_hash = 0;
   std::array<zsoda::core::PixelFormat, kAePixelFormatCandidateCapacity> pixel_format_candidates{};
