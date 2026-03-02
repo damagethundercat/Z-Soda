@@ -4,6 +4,8 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <type_traits>
+#include <utility>
 
 namespace zsoda::ae {
 namespace {
@@ -72,6 +74,305 @@ void InitializeDefaultPixelFormatCandidates(
 }
 
 #if defined(ZSODA_WITH_AE_SDK) && ZSODA_WITH_AE_SDK
+constexpr int kAeSdkNumParams = static_cast<int>(AeParamId::kVramBudgetMb) + 1;
+constexpr int kModelPopupChoices = 4;
+constexpr int kQualityPopupChoices = 3;
+constexpr int kOutputModePopupChoices = 2;
+
+constexpr char kModelPopupLabels[] = "Depth Small|Depth Base|Depth Large|MiDaS DPT Large";
+constexpr char kQualityPopupLabels[] = "Draft|Balanced|Best";
+constexpr char kOutputModePopupLabels[] = "Depth Map|Slicing";
+
+#if defined(PF_Precision_HUNDREDTHS)
+constexpr int kSliderPrecisionFractional = PF_Precision_HUNDREDTHS;
+#elif defined(PF_Precision_TENTHS)
+constexpr int kSliderPrecisionFractional = PF_Precision_TENTHS;
+#else
+constexpr int kSliderPrecisionFractional = 0;
+#endif
+
+#if defined(PF_Precision_WHOLE)
+constexpr int kSliderPrecisionWhole = PF_Precision_WHOLE;
+#else
+constexpr int kSliderPrecisionWhole = 0;
+#endif
+
+template <typename T, typename = void>
+struct HasPixelFormatMember : std::false_type {};
+
+template <typename T>
+struct HasPixelFormatMember<T, std::void_t<decltype(std::declval<const T&>().pixel_format)>>
+    : std::true_type {};
+
+template <typename T, typename = void>
+struct HasPixFormatMember : std::false_type {};
+
+template <typename T>
+struct HasPixFormatMember<T, std::void_t<decltype(std::declval<const T&>().pix_format)>>
+    : std::true_type {};
+
+std::optional<zsoda::core::PixelFormat> ParseSdkPixelFormatHint(std::int64_t pixel_format_hint) {
+#if defined(PF_PixelFormat_ARGB32)
+  if (pixel_format_hint == static_cast<std::int64_t>(PF_PixelFormat_ARGB32)) {
+    return zsoda::core::PixelFormat::kRGBA8;
+  }
+#endif
+#if defined(PF_PixelFormat_ARGB64)
+  if (pixel_format_hint == static_cast<std::int64_t>(PF_PixelFormat_ARGB64)) {
+    return zsoda::core::PixelFormat::kRGBA16;
+  }
+#endif
+#if defined(PF_PixelFormat_ARGB128)
+  if (pixel_format_hint == static_cast<std::int64_t>(PF_PixelFormat_ARGB128)) {
+    return zsoda::core::PixelFormat::kRGBA32F;
+  }
+#endif
+  return std::nullopt;
+}
+
+std::optional<zsoda::core::PixelFormat> InferHostRenderPixelFormatFromSdkInData(
+    const PF_InData* in_data) {
+  if (in_data == nullptr) {
+    return std::nullopt;
+  }
+
+  if constexpr (HasPixelFormatMember<PF_InData>::value) {
+    const auto parsed = ParseSdkPixelFormatHint(static_cast<std::int64_t>(in_data->pixel_format));
+    if (parsed.has_value()) {
+      return parsed;
+    }
+  }
+  if constexpr (HasPixFormatMember<PF_InData>::value) {
+    const auto parsed = ParseSdkPixelFormatHint(static_cast<std::int64_t>(in_data->pix_format));
+    if (parsed.has_value()) {
+      return parsed;
+    }
+  }
+  return std::nullopt;
+}
+
+std::optional<zsoda::core::PixelFormat> InferHostRenderPixelFormatFromSdkWorldMeta(
+    const PF_LayerDef* world) {
+  if (world == nullptr) {
+    return std::nullopt;
+  }
+
+  if constexpr (HasPixelFormatMember<PF_LayerDef>::value) {
+    const auto parsed = ParseSdkPixelFormatHint(static_cast<std::int64_t>(world->pixel_format));
+    if (parsed.has_value()) {
+      return parsed;
+    }
+  }
+  if constexpr (HasPixFormatMember<PF_LayerDef>::value) {
+    const auto parsed = ParseSdkPixelFormatHint(static_cast<std::int64_t>(world->pix_format));
+    if (parsed.has_value()) {
+      return parsed;
+    }
+  }
+  return std::nullopt;
+}
+
+std::optional<zsoda::core::PixelFormat> InferHostRenderPixelFormatFromSdkWorldFlags(
+    const PF_LayerDef* world) {
+  if (world == nullptr) {
+    return std::nullopt;
+  }
+#if defined(PF_WorldFlag_DEEP)
+  if ((world->world_flags & PF_WorldFlag_DEEP) != 0) {
+    return zsoda::core::PixelFormat::kRGBA16;
+  }
+#endif
+  return std::nullopt;
+}
+
+std::optional<zsoda::core::PixelFormat> InferHostRenderPixelFormatFromSdkAccessors(
+    const PF_LayerDef* world) {
+  if (world == nullptr) {
+    return std::nullopt;
+  }
+
+#if defined(PF_GET_PIXEL_DATA8) && defined(PF_Pixel8)
+  PF_Pixel8* pixel8 = nullptr;
+  (void)PF_GET_PIXEL_DATA8(const_cast<PF_LayerDef*>(world), nullptr, &pixel8);
+  if (pixel8 != nullptr) {
+    return zsoda::core::PixelFormat::kRGBA8;
+  }
+#endif
+
+#if defined(PF_GET_PIXEL_DATA16) && defined(PF_Pixel16)
+  PF_Pixel16* pixel16 = nullptr;
+  (void)PF_GET_PIXEL_DATA16(const_cast<PF_LayerDef*>(world), nullptr, &pixel16);
+  if (pixel16 != nullptr) {
+    return zsoda::core::PixelFormat::kRGBA16;
+  }
+#endif
+
+  return std::nullopt;
+}
+
+std::optional<zsoda::core::PixelFormat> InferHostRenderPixelFormatFromSdkWorld(
+    const PF_LayerDef* world) {
+  const auto meta_hint = InferHostRenderPixelFormatFromSdkWorldMeta(world);
+  if (meta_hint.has_value()) {
+    return meta_hint;
+  }
+  const auto accessor_hint = InferHostRenderPixelFormatFromSdkAccessors(world);
+  if (accessor_hint.has_value()) {
+    return accessor_hint;
+  }
+  return InferHostRenderPixelFormatFromSdkWorldFlags(world);
+}
+
+std::optional<zsoda::core::PixelFormat> SelectBestPixelFormatHint(
+    std::optional<zsoda::core::PixelFormat> sdk_world_hint,
+    std::optional<zsoda::core::PixelFormat> stride_hint,
+    std::optional<zsoda::core::PixelFormat> in_data_hint) {
+  if (sdk_world_hint.has_value()) {
+    return sdk_world_hint;
+  }
+  if (stride_hint.has_value()) {
+    return stride_hint;
+  }
+  return in_data_hint;
+}
+
+PF_Err RegisterParamsSetupScaffold(const AeSdkEntryPayload& payload) {
+  if (payload.in_data == nullptr || payload.out_data == nullptr) {
+    return PF_Err_NONE;
+  }
+
+#if defined(PF_ADD_POPUP) && defined(PF_ADD_FLOAT_SLIDERX) && \
+    (defined(PF_ADD_CHECKBOXX) || defined(PF_ADD_CHECKBOX))
+  PF_Err err = PF_Err_NONE;
+  PF_InData* in_data = payload.in_data;
+  PF_OutData* out_data = payload.out_data;
+  PF_ParamDef** params = payload.params;
+  (void)out_data;
+  (void)params;
+  PF_ParamDef def;
+
+  const auto clear_def = [&def]() {
+#if defined(AEFX_CLR_STRUCT)
+    AEFX_CLR_STRUCT(def);
+#else
+    def = {};
+#endif
+  };
+
+  clear_def();
+  PF_ADD_POPUP("Model",
+               kModelPopupChoices,
+               1,
+               kModelPopupLabels,
+               static_cast<int>(AeParamId::kModel));
+
+  clear_def();
+  PF_ADD_POPUP("Quality",
+               kQualityPopupChoices,
+               1,
+               kQualityPopupLabels,
+               static_cast<int>(AeParamId::kQuality));
+
+  clear_def();
+  PF_ADD_POPUP("Output",
+               kOutputModePopupChoices,
+               1,
+               kOutputModePopupLabels,
+               static_cast<int>(AeParamId::kOutputMode));
+
+  clear_def();
+#if defined(PF_ADD_CHECKBOXX)
+  PF_ADD_CHECKBOXX("Invert", 0, 0, static_cast<int>(AeParamId::kInvert));
+#else
+  PF_ADD_CHECKBOX("Invert", "Invert", 0, 0, static_cast<int>(AeParamId::kInvert));
+#endif
+
+  clear_def();
+  PF_ADD_FLOAT_SLIDERX("Min Depth",
+                       0.0,
+                       1.0,
+                       0.0,
+                       1.0,
+                       0.25,
+                       kSliderPrecisionFractional,
+                       0,
+                       0,
+                       static_cast<int>(AeParamId::kMinDepth));
+
+  clear_def();
+  PF_ADD_FLOAT_SLIDERX("Max Depth",
+                       0.0,
+                       1.0,
+                       0.0,
+                       1.0,
+                       0.75,
+                       kSliderPrecisionFractional,
+                       0,
+                       0,
+                       static_cast<int>(AeParamId::kMaxDepth));
+
+  clear_def();
+  PF_ADD_FLOAT_SLIDERX("Softness",
+                       0.0,
+                       1.0,
+                       0.0,
+                       1.0,
+                       0.1,
+                       kSliderPrecisionFractional,
+                       0,
+                       0,
+                       static_cast<int>(AeParamId::kSoftness));
+
+  clear_def();
+#if defined(PF_ADD_CHECKBOXX)
+  PF_ADD_CHECKBOXX("Cache Enable", 1, 0, static_cast<int>(AeParamId::kCacheEnable));
+#else
+  PF_ADD_CHECKBOX("Cache Enable", "Cache Enable", 1, 0, static_cast<int>(AeParamId::kCacheEnable));
+#endif
+
+  clear_def();
+  PF_ADD_FLOAT_SLIDERX("Tile Size",
+                       64.0,
+                       4096.0,
+                       64.0,
+                       1024.0,
+                       512.0,
+                       kSliderPrecisionWhole,
+                       0,
+                       0,
+                       static_cast<int>(AeParamId::kTileSize));
+
+  clear_def();
+  PF_ADD_FLOAT_SLIDERX("Overlap",
+                       0.0,
+                       1024.0,
+                       0.0,
+                       512.0,
+                       32.0,
+                       kSliderPrecisionWhole,
+                       0,
+                       0,
+                       static_cast<int>(AeParamId::kOverlap));
+
+  clear_def();
+  PF_ADD_FLOAT_SLIDERX("VRAM Budget (MB)",
+                       0.0,
+                       16384.0,
+                       0.0,
+                       8192.0,
+                       0.0,
+                       kSliderPrecisionWhole,
+                       0,
+                       0,
+                       static_cast<int>(AeParamId::kVramBudgetMb));
+
+  return err;
+#else
+  (void)payload;
+  return PF_Err_NONE;
+#endif
+}
+
 void InitializeSdkHostDispatch(const AeSdkEntryPayload& payload,
                                AeCommand command,
                                AeDispatchContext* dispatch,
@@ -259,12 +560,19 @@ bool TryExtractPfCmdParamValues(const AeSdkEntryPayload& payload,
 bool WireParamSetupPayload(const AeSdkEntryPayload& payload,
                            AeDispatchContext* dispatch,
                            std::string* error) {
-  (void)payload;
-  (void)dispatch;
-  (void)error;
+  if (payload.out_data != nullptr) {
+    // Safe placeholder path for SDK-offline builds and partial SDK macro surfaces.
+    payload.out_data->num_params = kAeSdkNumParams;
+  }
 
-  // Extension point: decode PF_Cmd_PARAMS_SETUP host payload and populate
-  // dispatch->command.params_update when parameter defaults need synchronization.
+  const PF_Err register_err = RegisterParamsSetupScaffold(payload);
+  if (register_err != PF_Err_NONE) {
+    SetError(error, "params setup scaffold registration failed");
+    // Keep PARAMS_SETUP non-fatal for host responsiveness; out_data->num_params
+    // remains populated for safe fallback behavior.
+  }
+
+  (void)dispatch;
   return true;
 }
 
@@ -538,6 +846,30 @@ AeCommand MapPfCommand(PF_Cmd command) {
     case PF_Cmd_UPDATE_PARAMS_UI:
       return AeCommand::kParamsSetup;
 #endif
+#if defined(PF_Cmd_SEQUENCE_SETUP)
+    case PF_Cmd_SEQUENCE_SETUP:
+      return AeCommand::kUnknown;
+#endif
+#if defined(PF_Cmd_SEQUENCE_RESETUP)
+    case PF_Cmd_SEQUENCE_RESETUP:
+      return AeCommand::kUnknown;
+#endif
+#if defined(PF_Cmd_SEQUENCE_SETDOWN)
+    case PF_Cmd_SEQUENCE_SETDOWN:
+      return AeCommand::kUnknown;
+#endif
+#if defined(PF_Cmd_SEQUENCE_FLATTEN)
+    case PF_Cmd_SEQUENCE_FLATTEN:
+      return AeCommand::kUnknown;
+#endif
+#if defined(PF_Cmd_SMART_PRE_RENDER)
+    case PF_Cmd_SMART_PRE_RENDER:
+      return AeCommand::kUnknown;
+#endif
+#if defined(PF_Cmd_SMART_RENDER)
+    case PF_Cmd_SMART_RENDER:
+      return AeCommand::kUnknown;
+#endif
     case PF_Cmd_RENDER:
       return AeCommand::kRender;
     default:
@@ -668,14 +1000,21 @@ bool TryExtractPfCmdRenderPayload(const AeSdkEntryPayload& payload,
                                            candidate_row_bytes,
                                            &scaffold->pixel_format_candidates);
 
+  const auto in_data_sdk_hint = InferHostRenderPixelFormatFromSdkInData(payload.in_data);
+  const auto source_sdk_hint = InferHostRenderPixelFormatFromSdkWorld(source_world);
+  const auto output_sdk_hint = InferHostRenderPixelFormatFromSdkWorld(output_world);
   const auto source_stride_hint =
       InferHostRenderPixelFormatFromStride(source_width, source_row_bytes);
   const auto output_stride_hint =
       InferHostRenderPixelFormatFromStride(output_width, output_row_bytes);
+  const auto source_hint =
+      SelectBestPixelFormatHint(source_sdk_hint, source_stride_hint, in_data_sdk_hint);
+  const auto output_hint =
+      SelectBestPixelFormatHint(output_sdk_hint, output_stride_hint, in_data_sdk_hint);
   const auto selected_format = SelectHostRenderPixelFormat(scaffold->pixel_format_candidates,
                                                             scaffold->pixel_format_candidate_count,
-                                                            source_stride_hint,
-                                                            output_stride_hint);
+                                                            source_hint,
+                                                            output_hint);
 
   if (!scaffold->source_is_valid || !scaffold->output_is_valid || !scaffold->dimensions_match ||
       !selected_format.has_value()) {

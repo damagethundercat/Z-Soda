@@ -4,13 +4,13 @@
 
 ## 1. 전체 진행률
 - 전체 진행률: **99%** (`PLAN.md`의 `P1`~`P5` 기준, `P3/P4/P5`는 마무리 단계)
-- 마지막 업데이트: **2026-03-02** (`2. 현재 작업 상태`에 P3/P4/P5 상세 진행률/잔여 핵심 반영)
+- 마지막 업데이트: **2026-03-02** (`PARAM_SETUP` 등록 스캐폴드 + SDK 픽셀 힌트 결합 경로 반영)
 - 갱신 원칙: **작업 단위 완료 시 즉시 업데이트**
 
 ## 2. 현재 작업 상태
 - [x] `P1` 플러그인 기본 구조 및 AE SDK 핸들러 스캐폴딩 — 상태: `완료`
 - [x] `P2` 모델/세션 생명주기 + 캐시 우선 렌더 파이프라인 — 상태: `완료`
-- [ ] `P3` Depth Map/Slicing 모드 + 8/16/32 bpc 경계 변환 — 상태: `진행중 (90%)` (완료: `PF_Cmd_USER_CHANGED_PARAM` 매핑+`params[]` 추출/렌더 override, 8/16/32 bpc 변환 유틸·포맷 추론 테스트 / 남은 핵심: `PARAM_SETUP`의 `PF_ADD_*` 실등록, `PF_Cmd_RENDER` payload 디코딩+SDK 픽셀 힌트 확정률 개선)
+- [ ] `P3` Depth Map/Slicing 모드 + 8/16/32 bpc 경계 변환 — 상태: `진행중 (93%)` (완료: `PF_Cmd_USER_CHANGED_PARAM` 매핑+`params[]` 추출/렌더 override, `PARAM_SETUP` `PF_ADD_*` 등록 스캐폴드, SDK 픽셀 힌트+stride 결합 포맷 추론 / 남은 핵심: 실제 AE SDK 환경에서 파라미터 UI 등록/렌더 연동 실검증)
 - [ ] `P4` OOM/백엔드 실패 대비 타일링·다운스케일 폴백 — 상태: `진행중 (88%)` (완료: `직접->타일->다운스케일->안전 출력` 폴백 체인, 적응형 타일 재시도+VRAM budget 기반 비율 조정 / 남은 핵심: SDK/OS 메모리 신호 연계, OOM/백엔드 실패 원인별 정책 세분화)
 - [ ] `P5` 테스트/벤치마크/안정성 검증 + 패키징 스크립트 — 상태: `진행중 (82%)` (완료: perf harness+CTest 등록, 로컬/CI 공용 검증 스크립트·워크플로 및 패키징 문서/스크립트 정리 / 남은 핵심: 네이티브 host 기준 최종 `.aex/.plugin` 실검증, ORT API ON 경로 실빌드 검증)
 
@@ -50,11 +50,12 @@
 - [x] `D33` 네이티브 빌드 산출물 수집용 패키징 스크립트 추가(`tools/package_plugin.sh`, `tools/package_plugin.ps1`) 및 빌드 문서/README 동기화 (`docs/build/README.md`, `README.md`)
 - [x] `D34` 로컬/CI 공용 검증 스크립트(`tools/run_local_ci.sh`) 및 GitHub Actions 워크플로(`.github/workflows/ci.yml`) 추가, 로컬 실행 통과
 - [x] `D35` AE SDK 경로에 `PF_Cmd_USER_CHANGED_PARAM` -> `AeCommand::kUpdateParams` 매핑 추가, `params[]` 기반 `AeParamValues` 추출/렌더 override 연결, 스텁 파라미터 설정 API(`ZSodaSetParamsStub`) 및 회귀 테스트 보강 (`plugin/ae/AeHostAdapter.*`, `plugin/ae/AePluginEntry.cpp`, `tests/test_ae_router.cpp`)
+- [x] `D36` AE SDK `PARAM_SETUP`에 `PF_ADD_*` 기반 파라미터 등록 스캐폴드 추가, `SEQUENCE_*`/`SMART_*` 안전 no-op 매핑 확장, `PF_Cmd_RENDER` 포맷 선택 시 SDK 픽셀 힌트(in_data/world/accessor) 결합 반영 (`plugin/ae/AeHostAdapter.cpp`)
 
 ## 4. 남은 작업
-1. `P3` 구현: AE 파라미터와 모델 선택 UI(`model_id`)를 실제 `PARAM_SETUP` 등록 코드(`PF_ADD_*`)와 연결
-2. `P3` 구현: AE SDK 실제 `PF_Cmd_*` 경로에 라우터/파라미터 연결(현재 USER_CHANGED/RENDER 추출 스캐폴드 반영, PARAM_SETUP 실등록 남음)
-3. `P3` 구현: `PF_Cmd_RENDER` payload에서 `PixelConversion` 경로를 SDK 픽셀 타입 힌트까지 사용해 16/32 bpc 확정률 추가 개선
+1. `P3` 구현: AE 파라미터와 모델 선택 UI(`model_id`)를 실제 `PARAM_SETUP` 등록 코드와 AE 호스트에서 실검증
+2. `P3` 구현: AE SDK 실제 `PF_Cmd_*` 경로에 라우터/파라미터 연결(현재 USER_CHANGED/RENDER/SEQUENCE/SMART no-op 매핑 반영, 호스트 통합 검증 남음)
+3. `P3` 구현: `PF_Cmd_RENDER` payload에서 SDK 픽셀 타입 힌트 결합 경로의 16/32 bpc 실호스트 검증
 4. `P4` 잔여: OOM/백엔드 실패 원인별 정책 세분화(타일 자동 축소 + VRAM 힌트 기반 다운스케일 비율은 반영 완료, SDK/OS별 메모리 신호 연계 남음)
 5. `P5` 구축: 성능/회귀/장시간 안정성 테스트 파이프라인 정리(로컬/CI 기본 자동화 완료, 네이티브 host 검증 파이프라인 추가 필요)
 6. `P5` 구축: 문서화된 최종 패키징 경로를 실제 CMake 타깃(`.aex/.plugin`) 및 배포 스크립트로 연결 (스크립트 추가 완료, 네이티브 호스트 실검증 남음)
@@ -64,7 +65,7 @@
 10. macOS 코드서명/노타리 최종 경로 마감 및 배포용 번들 검증
 
 ## 5. 이슈 및 리스크
-- 플러그인 스캐폴드는 구축되었지만 AE SDK 실제 엔트리/파라미터 바인딩은 아직 스텁 단계임.
+- 플러그인 스캐폴드는 구축되었고 SDK 바인딩 경로를 확장했지만, AE 호스트 실환경에서의 최종 검증이 남아 있음.
 - ONNX Runtime/CUDA/DirectML/Metal/CoreML 실추론 경로가 아직 연결되지 않음.
 - 리스크 대응:
   - 모델 선택/캐시/폴백 경로를 먼저 안정화해 AE 크래시 리스크를 최소화
