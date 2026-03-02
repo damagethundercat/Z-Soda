@@ -48,6 +48,10 @@ bool HasModel(const std::vector<std::string>& model_ids, const std::string& expe
   return false;
 }
 
+bool Contains(const std::string& source, const std::string& needle) {
+  return source.find(needle) != std::string::npos;
+}
+
 zsoda::core::FrameBuffer MakeSource() {
   zsoda::core::FrameDesc desc;
   desc.width = 4;
@@ -105,10 +109,62 @@ void TestRuntimeBackendOptions() {
   assert(engine.RequestedBackend() == zsoda::inference::RuntimeBackend::kCuda);
 #if defined(ZSODA_WITH_ONNX_RUNTIME)
   assert(!engine.UsingFallbackEngine());
+  assert(engine.ActiveBackend() == zsoda::inference::RuntimeBackend::kCuda);
 #else
   assert(engine.UsingFallbackEngine());
   assert(engine.ActiveBackend() == zsoda::inference::RuntimeBackend::kCpu);
 #endif
+}
+
+void TestRunRequiresSelectedModel() {
+  zsoda::inference::ManagedInferenceEngine engine("models");
+  const auto source = MakeSource();
+
+  zsoda::inference::InferenceRequest request;
+  request.source = &source;
+  request.quality = 1;
+
+  zsoda::core::FrameBuffer output;
+  std::string error;
+  assert(!engine.Run(request, &output, &error));
+  assert(error == "model is not selected");
+}
+
+void TestBackendStatusDiagnostics() {
+  zsoda::inference::RuntimeOptions options;
+  options.preferred_backend = zsoda::inference::RuntimeBackend::kCuda;
+  zsoda::inference::ManagedInferenceEngine engine("models", options);
+
+  const auto initial = engine.BackendStatus();
+  assert(initial.requested_backend == zsoda::inference::RuntimeBackend::kCuda);
+  assert(initial.active_backend == engine.ActiveBackend());
+  assert(initial.using_fallback_engine == engine.UsingFallbackEngine());
+  assert(!initial.active_backend_name.empty());
+  assert(!initial.engine_name.empty());
+
+  const std::string initial_status = engine.BackendStatusString();
+  assert(Contains(initial_status, "requested="));
+  assert(Contains(initial_status, "active="));
+  assert(Contains(initial_status, "engine="));
+  assert(Contains(initial_status, "configured_fallback="));
+  assert(Contains(initial_status, "last_run_fallback="));
+
+  std::string error;
+  assert(engine.Initialize("depth-anything-v3-small", &error));
+  const auto source = MakeSource();
+
+  zsoda::inference::InferenceRequest request;
+  request.source = &source;
+  request.quality = 1;
+
+  zsoda::core::FrameBuffer output;
+  assert(engine.Run(request, &output, &error));
+
+  const auto after = engine.BackendStatus();
+  assert(after.last_run_used_fallback);
+  assert(!after.fallback_reason.empty());
+  assert(after.engine_name == "DummyDepthEngine");
+  assert(Contains(engine.BackendStatusString(), "last_run_fallback=true"));
 }
 
 void TestManifestLoadingAndDefaults() {
@@ -168,13 +224,40 @@ void TestManifestModelSelectionRunPath() {
   assert(!output.empty());
 }
 
+void TestMissingModelFileDiagnostics() {
+  TempDir temp_dir;
+  const auto manifest = temp_dir.path() / zsoda::inference::ModelCatalog::DefaultManifestFilename();
+  WriteTextFile(
+      manifest,
+      "# id|display_name|relative_path|download_url|preferred_default\n"
+      "missing-depth-v1|Missing Depth v1|missing/missing_depth_v1.onnx|https://example.com/missing_depth_v1.onnx|true\n");
+
+  zsoda::inference::ManagedInferenceEngine engine(temp_dir.path().string());
+  std::string error;
+  assert(engine.Initialize("missing-depth-v1", &error));
+  assert(Contains(error, "model file not found:"));
+
+  const auto source = MakeSource();
+  zsoda::inference::InferenceRequest request;
+  request.source = &source;
+  request.quality = 1;
+
+  zsoda::core::FrameBuffer output;
+  assert(engine.Run(request, &output, &error));
+  assert(!output.empty());
+  assert(error == "selected model file is not installed; using fallback depth path");
+}
+
 }  // namespace
 
 void RunInferenceEngineTests() {
   TestModelList();
   TestModelSelection();
   TestRuntimeBackendOptions();
+  TestRunRequiresSelectedModel();
+  TestBackendStatusDiagnostics();
   TestManifestLoadingAndDefaults();
   TestManifestLoadValidation();
   TestManifestModelSelectionRunPath();
+  TestMissingModelFileDiagnostics();
 }

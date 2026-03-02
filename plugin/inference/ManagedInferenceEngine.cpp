@@ -71,6 +71,13 @@ bool ManagedInferenceEngine::Run(const InferenceRequest& request,
     std::string onnx_error;
     if (onnx_backend_->Run(request, out_depth, &onnx_error)) {
       used_fallback_path = false;
+      last_run_used_fallback_ = false;
+      fallback_reason_.clear();
+    } else {
+      last_run_used_fallback_ = true;
+      fallback_reason_ = onnx_error.empty()
+                             ? "onnx runtime backend run failed; using fallback depth path"
+                             : onnx_error;
     }
   }
 #endif
@@ -84,11 +91,16 @@ bool ManagedInferenceEngine::Run(const InferenceRequest& request,
 
   std::string dummy_error;
   if (!fallback_engine_.Run(request, out_depth, &dummy_error)) {
+    last_run_used_fallback_ = true;
+    if (!dummy_error.empty()) {
+      fallback_reason_ = dummy_error;
+    }
     if (error) {
       *error = dummy_error;
     }
     return false;
   }
+  last_run_used_fallback_ = true;
 
   // Apply a small model-specific curve shift so model switching has visible effect
   // while the fallback depth path is active.
@@ -122,19 +134,68 @@ bool ManagedInferenceEngine::UsingFallbackEngine() const {
   return using_fallback_engine_;
 }
 
+InferenceBackendStatus ManagedInferenceEngine::BackendStatus() const {
+  std::scoped_lock lock(mutex_);
+  InferenceBackendStatus status;
+  status.requested_backend = options_.preferred_backend;
+  status.active_backend = active_backend_;
+  status.using_fallback_engine = using_fallback_engine_;
+  status.last_run_used_fallback = last_run_used_fallback_;
+  status.active_backend_name = RuntimeBackendName(active_backend_);
+#if defined(ZSODA_WITH_ONNX_RUNTIME)
+  const bool route_to_onnx = (onnx_backend_ != nullptr && !using_fallback_engine_ &&
+                              !status.last_run_used_fallback);
+  status.engine_name = route_to_onnx ? onnx_backend_->Name() : fallback_engine_.Name();
+#else
+  status.engine_name = fallback_engine_.Name();
+#endif
+  status.fallback_reason = fallback_reason_;
+  return status;
+}
+
+std::string ManagedInferenceEngine::BackendStatusString() const {
+  const InferenceBackendStatus status = BackendStatus();
+  std::string result;
+  result.reserve(160 + status.fallback_reason.size());
+  result.append("requested=");
+  result.append(RuntimeBackendName(status.requested_backend));
+  result.append(", active=");
+  result.append(status.active_backend_name);
+  result.append(", engine=");
+  result.append(status.engine_name);
+  result.append(", configured_fallback=");
+  result.append(status.using_fallback_engine ? "true" : "false");
+  result.append(", last_run_fallback=");
+  result.append(status.last_run_used_fallback ? "true" : "false");
+  if (!status.fallback_reason.empty()) {
+    result.append(", reason=");
+    result.append(status.fallback_reason);
+  }
+  return result;
+}
+
 void ManagedInferenceEngine::ConfigureBackend() {
 #if defined(ZSODA_WITH_ONNX_RUNTIME)
-  onnx_backend_ = CreateOnnxRuntimeBackend(options_, nullptr);
+  std::string backend_error;
+  onnx_backend_ = CreateOnnxRuntimeBackend(options_, &backend_error);
   if (onnx_backend_ != nullptr) {
     using_fallback_engine_ = false;
     active_backend_ = onnx_backend_->ActiveBackend();
+    last_run_used_fallback_ = false;
+    fallback_reason_.clear();
   } else {
     using_fallback_engine_ = true;
     active_backend_ = RuntimeBackend::kCpu;
+    last_run_used_fallback_ = true;
+    fallback_reason_ = backend_error.empty()
+                           ? "onnx runtime backend is unavailable; using fallback depth path"
+                           : "onnx runtime backend initialization failed: " + backend_error;
   }
 #else
   using_fallback_engine_ = true;
   active_backend_ = RuntimeBackend::kCpu;
+  last_run_used_fallback_ = true;
+  fallback_reason_ = "onnx runtime backend is disabled at build time; using fallback depth path";
 #endif
 }
 
@@ -170,8 +231,22 @@ bool ManagedInferenceEngine::SelectModelLocked(const std::string& model_id, std:
   if (onnx_backend_ != nullptr) {
     std::string backend_error;
     using_fallback_engine_ = !onnx_backend_->SelectModel(model_id, model_path, &backend_error);
+    if (using_fallback_engine_) {
+      last_run_used_fallback_ = true;
+      fallback_reason_ = backend_error.empty()
+                             ? "onnx runtime backend rejected selected model; using fallback depth path"
+                             : backend_error;
+    } else {
+      last_run_used_fallback_ = false;
+      fallback_reason_.clear();
+      active_backend_ = onnx_backend_->ActiveBackend();
+    }
   } else {
     using_fallback_engine_ = true;
+    last_run_used_fallback_ = true;
+    if (fallback_reason_.empty()) {
+      fallback_reason_ = "onnx runtime backend is unavailable; using fallback depth path";
+    }
   }
 #endif
 

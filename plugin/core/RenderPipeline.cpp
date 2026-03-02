@@ -5,11 +5,15 @@
 #include <functional>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "inference/InferenceEngine.h"
 
 namespace zsoda::core {
 namespace {
+
+constexpr int kMaxAdaptiveTileAttempts = 4;
+constexpr int kMinAdaptiveRetryTileSize = 64;
 
 FrameBuffer CropGray(const FrameBuffer& source, const TileRect& tile) {
   FrameDesc desc;
@@ -50,6 +54,40 @@ FrameBuffer ResizeNearest(const FrameBuffer& source, int output_width, int outpu
     }
   }
   return resized;
+}
+
+std::vector<int> BuildAdaptiveTileSizes(int requested_tile_size, const FrameDesc& source_desc) {
+  std::vector<int> tile_sizes;
+  if (!IsValid(source_desc)) {
+    return tile_sizes;
+  }
+
+  const int max_extent = std::max(source_desc.width, source_desc.height);
+  int tile_size = std::max(1, requested_tile_size);
+  tile_size = std::min(tile_size, max_extent);
+  tile_sizes.push_back(tile_size);
+
+  while (static_cast<int>(tile_sizes.size()) < kMaxAdaptiveTileAttempts) {
+    const int next_tile_size = tile_size / 2;
+    if (next_tile_size < kMinAdaptiveRetryTileSize || next_tile_size == tile_size) {
+      break;
+    }
+    tile_sizes.push_back(next_tile_size);
+    tile_size = next_tile_size;
+  }
+
+  return tile_sizes;
+}
+
+std::string JoinAttemptDetails(const std::vector<std::string>& attempts) {
+  std::string joined;
+  for (std::size_t i = 0; i < attempts.size(); ++i) {
+    if (i > 0) {
+      joined += ", ";
+    }
+    joined += attempts[i];
+  }
+  return joined;
 }
 
 struct PooledFrame {
@@ -121,14 +159,40 @@ RenderOutput RenderPipeline::Render(const FrameBuffer& source, const RenderParam
     }
 
     std::string tiled_error;
-    if (RunTiledInference(source, params.quality, params.tile_size, params.overlap, depth.get(),
-                          &tiled_error)) {
+    std::vector<std::string> tiled_attempts;
+    int successful_tile_size = 0;
+    const auto tiled_retry_sizes = BuildAdaptiveTileSizes(params.tile_size, source.desc());
+    for (const int candidate_tile_size : tiled_retry_sizes) {
+      std::string attempt_error;
+      if (RunTiledInference(source, params.quality, candidate_tile_size, params.overlap, depth.get(),
+                            &attempt_error)) {
+        successful_tile_size = candidate_tile_size;
+        tiled_attempts.push_back("tile=" + std::to_string(candidate_tile_size) + " succeeded");
+        break;
+      }
+
+      std::string attempt_detail = "tile=" + std::to_string(candidate_tile_size) + " failed";
+      if (!attempt_error.empty()) {
+        attempt_detail += " (" + attempt_error + ")";
+      }
+      tiled_attempts.push_back(std::move(attempt_detail));
+    }
+
+    if (successful_tile_size > 0) {
       std::string message = "tiled fallback succeeded after direct failure (" + engine_->ActiveModelId() +
-                            ")";
+                            ", tile=" + std::to_string(successful_tile_size) + ")";
       if (!direct_error.empty()) {
         message += " - direct inference failed: " + direct_error;
       }
+      if (!tiled_attempts.empty()) {
+        message += " - tiled attempts: " + JoinAttemptDetails(tiled_attempts);
+      }
       return finalize_output(RenderStatus::kFallbackTiled, message);
+    }
+    if (!tiled_attempts.empty()) {
+      tiled_error = JoinAttemptDetails(tiled_attempts);
+    } else {
+      tiled_error = "no tiled attempts generated";
     }
 
     std::string downscaled_error;

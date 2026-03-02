@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "ae/AeHostAdapter.h"
 #include "ae/AeCommandRouter.h"
@@ -17,6 +18,14 @@ extern "C" int ZSodaRenderGrayFrameStub(const float* src,
                                         std::uint64_t frame_hash,
                                         float* out,
                                         int out_size);
+extern "C" int ZSodaRenderHostBufferStub(const void* src,
+                                         int width,
+                                         int height,
+                                         int src_row_bytes,
+                                         int pixel_format,
+                                         std::uint64_t frame_hash,
+                                         void* out,
+                                         int out_row_bytes);
 
 zsoda::core::FrameBuffer MakeFrame() {
   zsoda::core::FrameDesc desc;
@@ -141,6 +150,192 @@ void TestRenderUsesCurrentAndOverrideParams() {
   assert(!response.message.empty());
 }
 
+void TestRenderBridgeFrameHashCacheBehavior() {
+  auto engine = std::make_shared<zsoda::inference::ManagedInferenceEngine>("models");
+  std::string error;
+  assert(engine->Initialize("depth-anything-v3-small", &error));
+  auto pipeline = std::make_shared<zsoda::core::RenderPipeline>(engine);
+  zsoda::ae::AeCommandRouter router(pipeline, engine);
+
+  zsoda::ae::AeHostCommandContext setup_host;
+  setup_host.command_id = 1;
+  zsoda::ae::AeCommandContext setup_context;
+  setup_context.command = zsoda::ae::AeCommand::kGlobalSetup;
+  setup_context.host = &setup_host;
+  setup_context.error = &error;
+  assert(router.Handle(setup_context));
+
+  zsoda::ae::RenderRequest request;
+  request.source = MakeFrame();
+  request.frame_hash = 5001;
+
+  zsoda::ae::AeHostCommandContext render_host;
+  render_host.command_id = 3;
+  zsoda::ae::AeCommandContext render_context;
+  render_context.command = zsoda::ae::AeCommand::kRender;
+  render_context.host = &render_host;
+  render_context.render_request = &request;
+  render_context.error = &error;
+
+  zsoda::ae::RenderResponse first;
+  render_context.render_response = &first;
+  assert(router.Handle(render_context));
+  assert(first.status == zsoda::core::RenderStatus::kInference);
+
+  zsoda::ae::RenderResponse second;
+  render_context.render_response = &second;
+  assert(router.Handle(render_context));
+  assert(second.status == zsoda::core::RenderStatus::kCacheHit);
+
+  request.frame_hash = 5002;
+  zsoda::ae::RenderResponse third;
+  render_context.render_response = &third;
+  assert(router.Handle(render_context));
+  assert(third.status == zsoda::core::RenderStatus::kInference);
+}
+
+void TestHostBufferRenderDispatchConversion() {
+  constexpr int kWidth = 2;
+  constexpr int kHeight = 1;
+  constexpr int kRowBytes = kWidth * 4;
+
+  std::vector<std::uint8_t> rgba(kRowBytes * kHeight, 0);
+  rgba[0] = 255;
+  rgba[1] = 0;
+  rgba[2] = 0;
+  rgba[3] = 255;
+  rgba[4] = 0;
+  rgba[5] = 255;
+  rgba[6] = 0;
+  rgba[7] = 255;
+
+  zsoda::ae::AeHostRenderBridgePayload payload;
+  payload.source.pixels = rgba.data();
+  payload.source.width = kWidth;
+  payload.source.height = kHeight;
+  payload.source.row_bytes = kRowBytes;
+  payload.source.format = zsoda::core::PixelFormat::kRGBA8;
+  payload.destination.pixels = rgba.data();
+  payload.destination.width = kWidth;
+  payload.destination.height = kHeight;
+  payload.destination.row_bytes = kRowBytes;
+  payload.destination.format = zsoda::core::PixelFormat::kRGBA8;
+  payload.frame_hash = 404;
+
+  zsoda::ae::AeDispatchContext dispatch;
+  std::string error;
+  assert(zsoda::ae::BuildHostBufferRenderDispatch(payload, &dispatch, &error));
+  assert(dispatch.command.command == zsoda::ae::AeCommand::kRender);
+  assert(dispatch.command.render_request == &dispatch.render_request);
+  assert(dispatch.command.render_response == &dispatch.render_response);
+  assert(dispatch.render_request.frame_hash == 404);
+  assert(dispatch.render_request.source.desc().width == kWidth);
+  assert(dispatch.render_request.source.desc().height == kHeight);
+  assert(dispatch.render_request.source.desc().channels == 1);
+  assert(dispatch.render_request.source.desc().format == zsoda::core::PixelFormat::kGray32F);
+  assert(dispatch.render_request.source.at(0, 0, 0) > 0.2F);
+  assert(dispatch.render_request.source.at(1, 0, 0) > 0.7F);
+}
+
+void TestHostBufferRenderDispatchValidation() {
+  constexpr int kWidth = 2;
+  constexpr int kHeight = 1;
+  std::vector<float> gray(kWidth * kHeight, 0.5F);
+
+  zsoda::ae::AeHostRenderBridgePayload payload;
+  payload.source.pixels = gray.data();
+  payload.source.width = kWidth;
+  payload.source.height = kHeight;
+  payload.source.row_bytes = static_cast<std::size_t>(kWidth * sizeof(float));
+  payload.source.format = zsoda::core::PixelFormat::kGray32F;
+  payload.destination.pixels = gray.data();
+  payload.destination.width = kWidth;
+  payload.destination.height = kHeight;
+  payload.destination.row_bytes = static_cast<std::size_t>(kWidth * sizeof(float));
+  payload.destination.format = zsoda::core::PixelFormat::kRGBA32F;
+
+  zsoda::ae::AeDispatchContext dispatch;
+  std::string error;
+  assert(!zsoda::ae::BuildHostBufferRenderDispatch(payload, &dispatch, &error));
+  assert(error.find("host->gray conversion failed") != std::string::npos);
+}
+
+void TestExecuteHostBufferRenderBridge() {
+  auto engine = std::make_shared<zsoda::inference::ManagedInferenceEngine>("models");
+  std::string error;
+  assert(engine->Initialize("depth-anything-v3-small", &error));
+  auto pipeline = std::make_shared<zsoda::core::RenderPipeline>(engine);
+  zsoda::ae::AeCommandRouter router(pipeline, engine);
+
+  zsoda::ae::AeHostCommandContext setup_host;
+  setup_host.command_id = 1;
+  zsoda::ae::AeCommandContext setup_context;
+  setup_context.command = zsoda::ae::AeCommand::kGlobalSetup;
+  setup_context.host = &setup_host;
+  setup_context.error = &error;
+  assert(router.Handle(setup_context));
+
+  constexpr int kWidth = 4;
+  constexpr int kHeight = 4;
+  constexpr int kRowBytes = kWidth * 4;
+  std::vector<std::uint8_t> rgba_src(kRowBytes * kHeight, 0);
+  std::vector<std::uint8_t> rgba_out_a(kRowBytes * kHeight, 0);
+  std::vector<std::uint8_t> rgba_out_b(kRowBytes * kHeight, 0);
+
+  for (int y = 0; y < kHeight; ++y) {
+    for (int x = 0; x < kWidth; ++x) {
+      const int idx = y * kRowBytes + x * 4;
+      rgba_src[idx + 0] = static_cast<std::uint8_t>(x * 40 + y * 5);
+      rgba_src[idx + 1] = static_cast<std::uint8_t>(x * 20 + y * 15);
+      rgba_src[idx + 2] = static_cast<std::uint8_t>(x * 10 + y * 25);
+      rgba_src[idx + 3] = 255;
+    }
+  }
+
+  zsoda::ae::AeHostRenderBridgePayload payload;
+  payload.source.pixels = rgba_src.data();
+  payload.source.width = kWidth;
+  payload.source.height = kHeight;
+  payload.source.row_bytes = kRowBytes;
+  payload.source.format = zsoda::core::PixelFormat::kRGBA8;
+  payload.destination.pixels = rgba_out_a.data();
+  payload.destination.width = kWidth;
+  payload.destination.height = kHeight;
+  payload.destination.row_bytes = kRowBytes;
+  payload.destination.format = zsoda::core::PixelFormat::kRGBA8;
+  payload.frame_hash = 8301;
+
+  zsoda::ae::AeHostRenderBridgeResult first_result;
+  error.clear();
+  assert(zsoda::ae::ExecuteHostBufferRenderBridge(&router, payload, &first_result, &error));
+  assert(first_result.status == zsoda::core::RenderStatus::kInference);
+
+  bool has_non_zero = false;
+  for (int y = 0; y < kHeight; ++y) {
+    for (int x = 0; x < kWidth; ++x) {
+      const int idx = y * kRowBytes + x * 4;
+      const auto r = rgba_out_a[idx + 0];
+      const auto g = rgba_out_a[idx + 1];
+      const auto b = rgba_out_a[idx + 2];
+      const auto a = rgba_out_a[idx + 3];
+      assert(r == g);
+      assert(g == b);
+      assert(a == 255);
+      if (r > 0) {
+        has_non_zero = true;
+      }
+    }
+  }
+  assert(has_non_zero);
+
+  payload.destination.pixels = rgba_out_b.data();
+  zsoda::ae::AeHostRenderBridgeResult second_result;
+  error.clear();
+  assert(zsoda::ae::ExecuteHostBufferRenderBridge(&router, payload, &second_result, &error));
+  assert(second_result.status == zsoda::core::RenderStatus::kCacheHit);
+  assert(second_result.message.find("cache hit") != std::string::npos);
+}
+
 void TestRouterPayloadValidation() {
   auto engine = std::make_shared<zsoda::inference::ManagedInferenceEngine>("models");
   std::string error;
@@ -198,6 +393,61 @@ void TestPluginEntryValidation() {
   assert(ZSodaRenderGrayFrameStub(src, 0, kHeight, 10, out, kPixels) == -1);
   assert(ZSodaRenderGrayFrameStub(src, kWidth, -1, 10, out, kPixels) == -1);
   assert(ZSodaRenderGrayFrameStub(src, kWidth, kHeight, 10, out, kPixels - 1) == -1);
+
+  std::vector<std::uint8_t> rgba_in(kWidth * kHeight * 4U, 0);
+  std::vector<std::uint8_t> rgba_out(kWidth * kHeight * 4U, 0);
+  assert(ZSodaRenderHostBufferStub(nullptr,
+                                   kWidth,
+                                   kHeight,
+                                   kWidth * 4,
+                                   static_cast<int>(zsoda::core::PixelFormat::kRGBA8),
+                                   100,
+                                   rgba_out.data(),
+                                   kWidth * 4) == -1);
+  assert(ZSodaRenderHostBufferStub(rgba_in.data(),
+                                   kWidth,
+                                   kHeight,
+                                   kWidth * 4,
+                                   999,
+                                   100,
+                                   rgba_out.data(),
+                                   kWidth * 4) == -1);
+}
+
+void TestRenderGrayFrameStubHostBufferBridge() {
+  assert(ZSodaEffectMainStub(1) == 0);
+  assert(ZSodaSetModelIdStub("depth-anything-v3-small") == 0);
+
+  constexpr int kWidth = 5;
+  constexpr int kHeight = 4;
+  constexpr int kPixels = kWidth * kHeight;
+
+  std::vector<float> src(kPixels, 0.0F);
+  std::vector<float> out(kPixels, -1.0F);
+  for (int i = 0; i < kPixels; ++i) {
+    src[i] = static_cast<float>(i % kWidth) / static_cast<float>(kWidth - 1);
+  }
+
+  assert(ZSodaRenderGrayFrameStub(src.data(), kWidth, kHeight, 7001, out.data(), kPixels) == 0);
+
+  bool has_changed = false;
+  for (float value : out) {
+    if (value != -1.0F) {
+      has_changed = true;
+    }
+    assert(value >= 0.0F);
+    assert(value <= 1.0F);
+  }
+  assert(has_changed);
+  assert(out[0] <= out[kWidth - 1]);
+  assert(out[kWidth - 1] <= out[kPixels - 1]);
+
+  std::vector<float> untouched(kPixels, -7.0F);
+  assert(ZSodaRenderGrayFrameStub(src.data(), kWidth, kHeight, 7002, untouched.data(), kPixels - 1) ==
+         -1);
+  for (float value : untouched) {
+    assert(value == -7.0F);
+  }
 }
 
 void TestPluginEntryBridgePath() {
@@ -232,13 +482,67 @@ void TestPluginEntryBridgePath() {
   assert(ZSodaSetModelIdStub("unknown-model-id") == -1);
 }
 
+void TestPluginEntryHostBufferBridgePath() {
+  assert(ZSodaEffectMainStub(1) == 0);
+  assert(ZSodaSetModelIdStub("depth-anything-v3-small") == 0);
+
+  constexpr int kWidth = 3;
+  constexpr int kHeight = 2;
+  constexpr int kRowBytes = kWidth * 4 + 4;
+  std::vector<std::uint8_t> src(kRowBytes * kHeight, 0);
+  std::vector<std::uint8_t> out(kRowBytes * kHeight, 17);
+
+  for (int y = 0; y < kHeight; ++y) {
+    for (int x = 0; x < kWidth; ++x) {
+      const int idx = y * kRowBytes + x * 4;
+      src[idx + 0] = static_cast<std::uint8_t>(30 + x * 40 + y * 5);
+      src[idx + 1] = static_cast<std::uint8_t>(20 + x * 20 + y * 10);
+      src[idx + 2] = static_cast<std::uint8_t>(10 + x * 10 + y * 15);
+      src[idx + 3] = 255;
+    }
+  }
+
+  assert(ZSodaRenderHostBufferStub(src.data(),
+                                   kWidth,
+                                   kHeight,
+                                   kRowBytes,
+                                   static_cast<int>(zsoda::core::PixelFormat::kRGBA8),
+                                   9201,
+                                   out.data(),
+                                   kRowBytes) == 0);
+
+  bool has_non_zero = false;
+  for (int y = 0; y < kHeight; ++y) {
+    for (int x = 0; x < kWidth; ++x) {
+      const int idx = y * kRowBytes + x * 4;
+      const auto r = out[idx + 0];
+      const auto g = out[idx + 1];
+      const auto b = out[idx + 2];
+      const auto a = out[idx + 3];
+      assert(r == g);
+      assert(g == b);
+      assert(a == 255);
+      if (r > 0) {
+        has_non_zero = true;
+      }
+    }
+  }
+  assert(has_non_zero);
+}
+
 }  // namespace
 
 void RunAeRouterTests() {
   TestStubCommandAndDispatchMapping();
   TestParamSetupAndModelMenu();
   TestRenderUsesCurrentAndOverrideParams();
+  TestRenderBridgeFrameHashCacheBehavior();
+  TestHostBufferRenderDispatchConversion();
+  TestHostBufferRenderDispatchValidation();
+  TestExecuteHostBufferRenderBridge();
   TestRouterPayloadValidation();
   TestPluginEntryValidation();
+  TestRenderGrayFrameStubHostBufferBridge();
   TestPluginEntryBridgePath();
+  TestPluginEntryHostBufferBridgePath();
 }

@@ -1,8 +1,12 @@
 #include "ae/AeHostAdapter.h"
 
+#include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
+#include <optional>
 #include <string>
+#include <vector>
 
 #include "ae/AeParams.h"
 #include "core/RenderPipeline.h"
@@ -10,6 +14,21 @@
 
 namespace zsoda::ae {
 namespace {
+
+constexpr int kGrayStubChannels = 4;
+
+std::optional<zsoda::core::PixelFormat> ParseHostPixelFormat(int pixel_format) {
+  switch (pixel_format) {
+    case static_cast<int>(zsoda::core::PixelFormat::kRGBA8):
+      return zsoda::core::PixelFormat::kRGBA8;
+    case static_cast<int>(zsoda::core::PixelFormat::kRGBA16):
+      return zsoda::core::PixelFormat::kRGBA16;
+    case static_cast<int>(zsoda::core::PixelFormat::kRGBA32F):
+      return zsoda::core::PixelFormat::kRGBA32F;
+    default:
+      return std::nullopt;
+  }
+}
 
 std::shared_ptr<zsoda::inference::IInferenceEngine> GetEngine() {
   static std::shared_ptr<zsoda::inference::IInferenceEngine> engine =
@@ -33,6 +52,15 @@ int Dispatch(const AeDispatchContext& dispatch) {
 
 }  // namespace
 }  // namespace zsoda::ae
+
+extern "C" int ZSodaRenderHostBufferStub(const void* src,
+                                         int width,
+                                         int height,
+                                         int src_row_bytes,
+                                         int pixel_format,
+                                         std::uint64_t frame_hash,
+                                         void* out,
+                                         int out_row_bytes);
 
 extern "C" int ZSodaEffectMainStub(int command_id) {
   std::string error;
@@ -66,49 +94,82 @@ extern "C" int ZSodaRenderGrayFrameStub(const float* src,
   if (src == nullptr || out == nullptr || width <= 0 || height <= 0) {
     return -1;
   }
-  if (out_size < width * height) {
+  const std::size_t pixel_count =
+      static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+  if (out_size < 0 || static_cast<std::size_t>(out_size) < pixel_count) {
     return -1;
   }
 
-  zsoda::core::FrameDesc desc;
-  desc.width = width;
-  desc.height = height;
-  desc.channels = 1;
-  desc.format = zsoda::core::PixelFormat::kGray32F;
-
-  zsoda::core::FrameBuffer source(desc);
-  for (int y = 0; y < height; ++y) {
-    for (int x = 0; x < width; ++x) {
-      const int idx = y * width + x;
-      source.at(x, y, 0) = src[idx];
-    }
+  std::vector<float> rgba_source(pixel_count * zsoda::ae::kGrayStubChannels, 0.0F);
+  std::vector<float> rgba_output(pixel_count * zsoda::ae::kGrayStubChannels, 0.0F);
+  for (std::size_t i = 0; i < pixel_count; ++i) {
+    const float gray = src[i];
+    const std::size_t offset = i * zsoda::ae::kGrayStubChannels;
+    rgba_source[offset + 0] = gray;
+    rgba_source[offset + 1] = gray;
+    rgba_source[offset + 2] = gray;
+    rgba_source[offset + 3] = 1.0F;
   }
 
-  zsoda::ae::RenderRequest request;
-  request.source = source;
-  request.frame_hash = frame_hash;
-
-  zsoda::ae::RenderResponse response;
-  std::string error;
-  zsoda::ae::AeHostCommandContext host_context;
-  host_context.command_id = 3;
-  zsoda::ae::AeCommandContext context;
-  context.command = zsoda::ae::AeCommand::kRender;
-  context.host = &host_context;
-  context.render_request = &request;
-  context.render_response = &response;
-  context.error = &error;
-  if (!zsoda::ae::GetRouter().Handle(context)) {
+  const std::size_t row_bytes_size =
+      static_cast<std::size_t>(width) * static_cast<std::size_t>(zsoda::ae::kGrayStubChannels) *
+      sizeof(float);
+  if (row_bytes_size > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+    return -1;
+  }
+  const int row_bytes = static_cast<int>(row_bytes_size);
+  if (ZSodaRenderHostBufferStub(rgba_source.data(),
+                                width,
+                                height,
+                                row_bytes,
+                                static_cast<int>(zsoda::core::PixelFormat::kRGBA32F),
+                                frame_hash,
+                                rgba_output.data(),
+                                row_bytes) != 0) {
     return -1;
   }
 
-  for (int y = 0; y < height; ++y) {
-    for (int x = 0; x < width; ++x) {
-      const int idx = y * width + x;
-      out[idx] = response.output.at(x, y, 0);
-    }
+  for (std::size_t i = 0; i < pixel_count; ++i) {
+    out[i] = rgba_output[i * zsoda::ae::kGrayStubChannels];
   }
   return 0;
+}
+
+extern "C" int ZSodaRenderHostBufferStub(const void* src,
+                                         int width,
+                                         int height,
+                                         int src_row_bytes,
+                                         int pixel_format,
+                                         std::uint64_t frame_hash,
+                                         void* out,
+                                         int out_row_bytes) {
+  if (src == nullptr || out == nullptr || width <= 0 || height <= 0 || src_row_bytes <= 0 ||
+      out_row_bytes <= 0) {
+    return -1;
+  }
+
+  const auto format = zsoda::ae::ParseHostPixelFormat(pixel_format);
+  if (!format.has_value()) {
+    return -1;
+  }
+
+  zsoda::ae::AeHostRenderBridgePayload payload;
+  payload.source.pixels = src;
+  payload.source.width = width;
+  payload.source.height = height;
+  payload.source.row_bytes = static_cast<std::size_t>(src_row_bytes);
+  payload.source.format = *format;
+  payload.destination.pixels = out;
+  payload.destination.width = width;
+  payload.destination.height = height;
+  payload.destination.row_bytes = static_cast<std::size_t>(out_row_bytes);
+  payload.destination.format = *format;
+  payload.frame_hash = frame_hash;
+
+  std::string error;
+  return zsoda::ae::ExecuteHostBufferRenderBridge(&zsoda::ae::GetRouter(), payload, nullptr, &error)
+             ? 0
+             : -1;
 }
 
 #if defined(ZSODA_WITH_AE_SDK) && ZSODA_WITH_AE_SDK

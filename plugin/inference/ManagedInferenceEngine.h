@@ -15,6 +15,16 @@
 
 namespace zsoda::inference {
 
+struct InferenceBackendStatus {
+  RuntimeBackend requested_backend = RuntimeBackend::kAuto;
+  RuntimeBackend active_backend = RuntimeBackend::kCpu;
+  bool using_fallback_engine = true;
+  bool last_run_used_fallback = true;
+  std::string active_backend_name;
+  std::string engine_name;
+  std::string fallback_reason;
+};
+
 class ManagedInferenceEngine final : public IInferenceEngine {
  public:
   explicit ManagedInferenceEngine(std::string model_root);
@@ -31,6 +41,8 @@ class ManagedInferenceEngine final : public IInferenceEngine {
   [[nodiscard]] RuntimeBackend RequestedBackend() const;
   [[nodiscard]] RuntimeBackend ActiveBackend() const;
   [[nodiscard]] bool UsingFallbackEngine() const;
+  [[nodiscard]] InferenceBackendStatus BackendStatus() const;
+  [[nodiscard]] std::string BackendStatusString() const;
 
  private:
   void ConfigureBackend();
@@ -47,6 +59,8 @@ class ManagedInferenceEngine final : public IInferenceEngine {
   bool model_file_exists_ = false;
   RuntimeBackend active_backend_ = RuntimeBackend::kCpu;
   bool using_fallback_engine_ = true;
+  mutable bool last_run_used_fallback_ = true;
+  mutable std::string fallback_reason_;
   DummyInferenceEngine fallback_engine_;
 #if defined(ZSODA_WITH_ONNX_RUNTIME)
   std::unique_ptr<IOnnxRuntimeBackend> onnx_backend_;

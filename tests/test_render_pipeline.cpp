@@ -57,6 +57,7 @@ class ScriptedInferenceEngine final : public zsoda::inference::IInferenceEngine 
 
     const int width = request.source->desc().width;
     run_widths_.push_back(width);
+    run_qualities_.push_back(request.quality);
 
     const Rule* rule = &default_rule_;
     const auto it = width_rules_.find(width);
@@ -106,6 +107,7 @@ class ScriptedInferenceEngine final : public zsoda::inference::IInferenceEngine 
 
   [[nodiscard]] int RunCount() const { return static_cast<int>(run_widths_.size()); }
   [[nodiscard]] const std::vector<int>& RunWidths() const { return run_widths_; }
+  [[nodiscard]] const std::vector<int>& RunQualities() const { return run_qualities_; }
 
  private:
   struct Rule {
@@ -114,6 +116,7 @@ class ScriptedInferenceEngine final : public zsoda::inference::IInferenceEngine 
   };
 
   mutable std::vector<int> run_widths_;
+  mutable std::vector<int> run_qualities_;
   Rule default_rule_{};
   std::unordered_map<int, Rule> width_rules_;
   std::string active_model_id_ = "depth-anything-v3-small";
@@ -173,6 +176,79 @@ void TestFallbackSequenceDownscaledAfterTiledFailure() {
   assert(run_widths[0] == 10);
   assert(run_widths[1] == 6);
   assert(run_widths[2] == 5);
+}
+
+void TestAdaptiveFallbackRetriesRecordStageDiagnostics() {
+  auto engine = std::make_shared<ScriptedInferenceEngine>();
+  std::string error;
+  assert(engine->Initialize("depth-anything-v3-small", &error));
+  engine->SetBehaviorForWidth(256, ScriptedInferenceEngine::Behavior::kFail, "direct oom");
+  engine->SetBehaviorForWidth(200, ScriptedInferenceEngine::Behavior::kFail, "tile[200] oom");
+  engine->SetBehaviorForWidth(100, ScriptedInferenceEngine::Behavior::kFail, "tile[100] oom");
+
+  zsoda::core::RenderPipeline pipeline(engine);
+  const auto src = MakeSourceFrame(256, 256);
+
+  zsoda::core::RenderParams params;
+  params.model_id = "depth-anything-v3-small";
+  params.frame_hash = 102;
+  params.quality = 3;
+  params.tile_size = 200;
+  params.overlap = 0;
+
+  const auto output = pipeline.Render(src, params);
+  assert(output.status == zsoda::core::RenderStatus::kFallbackDownscaled);
+  assert(Contains(output.message, "direct inference failed: direct oom"));
+  assert(Contains(output.message, "tile=200 failed (tile[200] oom)"));
+  assert(Contains(output.message, "tile=100 failed (tile[100] oom)"));
+
+  const auto& run_widths = engine->RunWidths();
+  const auto& run_qualities = engine->RunQualities();
+  assert(run_widths.size() == run_qualities.size());
+  assert(run_widths.size() >= 4U);
+  assert(run_widths[0] == 256);
+  assert(run_widths[1] == 200);
+  assert(run_widths[2] == 100);
+  assert(run_widths.back() == 128);
+  assert(run_qualities[0] == 3);
+  assert(run_qualities[1] == 3);
+  assert(run_qualities[2] == 3);
+  assert(run_qualities.back() == 2);
+}
+
+void TestAdaptiveFallbackHandlesInvalidTileConfiguration() {
+  auto engine = std::make_shared<ScriptedInferenceEngine>();
+  std::string error;
+  assert(engine->Initialize("depth-anything-v3-small", &error));
+  engine->SetBehaviorForWidth(10, ScriptedInferenceEngine::Behavior::kFail, "direct stage forced");
+
+  zsoda::core::RenderPipeline pipeline(engine);
+  const auto src = MakeSourceFrame(10, 10);
+
+  zsoda::core::RenderParams params;
+  params.model_id = "depth-anything-v3-small";
+  params.frame_hash = 103;
+  params.quality = 2;
+  params.tile_size = 0;
+  params.overlap = 0;
+
+  const auto output = pipeline.Render(src, params);
+  assert(output.status == zsoda::core::RenderStatus::kFallbackTiled);
+  assert(Contains(output.message, "tile=1"));
+  assert(Contains(output.message, "tiled attempts: tile=1 succeeded"));
+
+  const auto& run_widths = engine->RunWidths();
+  const auto& run_qualities = engine->RunQualities();
+  assert(run_widths.size() >= 2U);
+  assert(run_widths[0] == 10);
+  for (std::size_t i = 1; i < run_widths.size(); ++i) {
+    assert(run_widths[i] == 1);
+  }
+  assert(run_qualities.size() == run_widths.size());
+  assert(run_qualities[0] == 2);
+  for (std::size_t i = 1; i < run_qualities.size(); ++i) {
+    assert(run_qualities[i] == 2);
+  }
 }
 
 void TestFallbackOutputCachingSeparatedByModel() {
@@ -273,6 +349,8 @@ void TestEmptySourceReturnsSafeOutput() {
 
 void RunRenderPipelineTests() {
   TestFallbackSequenceDownscaledAfterTiledFailure();
+  TestAdaptiveFallbackRetriesRecordStageDiagnostics();
+  TestAdaptiveFallbackHandlesInvalidTileConfiguration();
   TestFallbackOutputCachingSeparatedByModel();
   TestSafeOutputAfterAllStagesFail();
   TestSafeOutputOnException();
