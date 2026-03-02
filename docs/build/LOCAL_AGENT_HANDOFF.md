@@ -93,3 +93,45 @@ if exist "C:\Program Files\Adobe\Common\Plug-ins\7.0\MediaCore\onnxruntime.dll" 
 - 모델 가중치/대용량 바이너리는 git에 커밋하지 않는다.
 - 스크립트 수정 시 `module: summary` 커밋 규칙을 따른다.
 - 작업 단위 완료 후 `PROGRESS.md`를 갱신한다.
+
+## Session Handoff (2026-03-03, for next WSL agent)
+
+### Branch / Remote
+- Branch: `main`
+- Remote: `origin` (`https://github.com/damagethundercat/Z-Soda.git`)
+- Latest pushed commits:
+  - `6ce6329` - add windows aex artifact
+  - `320e0c7` - AE PiPL pipeline + outflags sync fixes
+
+### What is pushed and ready
+- Source changes for AE entrypoint/PiPL/outflags are pushed.
+- Windows artifact is pushed at:
+  - `artifacts/windows/ZSoda.aex`
+  - `artifacts/windows/ZSoda.aex.sha256`
+- Expected SHA256 for current artifact:
+  - `fcb5f1538885131cc7e4e84054ba3140e9b98be07f8f55da77047991f572d446`
+
+### Latest crash evidence
+- Latest reported crash dump in this session:
+  - `471fec5f-fa20-4dc7-a552-f44ef1074861.dmp`
+- Sentry breadcrumb still showed:
+  - `global outflags mismatch. Code flags are 4008120 and PiPL flags are 4008020`
+- Plugin loading log repeatedly showed `plugin is marked as Ignore` for `ZSoda.aex`.
+
+### High-probability root cause to continue
+- ORT runtime DLL conflict is highly likely:
+  - AE process loaded Adobe-bundled `onnxruntime.dll` (v1.17.x)
+  - Intended local runtime (`onnxruntime-win-x64-1.24.2`) did not appear loaded
+- This can trigger ABI/API mismatch and access violations (`C0000005`).
+
+### Immediate next actions for next agent
+1. In WSL/Windows test flow, enforce deterministic ORT DLL resolution (plugin-local/runtime-local), and avoid accidental reuse of Adobe/other ORT modules already loaded by process.
+2. Re-check AE PluginCache key for ZSoda `Ignore` state after each crash and ensure fresh load path when validating fixes.
+3. Reproduce with a clean startup and collect:
+   - `Plugin Loading.log`
+   - Sentry `__sentry-breadcrumb1`
+   - loaded module list (`AfterFX.exe` + exact `onnxruntime.dll` path/version)
+
+### Notes
+- Local build/output folders (`build-win*`, `dist/`, `Microsoft/`) are intentionally not committed.
+- Artifact commit is for handoff convenience only; production packaging strategy can be revised later.
