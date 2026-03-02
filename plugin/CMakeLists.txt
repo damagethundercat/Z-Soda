@@ -8,7 +8,7 @@ set(AE_SDK_INCLUDE_DIR "" CACHE PATH "Directory containing AE_Effect.h")
 set(ONNXRUNTIME_INCLUDE_DIR "" CACHE PATH "Directory containing onnxruntime_cxx_api.h")
 set(ONNXRUNTIME_LIBRARY "" CACHE FILEPATH "Path to ONNX Runtime library binary")
 
-add_library(zsoda_plugin
+set(ZSODA_PLUGIN_SOURCES
   ae/AeHostAdapter.cpp
   ae/AeCommandRouter.cpp
   ae/AeParams.cpp
@@ -24,13 +24,8 @@ add_library(zsoda_plugin
   inference/ModelCatalog.cpp
 )
 
-if(ZSODA_WITH_ONNX_RUNTIME)
-  target_sources(zsoda_plugin
-    PRIVATE
-      inference/OnnxRuntimeBackend.cpp
-  )
-  target_compile_definitions(zsoda_plugin PUBLIC ZSODA_WITH_ONNX_RUNTIME=1)
-endif()
+add_library(zsoda_plugin STATIC ${ZSODA_PLUGIN_SOURCES})
+set(ZSODA_PLUGIN_TARGETS zsoda_plugin)
 
 if(ZSODA_WITH_ONNX_RUNTIME_API)
   if(NOT ZSODA_WITH_ONNX_RUNTIME)
@@ -54,10 +49,6 @@ if(ZSODA_WITH_ONNX_RUNTIME_API)
   if(NOT EXISTS "${ONNXRUNTIME_LIBRARY}")
     message(FATAL_ERROR "ONNXRUNTIME_LIBRARY not found: ${ONNXRUNTIME_LIBRARY}")
   endif()
-
-  target_include_directories(zsoda_plugin PUBLIC "${ONNXRUNTIME_HEADER_DIR}")
-  target_link_libraries(zsoda_plugin PUBLIC "${ONNXRUNTIME_LIBRARY}")
-  target_compile_definitions(zsoda_plugin PUBLIC ZSODA_WITH_ONNX_RUNTIME_API=1)
 endif()
 
 if(ZSODA_WITH_AE_SDK)
@@ -72,17 +63,43 @@ if(ZSODA_WITH_AE_SDK)
   if(NOT AE_SDK_INCLUDE_DIR)
     message(FATAL_ERROR "ZSODA_WITH_AE_SDK=ON requires AE_SDK_INCLUDE_DIR (or AE_SDK_ROOT) containing AE_Effect.h")
   endif()
+
+  if(WIN32)
+    add_library(zsoda_aex MODULE ${ZSODA_PLUGIN_SOURCES})
+    set_target_properties(zsoda_aex PROPERTIES OUTPUT_NAME "ZSoda" PREFIX "" SUFFIX ".aex")
+    list(APPEND ZSODA_PLUGIN_TARGETS zsoda_aex)
+  elseif(APPLE)
+    add_library(zsoda_plugin_bundle MODULE ${ZSODA_PLUGIN_SOURCES})
+    set_target_properties(zsoda_plugin_bundle PROPERTIES OUTPUT_NAME "ZSoda" PREFIX "")
+    list(APPEND ZSODA_PLUGIN_TARGETS zsoda_plugin_bundle)
+  endif()
 endif()
 
-target_include_directories(zsoda_plugin
-  PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}
-    $<$<BOOL:${ZSODA_WITH_AE_SDK}>:${AE_SDK_INCLUDE_DIR}>
-)
+foreach(target_name IN LISTS ZSODA_PLUGIN_TARGETS)
+  if(ZSODA_WITH_ONNX_RUNTIME)
+    target_sources(${target_name}
+      PRIVATE
+        inference/OnnxRuntimeBackend.cpp
+    )
+    target_compile_definitions(${target_name} PUBLIC ZSODA_WITH_ONNX_RUNTIME=1)
+  endif()
 
-target_compile_definitions(zsoda_plugin
-  PUBLIC
-    ZSODA_WITH_AE_SDK=$<BOOL:${ZSODA_WITH_AE_SDK}>
-)
+  if(ZSODA_WITH_ONNX_RUNTIME_API)
+    target_include_directories(${target_name} PUBLIC "${ONNXRUNTIME_HEADER_DIR}")
+    target_link_libraries(${target_name} PUBLIC "${ONNXRUNTIME_LIBRARY}")
+    target_compile_definitions(${target_name} PUBLIC ZSODA_WITH_ONNX_RUNTIME_API=1)
+  endif()
 
-target_compile_features(zsoda_plugin PUBLIC cxx_std_20)
+  target_include_directories(${target_name}
+    PUBLIC
+      ${CMAKE_CURRENT_SOURCE_DIR}
+      $<$<BOOL:${ZSODA_WITH_AE_SDK}>:${AE_SDK_INCLUDE_DIR}>
+  )
+
+  target_compile_definitions(${target_name}
+    PUBLIC
+      ZSODA_WITH_AE_SDK=$<BOOL:${ZSODA_WITH_AE_SDK}>
+  )
+
+  target_compile_features(${target_name} PUBLIC cxx_std_20)
+endforeach()

@@ -8,7 +8,10 @@ This document records the packaging path from CMake build output to After Effect
   - Windows: `.aex`
   - macOS: `.plugin` bundle
 - Current branch status:
-  - `cmake` currently builds `zsoda_plugin` (static library), not final `.aex/.plugin` yet.
+  - `cmake` always builds `zsoda_plugin` (static library).
+  - with `ZSODA_WITH_AE_SDK=ON` on native host:
+    - Windows target `zsoda_aex` is generated (`ZSoda.aex`)
+    - macOS target `zsoda_plugin_bundle` is generated (`ZSoda.dylib` module target; bundle metadata wiring remains pending)
   - Commands below include both:
     - what you can run now (scaffold verification)
     - final-mile packaging steps to apply when AE SDK-linked targets are added
@@ -64,10 +67,12 @@ cmake -S . -B build-win -G "Visual Studio 17 2022" -A x64 `
   -DAE_SDK_ROOT="$env:AE_SDK_ROOT"
 
 cmake --build build-win --config Release --target zsoda_plugin
+cmake --build build-win --config Release --target zsoda_aex
 ```
 
-Current expected artifact (scaffold state):
+Current expected artifacts:
 - `build-win/plugin/Release/zsoda_plugin.lib`
+- `build-win/plugin/Release/ZSoda.aex` (`zsoda_aex` target)
 
 Final-mile packaging path (after AE SDK target wiring lands):
 
@@ -96,10 +101,12 @@ cmake -S . -B build-mac -G Xcode \
   -DAE_SDK_ROOT="$AE_SDK_ROOT"
 
 cmake --build build-mac --config Release --target zsoda_plugin
+cmake --build build-mac --config Release --target zsoda_plugin_bundle
 ```
 
-Current expected artifact (scaffold state):
+Current expected artifacts:
 - `build-mac/plugin/Release/libzsoda_plugin.a` (or generator-specific static library output)
+- `build-mac/plugin/Release/ZSoda.dylib` (`zsoda_plugin_bundle` target; `.plugin` bundle packaging is still pending)
 
 Final-mile packaging path (after AE SDK target wiring lands):
 
