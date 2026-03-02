@@ -17,6 +17,7 @@ void TestRenderParamConversion() {
   ae.cache_enabled = false;
   ae.tile_size = 32;
   ae.overlap = 300;
+  ae.vram_budget_mb = -24;
 
   const auto render = zsoda::ae::ToRenderParams(ae);
   assert(render.model_id == "depth-anything-v3-large");
@@ -29,6 +30,7 @@ void TestRenderParamConversion() {
   assert(!render.cache_enabled);
   assert(render.tile_size == 64);
   assert(render.overlap == 32);
+  assert(render.vram_budget_mb == 0);
 }
 
 void TestModelMenu() {

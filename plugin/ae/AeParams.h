@@ -19,6 +19,7 @@ enum class AeParamId {
   kCacheEnable = 8,
   kTileSize = 9,
   kOverlap = 10,
+  kVramBudgetMb = 11,
 };
 
 enum class AeOutputMode {
@@ -37,6 +38,7 @@ struct AeParamValues {
   bool cache_enabled = true;
   int tile_size = 512;
   int overlap = 32;
+  int vram_budget_mb = 0;
 };
 
 AeParamValues DefaultAeParams();

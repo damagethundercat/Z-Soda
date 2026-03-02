@@ -17,12 +17,14 @@ struct RenderCacheKey {
   int quality = 0;
   bool invert = false;
   bool slice_mode = false;
+  int vram_budget_mb = 0;
   std::uint64_t model_hash = 0;
   std::uint64_t frame_hash = 0;
 
   bool operator==(const RenderCacheKey& other) const {
     return width == other.width && height == other.height && quality == other.quality &&
-           invert == other.invert && slice_mode == other.slice_mode && model_hash == other.model_hash &&
+           invert == other.invert && slice_mode == other.slice_mode &&
+           vram_budget_mb == other.vram_budget_mb && model_hash == other.model_hash &&
            frame_hash == other.frame_hash;
   }
 };

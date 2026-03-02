@@ -251,6 +251,42 @@ void TestAdaptiveFallbackHandlesInvalidTileConfiguration() {
   }
 }
 
+void TestDownscaledFallbackUsesVramBudgetHint() {
+  auto engine = std::make_shared<ScriptedInferenceEngine>();
+  std::string error;
+  assert(engine->Initialize("depth-anything-v3-small", &error));
+  engine->SetBehaviorForWidth(1024, ScriptedInferenceEngine::Behavior::kFail, "direct oom");
+  engine->SetBehaviorForWidth(400, ScriptedInferenceEngine::Behavior::kFail, "tile[400] oom");
+  engine->SetBehaviorForWidth(200, ScriptedInferenceEngine::Behavior::kFail, "tile[200] oom");
+  engine->SetBehaviorForWidth(100, ScriptedInferenceEngine::Behavior::kFail, "tile[100] oom");
+
+  zsoda::core::RenderPipeline pipeline(engine);
+  const auto src = MakeSourceFrame(1024, 1024);
+
+  zsoda::core::RenderParams params;
+  params.model_id = "depth-anything-v3-small";
+  params.frame_hash = 104;
+  params.quality = 3;
+  params.tile_size = 400;
+  params.overlap = 0;
+  params.vram_budget_mb = 1;
+
+  const auto output = pipeline.Render(src, params);
+  assert(output.status == zsoda::core::RenderStatus::kFallbackDownscaled);
+  assert(Contains(output.message, "downscaled fallback succeeded"));
+
+  const auto& run_widths = engine->RunWidths();
+  const auto& run_qualities = engine->RunQualities();
+  assert(run_widths.size() == run_qualities.size());
+  assert(run_widths.size() >= 5U);
+  assert(run_widths[0] == 1024);
+  assert(run_widths[1] == 400);
+  assert(run_widths[2] == 200);
+  assert(run_widths[3] == 100);
+  assert(run_widths.back() == 256);
+  assert(run_qualities.back() == 1);
+}
+
 void TestFallbackOutputCachingSeparatedByModel() {
   auto engine = std::make_shared<ScriptedInferenceEngine>();
   std::string error;
@@ -351,6 +387,7 @@ void RunRenderPipelineTests() {
   TestFallbackSequenceDownscaledAfterTiledFailure();
   TestAdaptiveFallbackRetriesRecordStageDiagnostics();
   TestAdaptiveFallbackHandlesInvalidTileConfiguration();
+  TestDownscaledFallbackUsesVramBudgetHint();
   TestFallbackOutputCachingSeparatedByModel();
   TestSafeOutputAfterAllStagesFail();
   TestSafeOutputOnException();

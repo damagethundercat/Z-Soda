@@ -1,8 +1,10 @@
 #include "core/RenderPipeline.h"
 
 #include <algorithm>
+#include <cmath>
 #include <exception>
 #include <functional>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -14,6 +16,9 @@ namespace {
 
 constexpr int kMaxAdaptiveTileAttempts = 4;
 constexpr int kMinAdaptiveRetryTileSize = 64;
+constexpr int kMinDownscaleDivisor = 2;
+constexpr int kMaxDownscaleDivisor = 8;
+constexpr std::size_t kFallbackWorkingSetBytesPerPixelEstimate = 16U;
 
 FrameBuffer CropGray(const FrameBuffer& source, const TileRect& tile) {
   FrameDesc desc;
@@ -88,6 +93,40 @@ std::string JoinAttemptDetails(const std::vector<std::string>& attempts) {
     joined += attempts[i];
   }
   return joined;
+}
+
+int ComputeDownscaleDivisor(const FrameDesc& source_desc, int vram_budget_mb) {
+  if (!IsValid(source_desc)) {
+    return kMinDownscaleDivisor;
+  }
+  if (vram_budget_mb <= 0) {
+    return kMinDownscaleDivisor;
+  }
+
+  const std::size_t width = static_cast<std::size_t>(source_desc.width);
+  const std::size_t height = static_cast<std::size_t>(source_desc.height);
+  if (width == 0 || height == 0) {
+    return kMinDownscaleDivisor;
+  }
+
+  const std::size_t max_size = std::numeric_limits<std::size_t>::max();
+  if (width > max_size / height) {
+    return kMaxDownscaleDivisor;
+  }
+  const std::size_t pixel_count = width * height;
+  if (pixel_count > max_size / kFallbackWorkingSetBytesPerPixelEstimate) {
+    return kMaxDownscaleDivisor;
+  }
+
+  const std::size_t estimated_bytes = pixel_count * kFallbackWorkingSetBytesPerPixelEstimate;
+  const std::size_t budget_bytes = static_cast<std::size_t>(vram_budget_mb) * 1024U * 1024U;
+  if (budget_bytes == 0 || estimated_bytes <= budget_bytes) {
+    return kMinDownscaleDivisor;
+  }
+
+  const double ratio = static_cast<double>(estimated_bytes) / static_cast<double>(budget_bytes);
+  const int divisor = static_cast<int>(std::ceil(std::sqrt(ratio)));
+  return std::clamp(divisor, kMinDownscaleDivisor, kMaxDownscaleDivisor);
 }
 
 struct PooledFrame {
@@ -196,7 +235,8 @@ RenderOutput RenderPipeline::Render(const FrameBuffer& source, const RenderParam
     }
 
     std::string downscaled_error;
-    if (RunDownscaledInference(source, params.quality, depth.get(), &downscaled_error)) {
+    if (RunDownscaledInference(source, params.quality, params.vram_budget_mb, depth.get(),
+                               &downscaled_error)) {
       std::string message =
           "downscaled fallback succeeded after direct/tiled failures (" + engine_->ActiveModelId() +
           ")";
@@ -246,6 +286,7 @@ RenderCacheKey RenderPipeline::BuildCacheKey(const FrameBuffer& source, const Re
   key.quality = params.quality;
   key.invert = params.invert;
   key.slice_mode = params.output_mode == OutputMode::kSlicing;
+  key.vram_budget_mb = std::max(0, params.vram_budget_mb);
   key.model_hash = static_cast<std::uint64_t>(std::hash<std::string>{}(params.model_id));
   key.frame_hash = params.frame_hash;
   return key;
@@ -312,6 +353,7 @@ bool RenderPipeline::RunTiledInference(const FrameBuffer& source,
 
 bool RenderPipeline::RunDownscaledInference(const FrameBuffer& source,
                                             int quality,
+                                            int vram_budget_mb,
                                             FrameBuffer* depth,
                                             std::string* error) const {
   if (depth == nullptr) {
@@ -327,8 +369,9 @@ bool RenderPipeline::RunDownscaledInference(const FrameBuffer& source,
     return false;
   }
 
-  const int downscaled_width = std::max(1, source.desc().width / 2);
-  const int downscaled_height = std::max(1, source.desc().height / 2);
+  const int downscale_divisor = ComputeDownscaleDivisor(source.desc(), vram_budget_mb);
+  const int downscaled_width = std::max(1, source.desc().width / downscale_divisor);
+  const int downscaled_height = std::max(1, source.desc().height / downscale_divisor);
   if (downscaled_width == source.desc().width && downscaled_height == source.desc().height) {
     if (error != nullptr) {
       *error = "source frame is too small for downscaled fallback";
@@ -343,7 +386,8 @@ bool RenderPipeline::RunDownscaledInference(const FrameBuffer& source,
   FrameBuffer downscaled_depth(downscaled_depth_desc);
 
   std::string downscaled_run_error;
-  const int downscaled_quality = std::max(1, quality - 1);
+  const int quality_penalty = std::max(1, downscale_divisor / 2);
+  const int downscaled_quality = std::max(1, quality - quality_penalty);
   if (!RunInference(downscaled_source, downscaled_quality, &downscaled_depth, &downscaled_run_error)) {
     if (error != nullptr) {
       *error = downscaled_run_error.empty() ? "downscaled run failed" : downscaled_run_error;

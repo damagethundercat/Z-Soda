@@ -31,6 +31,7 @@ struct RenderParams {
   bool cache_enabled = true;
   int tile_size = 512;
   int overlap = 32;
+  int vram_budget_mb = 0;
   std::uint64_t frame_hash = 0;
 };
 
@@ -67,6 +68,7 @@ class RenderPipeline {
                          std::string* error) const;
   bool RunDownscaledInference(const FrameBuffer& source,
                               int quality,
+                              int vram_budget_mb,
                               FrameBuffer* depth,
                               std::string* error) const;
   FrameBuffer BuildOutput(const FrameBuffer& normalized_depth, const RenderParams& params) const;

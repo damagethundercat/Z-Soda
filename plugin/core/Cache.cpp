@@ -18,6 +18,7 @@ std::size_t RenderCacheKeyHash::operator()(const RenderCacheKey& key) const {
   h = HashCombine(h, std::hash<int>{}(key.quality));
   h = HashCombine(h, std::hash<bool>{}(key.invert));
   h = HashCombine(h, std::hash<bool>{}(key.slice_mode));
+  h = HashCombine(h, std::hash<int>{}(key.vram_budget_mb));
   h = HashCombine(h, std::hash<std::uint64_t>{}(key.model_hash));
   h = HashCombine(h, std::hash<std::uint64_t>{}(key.frame_hash));
   return h;

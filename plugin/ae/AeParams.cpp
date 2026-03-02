@@ -25,6 +25,7 @@ zsoda::core::RenderParams ToRenderParams(const AeParamValues& input) {
   params.cache_enabled = input.cache_enabled;
   params.tile_size = std::max(64, input.tile_size);
   params.overlap = std::clamp(input.overlap, 0, params.tile_size / 2);
+  params.vram_budget_mb = std::max(0, input.vram_budget_mb);
   return params;
 }
 
