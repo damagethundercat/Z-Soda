@@ -20,6 +20,10 @@ constexpr int kMinDownscaleDivisor = 2;
 constexpr int kMaxDownscaleDivisor = 8;
 constexpr std::size_t kFallbackWorkingSetBytesPerPixelEstimate = 16U;
 
+const char* SafeCStr(const char* value, const char* fallback = "<null>") {
+  return value != nullptr ? value : fallback;
+}
+
 FrameBuffer CropGray(const FrameBuffer& source, const TileRect& tile) {
   FrameDesc desc;
   desc.width = tile.width;
@@ -265,7 +269,7 @@ RenderOutput RenderPipeline::Render(const FrameBuffer& source, const RenderParam
     }
     return SafeOutput(source, message);
   } catch (const std::exception& ex) {
-    return SafeOutput(source, std::string("render exception: ") + ex.what());
+    return SafeOutput(source, std::string("render exception: ") + SafeCStr(ex.what()));
   } catch (...) {
     return SafeOutput(source, "render exception: unknown");
   }

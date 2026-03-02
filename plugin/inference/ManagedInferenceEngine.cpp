@@ -9,6 +9,13 @@
 #endif
 
 namespace zsoda::inference {
+namespace {
+
+const char* SafeCStr(const char* value, const char* fallback = "<null>") {
+  return value != nullptr ? value : fallback;
+}
+
+}  // namespace
 
 ManagedInferenceEngine::ManagedInferenceEngine(std::string model_root)
     : ManagedInferenceEngine(std::move(model_root), RuntimeOptions{}) {}
@@ -144,18 +151,18 @@ InferenceBackendStatus ManagedInferenceEngine::BackendStatus() const {
   status.active_backend_name = RuntimeBackendName(active_backend_);
 #if defined(ZSODA_WITH_ONNX_RUNTIME)
   if (onnx_backend_ != nullptr) {
-    const std::string backend_name = onnx_backend_->Name();
+    const std::string backend_name = SafeCStr(onnx_backend_->Name(), "<null backend>");
     if (!using_fallback_engine_ && !status.last_run_used_fallback) {
       status.engine_name = backend_name;
     } else {
-      status.engine_name =
-          std::string(fallback_engine_.Name()) + " (fallback_from=" + backend_name + ")";
+      status.engine_name = std::string(SafeCStr(fallback_engine_.Name(), "DummyDepthEngine")) +
+                           " (fallback_from=" + backend_name + ")";
     }
   } else {
-    status.engine_name = fallback_engine_.Name();
+    status.engine_name = SafeCStr(fallback_engine_.Name(), "DummyDepthEngine");
   }
 #else
-  status.engine_name = fallback_engine_.Name();
+  status.engine_name = SafeCStr(fallback_engine_.Name(), "DummyDepthEngine");
 #endif
   status.fallback_reason = fallback_reason_;
   return status;

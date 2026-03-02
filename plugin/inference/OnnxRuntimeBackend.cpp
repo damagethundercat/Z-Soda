@@ -75,6 +75,10 @@ std::string ToLowerCopy(std::string_view text) {
   return lowered;
 }
 
+const char* SafeCStr(const char* value, const char* fallback = "<null>") {
+  return value != nullptr ? value : fallback;
+}
+
 std::string BuildBackendName(RuntimeBackend active_backend,
                              std::string_view runtime_version = {},
                              std::string_view runtime_library_path = {},
@@ -131,7 +135,8 @@ std::string ResolveConfiguredOrtLibraryPath(const RuntimeOptions& options) {
     return options.onnxruntime_library_path;
   }
 #if defined(ZSODA_ONNXRUNTIME_DLL_PATH_HINT_SET) && ZSODA_ONNXRUNTIME_DLL_PATH_HINT_SET
-  return std::string(ZSODA_ONNXRUNTIME_DLL_PATH_HINT);
+  const char* hint = ZSODA_ONNXRUNTIME_DLL_PATH_HINT;
+  return hint != nullptr ? std::string(hint) : std::string();
 #else
   return {};
 #endif
@@ -687,7 +692,7 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
     loader_diagnostics_ = loader_->Diagnostics();
     backend_name_ = BuildBackendName(active_backend_,
                                      loader_->RuntimeVersionString(),
-                                     loader_->LoadedLibraryPath(),
+                                     loader_->LoadedDllPath(),
                                      provider_note_);
 
     try {
@@ -699,7 +704,8 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
     } catch (const Ort::Exception& ex) {
       initialized_ = false;
       if (error != nullptr) {
-        *error = WithRuntimeDiagnostics(std::string("onnx runtime initialize failed: ") + ex.what());
+        *error = WithRuntimeDiagnostics(std::string("onnx runtime initialize failed: ") +
+                                        SafeCStr(ex.what()));
       }
       return false;
     }
@@ -810,7 +816,8 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
       input_name_.clear();
       output_name_.clear();
       if (error != nullptr) {
-        *error = WithRuntimeDiagnostics(std::string("onnx runtime session create failed: ") + ex.what());
+        *error = WithRuntimeDiagnostics(std::string("onnx runtime session create failed: ") +
+                                        SafeCStr(ex.what()));
       }
       return false;
     }
@@ -913,7 +920,8 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
       }
     } catch (const Ort::Exception& ex) {
       if (error != nullptr) {
-        *error = WithRuntimeDiagnostics(std::string("onnx runtime run failed: ") + ex.what());
+        *error = WithRuntimeDiagnostics(std::string("onnx runtime run failed: ") +
+                                        SafeCStr(ex.what()));
       }
       return false;
     }
