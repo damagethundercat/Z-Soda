@@ -4,7 +4,7 @@
 
 ## 1. 전체 진행률
 - 전체 진행률: **99%** (`PLAN.md`의 `P1`~`P5` 기준, `P3/P4/P5`는 마무리 단계)
-- 마지막 업데이트: **2026-03-02** (`tools/build_aex.ps1` PowerShell 문자열 보간 파서 오류(`$Label:`) 수정)
+- 마지막 업데이트: **2026-03-02** (로컬 Windows 에이전트용 빌드 핸드오프 문서 추가)
 - 갱신 원칙: **작업 단위 완료 시 즉시 업데이트**
 
 ## 2. 현재 작업 상태
@@ -54,6 +54,7 @@
 - [x] `D37` 문서 동기화: 문서 인덱스에 새 문서/스크립트 참조 링크 추가 + `사용자 테스트 가능 시점` 섹션 반영 (`README.md`, `docs/build/README.md`, `PROGRESS.md`)
 - [x] `D38` Windows 빌드/검증 고도화: `tools/build_aex.ps1` 추가(설정/빌드/산출물 SHA256/MediaCore 복사 옵션), `tools/package_plugin.ps1`에 `-OrtRuntimeDllPath` 옵션 추가, ORT 런타임 배포 노트/AE 스모크 테스트 체크리스트 추가 (`tools/build_aex.ps1`, `tools/package_plugin.ps1`, `docs/build/ORT_RUNTIME_DEPLOY.md`, `docs/build/AE_SMOKE_TEST.md`, `README.md`, `docs/build/README.md`)
 - [x] `D39` Windows 실제 실행 이슈 수정: `tools/build_aex.ps1`의 `Write-Host "$Label:"`를 `Write-Host "$($Label):"`로 변경해 PowerShell 파서 오류 제거 (`tools/build_aex.ps1`)
+- [x] `D40` 로컬 Windows 에이전트 인수인계 문서 추가: 동기화/환경변수/빌드/배치/스모크 테스트/실패 보고 템플릿 정리 (`docs/build/LOCAL_AGENT_HANDOFF.md`, `docs/build/README.md`)
 
 ## 4. 남은 작업
 1. `P3` 구현: AE 파라미터와 모델 선택 UI(`model_id`)를 실제 `PARAM_SETUP` 등록 코드와 AE 호스트에서 실검증

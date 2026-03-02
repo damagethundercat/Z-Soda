@@ -6,6 +6,8 @@ This document records the packaging path from CMake build output to After Effect
 
 - Leader acceptance/remaining gates note:
   - `docs/build/2026-03-02-leader-review-note.md`
+- Local Windows agent handoff:
+  - `docs/build/LOCAL_AGENT_HANDOFF.md`
 - AE smoke test guide:
   - `docs/build/AE_SMOKE_TEST.md`
 - ORT runtime deploy note:

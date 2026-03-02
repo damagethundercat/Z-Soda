@@ -10,6 +10,7 @@ Depth Scanner-style After Effects plugin scaffold.
 - Perf/QA harness guide: `docs/perf/README.md`
 - Final-mile packaging guide (.aex/.plugin): `docs/build/README.md`
 - Leader review note (acceptance/remaining gates): `docs/build/2026-03-02-leader-review-note.md`
+- Local Windows agent handoff guide: `docs/build/LOCAL_AGENT_HANDOFF.md`
 - AE smoke test guide: `docs/build/AE_SMOKE_TEST.md`
 - ORT runtime deploy note: `docs/build/ORT_RUNTIME_DEPLOY.md`
 - Windows `.aex` build helper script: `tools/build_aex.ps1`
