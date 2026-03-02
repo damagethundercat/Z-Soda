@@ -27,6 +27,7 @@
 - [x] `D10` `AeCommandRouter`에 파라미터 업데이트/모델 메뉴/렌더 바인딩 연결
 - [x] `D11` AE 스텁 엔트리에 모델 설정/그레이 프레임 렌더 테스트 API 추가
 - [x] `D12` 팀 운영 문서(`TEAM.md`) 및 리서치 노트(`docs/research/*`) 추가
+- [x] `D13` 체크포인트 커밋/원격 푸시 완료 (`main` -> `origin/main`, commit: `348fec7`)
 
 ## 4. 남은 작업
 1. `P3` 구현: AE 파라미터와 모델 선택 UI(`model_id`)를 실제 핸들러에 연결
