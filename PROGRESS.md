@@ -4,15 +4,15 @@
 
 ## 1. 전체 진행률
 - 전체 진행률: **99%** (`PLAN.md`의 `P1`~`P5` 기준, `P3/P4/P5`는 마무리 단계)
-- 마지막 업데이트: **2026-03-02** (로컬 Windows 에이전트용 빌드 핸드오프 문서 추가)
+- 마지막 업데이트: **2026-03-02** (AE 적용 크래시 원인(outflags mismatch) 수정 반영)
 - 갱신 원칙: **작업 단위 완료 시 즉시 업데이트**
 
 ## 2. 현재 작업 상태
 - [x] `P1` 플러그인 기본 구조 및 AE SDK 핸들러 스캐폴딩 — 상태: `완료`
 - [x] `P2` 모델/세션 생명주기 + 캐시 우선 렌더 파이프라인 — 상태: `완료`
-- [ ] `P3` Depth Map/Slicing 모드 + 8/16/32 bpc 경계 변환 — 상태: `진행중 (93%)` (완료: `PF_Cmd_USER_CHANGED_PARAM` 매핑+`params[]` 추출/렌더 override, `PARAM_SETUP` `PF_ADD_*` 등록 스캐폴드, SDK 픽셀 힌트+stride 결합 포맷 추론 / 남은 핵심: 실제 AE SDK 환경에서 파라미터 UI 등록/렌더 연동 실검증)
+- [ ] `P3` Depth Map/Slicing 모드 + 8/16/32 bpc 경계 변환 — 상태: `진행중 (95%)` (완료: `PF_Cmd_USER_CHANGED_PARAM` 매핑+`params[]` 추출/렌더 override, `PARAM_SETUP` `PF_ADD_*` 등록 스캐폴드, SDK 픽셀 힌트+stride 결합 포맷 추론, AE SDK 25.6 헤더 호환 컴파일 수정 / 남은 핵심: 실제 AE 호스트에서 파라미터 UI 등록/렌더 연동 실검증)
 - [ ] `P4` OOM/백엔드 실패 대비 타일링·다운스케일 폴백 — 상태: `진행중 (88%)` (완료: `직접->타일->다운스케일->안전 출력` 폴백 체인, 적응형 타일 재시도+VRAM budget 기반 비율 조정 / 남은 핵심: SDK/OS 메모리 신호 연계, OOM/백엔드 실패 원인별 정책 세분화)
-- [ ] `P5` 테스트/벤치마크/안정성 검증 + 패키징 스크립트 — 상태: `진행중 (86%)` (완료: perf harness+CTest 등록, 로컬/CI 공용 검증 스크립트·워크플로, Windows `.aex` 빌드 헬퍼(`tools/build_aex.ps1`), ORT 런타임 배포 노트/AE 스모크 테스트 체크리스트 추가 / 남은 핵심: 네이티브 host 기준 최종 `.aex/.plugin` 실검증, ORT API ON 경로 실빌드 검증)
+- [ ] `P5` 테스트/벤치마크/안정성 검증 + 패키징 스크립트 — 상태: `진행중 (94%)` (완료: perf harness+CTest 등록, 로컬/CI 공용 검증 스크립트·워크플로, Windows `.aex` 빌드 헬퍼(`tools/build_aex.ps1`), ORT 런타임 배포 노트/AE 스모크 테스트 체크리스트 추가, ORT API ON + SDK ON 테스트 빌드/단위 테스트 검증, MediaCore 배치 및 산출물 해시 일치 검증, `package_plugin.ps1` Windows 패키지/manifest/ORT DLL/SHA256 산출 확인 / 남은 핵심: 네이티브 host 기준 AE 스모크/렌더 큐 실검증)
 
 ## 3. 최근 완료 작업
 - [x] `D1` 문서 역할 분리 완료 (`AGENTS.md` 필수 지침, `PLAN.md` 실행 계획, `PROGRESS.md` 진행 현황)
@@ -55,6 +55,13 @@
 - [x] `D38` Windows 빌드/검증 고도화: `tools/build_aex.ps1` 추가(설정/빌드/산출물 SHA256/MediaCore 복사 옵션), `tools/package_plugin.ps1`에 `-OrtRuntimeDllPath` 옵션 추가, ORT 런타임 배포 노트/AE 스모크 테스트 체크리스트 추가 (`tools/build_aex.ps1`, `tools/package_plugin.ps1`, `docs/build/ORT_RUNTIME_DEPLOY.md`, `docs/build/AE_SMOKE_TEST.md`, `README.md`, `docs/build/README.md`)
 - [x] `D39` Windows 실제 실행 이슈 수정: `tools/build_aex.ps1`의 `Write-Host "$Label:"`를 `Write-Host "$($Label):"`로 변경해 PowerShell 파서 오류 제거 (`tools/build_aex.ps1`)
 - [x] `D40` 로컬 Windows 에이전트 인수인계 문서 추가: 동기화/환경변수/빌드/배치/스모크 테스트/실패 보고 템플릿 정리 (`docs/build/LOCAL_AGENT_HANDOFF.md`, `docs/build/README.md`)
+- [x] `D41` 로컬 Windows 실빌드 검증: AE SDK 25.6에서 `PF_InData/PF_LayerDef` 멤버 호환(`pixel_format/pix_format`) 컴파일 수정 후 `tools/build_aex.ps1`로 `ZSoda.aex` 산출 확인, `ZSODA_WITH_ONNX_RUNTIME_API=ON` + `ZSODA_WITH_AE_SDK=ON` 테스트 빌드 및 `zsoda_tests` 통과 검증 (`plugin/ae/AeHostAdapter.cpp`, `build-win/*`, `build-win-tests/*`)
+- [x] `D42` 로컬 핸드오프 문서 보강: MediaCore 배치 권한 이슈(`Access is denied`) 및 ORT DLL 선로딩(System32 구버전) 충돌 대응 가이드 추가 (`docs/build/LOCAL_AGENT_HANDOFF.md`)
+- [x] `D43` 관리자 권한 배치 검증: `ZSoda.aex`/`onnxruntime.dll`를 `C:\Program Files\Adobe\Common\Plug-ins\7.0\MediaCore`에 복사 완료 및 소스-대상 SHA256 일치 검증
+- [x] `D44` Windows 배포 패키징 검증: `tools/package_plugin.ps1`로 `dist/windows-release`에 `.aex`/`models.manifest`/`onnxruntime.dll`/`.sha256` 산출 확인
+- [x] `D45` AE 로더 인식 이슈 수정: `ZSoda.aex`가 `No loaders recognized`로 Ignore 되던 문제를 `EffectMain` export 강제(`__declspec(dllexport)`)로 수정, 재빌드 후 export 테이블(`EffectMain`) 및 MediaCore 재배치 해시 검증 (`plugin/ae/AePluginEntry.cpp`, `build-win/plugin/Release/ZSoda.aex`)
+- [x] `D46` Windows PiPL 경로 연결: `ZSodaPiPL.r` 추가 + CMake에 `cl -> PiPLtool -> rc` 생성 파이프라인 연결해 `.aex` 빌드 시 PiPL 리소스 포함, MediaCore 최신 빌드 재배치 (`plugin/ae/ZSodaPiPL.r`, `plugin/CMakeLists.txt`, `build-win/plugin/pipl/*`)
+- [x] `D47` AE 적용 크래시 대응: Sentry breadcrumb의 `global outflags mismatch (code 4008120 vs PiPL 4008020)` 원인 확인 후 `PF_Cmd_GLOBAL_SETUP`에서 `my_version/out_flags/out_flags2` 명시 세팅 및 PiPL outflags 동기화, 재빌드/재배치/단위 테스트 통과 (`plugin/ae/AeHostAdapter.cpp`, `plugin/ae/ZSodaPiPL.r`, `build-win/plugin/Release/ZSoda.aex`)
 
 ## 4. 남은 작업
 1. `P3` 구현: AE 파라미터와 모델 선택 UI(`model_id`)를 실제 `PARAM_SETUP` 등록 코드와 AE 호스트에서 실검증
@@ -62,15 +69,15 @@
 3. `P3` 구현: `PF_Cmd_RENDER` payload에서 SDK 픽셀 타입 힌트 결합 경로의 16/32 bpc 실호스트 검증
 4. `P4` 잔여: OOM/백엔드 실패 원인별 정책 세분화(타일 자동 축소 + VRAM 힌트 기반 다운스케일 비율은 반영 완료, SDK/OS별 메모리 신호 연계 남음)
 5. `P5` 구축: 성능/회귀/장시간 안정성 테스트 파이프라인 정리(로컬/CI 기본 자동화 완료, 네이티브 host 검증 파이프라인 추가 필요)
-6. `P5` 구축: 문서화된 최종 패키징 경로를 실제 CMake 타깃(`.aex/.plugin`) 및 배포 스크립트로 연결 (Windows 빌드/패키징 스크립트는 추가 완료, 네이티브 호스트 실검증 남음)
-7. ORT API 경로의 네이티브 실검증 (현재 환경은 ORT 헤더/라이브러리 부재로 API ON 빌드 미검증)
-8. CMake 기반 빌드/테스트 루트 검증 (`cmake` 도구 설치 후 재검증)
-9. ORT 백엔드 GPU 프로바이더(CUDA/DirectML/Metal/CoreML) 분기 연결 및 OS별 fallback 정책 문서화
-10. macOS 코드서명/노타리 최종 경로 마감 및 배포용 번들 검증
+6. `P5` 구축: 문서화된 최종 패키징 경로를 실제 CMake 타깃(`.aex/.plugin`) 및 배포 스크립트로 연결 (Windows 빌드/패키징/배치 검증 완료, AE 스모크/렌더 큐 실검증 남음)
+7. ORT 백엔드 GPU 프로바이더(CUDA/DirectML/Metal/CoreML) 분기 연결 및 OS별 fallback 정책 문서화
+8. macOS 코드서명/노타리 최종 경로 마감 및 배포용 번들 검증
 
 ## 5. 이슈 및 리스크
 - 플러그인 스캐폴드는 구축되었고 SDK 바인딩 경로를 확장했지만, AE 호스트 실환경에서의 최종 검증이 남아 있음.
 - ONNX Runtime/CUDA/DirectML/Metal/CoreML 실추론 경로가 아직 연결되지 않음.
+- Windows 환경에서 `C:\Windows\System32\onnxruntime.dll`(구버전)이 우선 로드되면 ORT API 버전 충돌이 발생할 수 있어, 실행 폴더 기준 런타임 DLL 버전 고정 전략이 필요함.
+- AE가 플러그인을 스캔해도 로더가 인식하지 못하면 `Plugin Loading.log`에 `No loaders recognized ... Ignore`로 남으므로, 배치 후에는 export/PiPL 인식 여부를 로그로 재확인해야 함.
 - 리스크 대응:
   - 모델 선택/캐시/폴백 경로를 먼저 안정화해 AE 크래시 리스크를 최소화
   - ORT 연동은 CPU 경로부터 시작 후 GPU 백엔드를 OS별로 점진 확장
@@ -78,3 +85,8 @@
 ## 6. 다음 공유 예정
 - 다음 공유 시점: `P3`의 다음 작업 단위(`PF_Cmd_RENDER` payload 디코딩 + `PixelConversion` 실제 연결) 완료 직후
 - 다음 공유 내용: SDK payload->내부 프레임 변환 코드, 테스트/벤치 상태, GitHub 반영 상태
+
+## 7. Local Troubleshooting Notes (2026-03-02)
+- [x] `D48` Cleared AE crash-blocklist state for `ZSoda Depth` by removing `Effect Crashed.txt` and deleting the `ZSoda Depth 65536` `lastCrashedDate` entry in `Adobe After Effects 25.0 Prefs-effects.txt` before retest.
+- [x] `D49` 로컬 크래시 재분석 결과(최신 Sentry `0ea8ab30-95ac-4967-8688-90ef01782626`)에서 `global outflags mismatch (code 4008120 vs PiPL 4008020)` 재확인 후, 플러그인 `GlobalSetup`/PiPL outflags를 `0x04008020`으로 통일하고 재빌드/MediaCore 재배포(SHA256 `9773ec07b6247ce86273253dddfcb3a2d3760798772aceec6fc1cd4c9fcd3b7d`) 완료.
+- [x] `D50` 반복 크래시 UUID(`471fec5f-fa20-4dc7-a552-f44ef1074861`) 재분석에서 동일 outflags mismatch(`code 4008120 vs PiPL 4008020`) 확인 후, ZSoda outflags를 `0x04008120`으로 재통일 재빌드하고 MediaCore 재배포(SHA256 `fcb5f1538885131cc7e4e84054ba3140e9b98be07f8f55da77047991f572d446`) 완료. 추가로 AE 레지스트리 캐시의 `PluginCache\en_US\ZSoda.aex_*` Ignore 키를 삭제해 구캐시 강제 참조 상태를 해제.

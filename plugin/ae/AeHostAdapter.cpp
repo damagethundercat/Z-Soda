@@ -78,6 +78,8 @@ constexpr int kAeSdkNumParams = static_cast<int>(AeParamId::kVramBudgetMb) + 1;
 constexpr int kModelPopupChoices = 4;
 constexpr int kQualityPopupChoices = 3;
 constexpr int kOutputModePopupChoices = 2;
+constexpr std::uint32_t kAeGlobalOutFlags = 0x04008120U;
+constexpr std::uint32_t kAeGlobalOutFlags2 = 0x00000000U;
 
 constexpr char kModelPopupLabels[] = "Depth Small|Depth Base|Depth Large|MiDaS DPT Large";
 constexpr char kQualityPopupLabels[] = "Draft|Balanced|Best";
@@ -96,20 +98,6 @@ constexpr int kSliderPrecisionWhole = PF_Precision_WHOLE;
 #else
 constexpr int kSliderPrecisionWhole = 0;
 #endif
-
-template <typename T, typename = void>
-struct HasPixelFormatMember : std::false_type {};
-
-template <typename T>
-struct HasPixelFormatMember<T, std::void_t<decltype(std::declval<const T&>().pixel_format)>>
-    : std::true_type {};
-
-template <typename T, typename = void>
-struct HasPixFormatMember : std::false_type {};
-
-template <typename T>
-struct HasPixFormatMember<T, std::void_t<decltype(std::declval<const T&>().pix_format)>>
-    : std::true_type {};
 
 std::optional<zsoda::core::PixelFormat> ParseSdkPixelFormatHint(std::int64_t pixel_format_hint) {
 #if defined(PF_PixelFormat_ARGB32)
@@ -130,20 +118,20 @@ std::optional<zsoda::core::PixelFormat> ParseSdkPixelFormatHint(std::int64_t pix
   return std::nullopt;
 }
 
-std::optional<zsoda::core::PixelFormat> InferHostRenderPixelFormatFromSdkInData(
-    const PF_InData* in_data) {
-  if (in_data == nullptr) {
+template <typename T>
+std::optional<zsoda::core::PixelFormat> ParseSdkPixelFormatMemberHint(const T* value) {
+  if (value == nullptr) {
     return std::nullopt;
   }
 
-  if constexpr (HasPixelFormatMember<PF_InData>::value) {
-    const auto parsed = ParseSdkPixelFormatHint(static_cast<std::int64_t>(in_data->pixel_format));
+  if constexpr (requires(const T& item) { item.pixel_format; }) {
+    const auto parsed = ParseSdkPixelFormatHint(static_cast<std::int64_t>(value->pixel_format));
     if (parsed.has_value()) {
       return parsed;
     }
   }
-  if constexpr (HasPixFormatMember<PF_InData>::value) {
-    const auto parsed = ParseSdkPixelFormatHint(static_cast<std::int64_t>(in_data->pix_format));
+  if constexpr (requires(const T& item) { item.pix_format; }) {
+    const auto parsed = ParseSdkPixelFormatHint(static_cast<std::int64_t>(value->pix_format));
     if (parsed.has_value()) {
       return parsed;
     }
@@ -151,25 +139,14 @@ std::optional<zsoda::core::PixelFormat> InferHostRenderPixelFormatFromSdkInData(
   return std::nullopt;
 }
 
+std::optional<zsoda::core::PixelFormat> InferHostRenderPixelFormatFromSdkInData(
+    const PF_InData* in_data) {
+  return ParseSdkPixelFormatMemberHint(in_data);
+}
+
 std::optional<zsoda::core::PixelFormat> InferHostRenderPixelFormatFromSdkWorldMeta(
     const PF_LayerDef* world) {
-  if (world == nullptr) {
-    return std::nullopt;
-  }
-
-  if constexpr (HasPixelFormatMember<PF_LayerDef>::value) {
-    const auto parsed = ParseSdkPixelFormatHint(static_cast<std::int64_t>(world->pixel_format));
-    if (parsed.has_value()) {
-      return parsed;
-    }
-  }
-  if constexpr (HasPixFormatMember<PF_LayerDef>::value) {
-    const auto parsed = ParseSdkPixelFormatHint(static_cast<std::int64_t>(world->pix_format));
-    if (parsed.has_value()) {
-      return parsed;
-    }
-  }
-  return std::nullopt;
+  return ParseSdkPixelFormatMemberHint(world);
 }
 
 std::optional<zsoda::core::PixelFormat> InferHostRenderPixelFormatFromSdkWorldFlags(
@@ -576,6 +553,22 @@ bool WireParamSetupPayload(const AeSdkEntryPayload& payload,
   return true;
 }
 
+bool WireGlobalSetupPayload(const AeSdkEntryPayload& payload,
+                            AeDispatchContext* dispatch,
+                            std::string* error) {
+  if (payload.out_data != nullptr) {
+#if defined(PF_VERSION) && defined(PF_Stage_DEVELOP)
+    payload.out_data->my_version = PF_VERSION(0, 2, 0, PF_Stage_DEVELOP, 0);
+#endif
+    payload.out_data->out_flags = static_cast<A_long>(kAeGlobalOutFlags);
+    payload.out_data->out_flags2 = static_cast<A_long>(kAeGlobalOutFlags2);
+  }
+
+  (void)dispatch;
+  (void)error;
+  return true;
+}
+
 bool WireParamUpdatePayload(const AeSdkEntryPayload& payload,
                             AeDispatchContext* dispatch,
                             std::string* error) {
@@ -891,6 +884,8 @@ bool BuildSdkDispatch(const AeSdkEntryPayload& payload,
   InitializeSdkHostDispatch(payload, mapped, dispatch, error);
 
   switch (mapped) {
+    case AeCommand::kGlobalSetup:
+      return WireGlobalSetupPayload(payload, dispatch, error);
     case AeCommand::kParamsSetup:
       return WireParamSetupPayload(payload, dispatch, error);
     case AeCommand::kUpdateParams:

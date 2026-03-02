@@ -212,7 +212,11 @@ extern "C" int ZSodaRenderHostBufferStub(const void* src,
 #if defined(ZSODA_WITH_AE_SDK) && ZSODA_WITH_AE_SDK
 
 #ifndef DllExport
+#if defined(_WIN32)
+#define DllExport __declspec(dllexport)
+#else
 #define DllExport
+#endif
 #endif
 
 extern "C" DllExport PF_Err EffectMain(PF_Cmd cmd,

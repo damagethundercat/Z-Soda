@@ -58,6 +58,10 @@ ORT DLL 복사:
 copy /Y "%ORT_DLL_DIR%\onnxruntime.dll" "C:\Program Files\Adobe\Common\Plug-ins\7.0\MediaCore\onnxruntime.dll"
 ```
 
+주의:
+- `C:\Program Files\Adobe\Common\Plug-ins\7.0\MediaCore` 쓰기 시 `Access is denied`가 나오면 **관리자 권한 PowerShell/CMD**로 재실행해야 한다.
+- 테스트/실행 중 `The requested API version [24] is not available ... [1, 17]`가 나오면 구버전 ORT DLL(`C:\Windows\System32\onnxruntime.dll`)이 먼저 로드된 상황일 수 있으므로, 실행 파일 폴더(예: 테스트 exe 폴더, 필요 시 AE 실행 폴더)에 빌드에 사용한 ORT 버전 DLL을 우선 배치한다.
+
 결과 확인:
 ```cmd
 if exist "build-win\plugin\Release\ZSoda.aex" (echo BUILD_AEX: OK) else (echo BUILD_AEX: MISSING)

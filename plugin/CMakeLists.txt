@@ -67,6 +67,36 @@ if(ZSODA_WITH_AE_SDK)
   if(WIN32)
     add_library(zsoda_aex MODULE ${ZSODA_PLUGIN_SOURCES})
     set_target_properties(zsoda_aex PROPERTIES OUTPUT_NAME "ZSoda" PREFIX "" SUFFIX ".aex")
+
+    set(ZSODA_PIPL_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/ae/ZSodaPiPL.r")
+    if(NOT EXISTS "${ZSODA_PIPL_SOURCE}")
+      message(FATAL_ERROR "Missing PiPL source file: ${ZSODA_PIPL_SOURCE}")
+    endif()
+
+    get_filename_component(AE_SDK_EXAMPLES_DIR "${AE_SDK_INCLUDE_DIR}" DIRECTORY)
+    set(AE_PIPL_TOOL "${AE_SDK_EXAMPLES_DIR}/Resources/PiPLtool.exe")
+    if(NOT EXISTS "${AE_PIPL_TOOL}")
+      message(FATAL_ERROR "PiPLtool.exe not found under AE SDK examples resources: ${AE_PIPL_TOOL}")
+    endif()
+
+    set(ZSODA_PIPL_BUILD_DIR "${CMAKE_CURRENT_BINARY_DIR}/pipl")
+    file(MAKE_DIRECTORY "${ZSODA_PIPL_BUILD_DIR}")
+    set(ZSODA_PIPL_RR "${ZSODA_PIPL_BUILD_DIR}/ZSodaPiPL.rr")
+    set(ZSODA_PIPL_RRC "${ZSODA_PIPL_BUILD_DIR}/ZSodaPiPL.rrc")
+    set(ZSODA_PIPL_RC "${ZSODA_PIPL_BUILD_DIR}/ZSodaPiPL.rc")
+
+    add_custom_command(
+      OUTPUT "${ZSODA_PIPL_RC}"
+      COMMAND "${CMAKE_CXX_COMPILER}" /nologo /P /EP /I "${AE_SDK_INCLUDE_DIR}" /Fi${ZSODA_PIPL_RR} "${ZSODA_PIPL_SOURCE}"
+      COMMAND "${AE_PIPL_TOOL}" "${ZSODA_PIPL_RR}" "${ZSODA_PIPL_RRC}"
+      COMMAND "${CMAKE_CXX_COMPILER}" /nologo /P /EP /D MSWindows /Fi${ZSODA_PIPL_RC} "${ZSODA_PIPL_RRC}"
+      DEPENDS "${ZSODA_PIPL_SOURCE}"
+      VERBATIM
+      COMMENT "Generating ZSoda PiPL resource"
+    )
+    set_source_files_properties("${ZSODA_PIPL_RC}" PROPERTIES GENERATED TRUE)
+    target_sources(zsoda_aex PRIVATE "${ZSODA_PIPL_RC}")
+
     list(APPEND ZSODA_PLUGIN_TARGETS zsoda_aex)
   elseif(APPLE)
     add_library(zsoda_plugin_bundle MODULE ${ZSODA_PLUGIN_SOURCES})
