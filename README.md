@@ -57,6 +57,10 @@ Current runtime note:
 - Packaging helper scripts:
   - `tools/package_plugin.sh`
   - `tools/package_plugin.ps1`
+- `.aex` 즉시 실행 가이드는 `docs/build/README.md`의 아래 섹션을 순서대로 확인:
+  - `Windows 빠른 시작 10단계`
+  - `실패 시 점검 5항목`
+  - `산출물 확인 명령`
 - Current workspace is Linux/WSL2 without `cmake`, AE SDK, MSBuild, or Xcode, so native packaging commands are not executable here.
 
 ## Build & Test

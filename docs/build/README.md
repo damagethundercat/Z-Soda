@@ -85,6 +85,106 @@ Copy-Item "build-win/plugin/Release/ZSoda.aex" `
   "C:\Program Files\Adobe\Common\Plug-ins\7.0\MediaCore\ZSoda.aex"
 ```
 
+## Windows 빠른 시작 10단계
+
+1. PowerShell(권장: "x64 Native Tools Command Prompt for VS 2022"에서 연 PowerShell)를 실행합니다.
+2. AE SDK/ONNX Runtime 경로를 환경 변수로 지정합니다.
+
+   ```powershell
+   $env:AE_SDK_ROOT = "C:\SDKs\AdobeAfterEffectsSDK"
+   $env:ORT_INCLUDE = "C:\onnxruntime\include"
+   $env:ORT_LIB = "C:\onnxruntime\lib\onnxruntime.lib"
+   ```
+
+3. 필수 파일 존재를 먼저 확인합니다.
+
+   ```powershell
+   Test-Path "$env:AE_SDK_ROOT\Examples\Headers\AE_Effect.h"
+   Test-Path "$env:ORT_INCLUDE\onnxruntime_cxx_api.h"
+   Test-Path "$env:ORT_LIB"
+   ```
+
+4. CMake configure를 수행합니다.
+
+   ```powershell
+   cmake -S . -B build-win -G "Visual Studio 17 2022" -A x64 `
+     -DZSODA_BUILD_TESTS=OFF `
+     -DZSODA_WITH_AE_SDK=ON `
+     -DZSODA_WITH_ONNX_RUNTIME=ON `
+     -DZSODA_WITH_ONNX_RUNTIME_API=ON `
+     -DONNXRUNTIME_INCLUDE_DIR="$env:ORT_INCLUDE" `
+     -DONNXRUNTIME_LIBRARY="$env:ORT_LIB" `
+     -DCMAKE_BUILD_TYPE=Release `
+     -DAE_SDK_ROOT="$env:AE_SDK_ROOT"
+   ```
+
+5. 공통 코어 타깃(`zsoda_plugin`)을 빌드합니다.
+
+   ```powershell
+   cmake --build build-win --config Release --target zsoda_plugin
+   ```
+
+6. 최종 `.aex` 타깃(`zsoda_aex`)을 빌드합니다.
+
+   ```powershell
+   cmake --build build-win --config Release --target zsoda_aex
+   ```
+
+7. 생성 산출물(`build-win/plugin/Release/ZSoda.aex`)을 확인합니다.
+8. After Effects를 종료한 상태에서 공유 플러그인 경로에 복사합니다.
+
+   ```powershell
+   Copy-Item "build-win/plugin/Release/ZSoda.aex" `
+     "C:\Program Files\Adobe\Common\Plug-ins\7.0\MediaCore\ZSoda.aex" -Force
+   ```
+
+9. After Effects를 재실행하고 플러그인 목록에서 `ZSoda` 로드 여부를 확인합니다.
+10. 배포 폴더가 필요하면 패키징 스크립트로 `.aex`를 수집합니다.
+
+   ```powershell
+   .\tools\package_plugin.ps1 -Platform windows -BuildDir build-win -OutputDir dist -IncludeManifest
+   ```
+
+## 실패 시 점검 5항목
+
+1. `AE_Effect.h` 미검출:
+   - 증상: configure 단계에서 AE SDK include 경로 관련 오류
+   - 점검: `Test-Path "$env:AE_SDK_ROOT\Examples\Headers\AE_Effect.h"`
+2. ONNX Runtime 헤더/라이브러리 불일치:
+   - 증상: configure 또는 link 단계 실패
+   - 점검: `Test-Path "$env:ORT_INCLUDE\onnxruntime_cxx_api.h"` / `Test-Path "$env:ORT_LIB"`
+3. 아키텍처 불일치(x86 vs x64):
+   - 증상: 링크 오류 또는 `.aex` 로드 실패
+   - 점검: configure에 `-A x64`가 포함되었는지 확인
+4. `zsoda_aex` 타깃 미생성:
+   - 증상: `cmake --build ... --target zsoda_aex` 실패
+   - 점검: configure 로그에서 `-DZSODA_WITH_AE_SDK=ON` 반영 여부 확인
+5. MediaCore 복사 실패(권한/경로):
+   - 증상: `Copy-Item` 접근 거부 또는 경로 오류
+   - 점검: 관리자 권한 PowerShell 사용, `C:\Program Files\Adobe\Common\Plug-ins\7.0\MediaCore` 존재 확인
+
+## 산출물 확인 명령
+
+```powershell
+$AexPath = "build-win/plugin/Release/ZSoda.aex"
+$MediaCorePath = "C:\Program Files\Adobe\Common\Plug-ins\7.0\MediaCore\ZSoda.aex"
+
+# 1) 빌드 산출물 존재 여부
+Test-Path $AexPath
+
+# 2) 파일 메타데이터(크기/수정시각)
+Get-Item $AexPath | Format-List FullName, Length, LastWriteTime
+
+# 3) 무결성 확인용 해시
+Get-FileHash $AexPath -Algorithm SHA256
+
+# 4) MediaCore 배포본 존재 여부 및 메타데이터
+Test-Path $MediaCorePath
+if (Test-Path $MediaCorePath) {
+  Get-Item $MediaCorePath | Format-List FullName, Length, LastWriteTime
+}
+```
+
 ## macOS Commands (zsh/bash)
 
 ```bash
