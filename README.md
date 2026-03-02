@@ -54,6 +54,9 @@ Current runtime note:
 - With `ZSODA_WITH_AE_SDK=ON`, CMake exposes native packaging targets:
   - Windows: `zsoda_aex` (`ZSoda.aex`)
   - macOS: `zsoda_plugin_bundle` (`ZSoda.plugin` bundle target with `Info.plist`)
+- Packaging helper scripts:
+  - `tools/package_plugin.sh`
+  - `tools/package_plugin.ps1`
 - Current workspace is Linux/WSL2 without `cmake`, AE SDK, MSBuild, or Xcode, so native packaging commands are not executable here.
 
 ## Build & Test

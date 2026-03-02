@@ -119,6 +119,24 @@ cp -R "build-mac/plugin/Release/ZSoda.plugin" \
   "/Library/Application Support/Adobe/Common/Plug-ins/7.0/MediaCore/"
 ```
 
+## Packaging Helper Scripts
+
+After a successful native build, use helper scripts to collect artifacts into a deployable folder.
+
+macOS/Linux shell:
+
+```bash
+bash tools/package_plugin.sh --platform windows --build-dir build-win --output-dir dist
+bash tools/package_plugin.sh --platform macos --build-dir build-mac --output-dir dist --include-manifest
+```
+
+Windows PowerShell:
+
+```powershell
+.\tools\package_plugin.ps1 -Platform windows -BuildDir build-win -OutputDir dist -IncludeManifest
+.\tools\package_plugin.ps1 -Platform macos -BuildDir build-mac -OutputDir dist
+```
+
 ## Expected Artifact Checklist
 
 When packaging integration is complete, verify:
