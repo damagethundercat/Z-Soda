@@ -25,6 +25,7 @@ struct AeHostCommandContext {
   void* in_data = nullptr;
   void* out_data = nullptr;
   void* params = nullptr;
+  void* output = nullptr;
   void* extra = nullptr;
 };
 

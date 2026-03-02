@@ -3,6 +3,7 @@
 #include <memory>
 #include <string>
 
+#include "ae/AeHostAdapter.h"
 #include "ae/AeCommandRouter.h"
 #include "inference/ManagedInferenceEngine.h"
 
@@ -30,6 +31,33 @@ zsoda::core::FrameBuffer MakeFrame() {
     }
   }
   return frame;
+}
+
+void TestStubCommandAndDispatchMapping() {
+  assert(zsoda::ae::MapStubCommandId(0) == zsoda::ae::AeCommand::kAbout);
+  assert(zsoda::ae::MapStubCommandId(1) == zsoda::ae::AeCommand::kGlobalSetup);
+  assert(zsoda::ae::MapStubCommandId(2) == zsoda::ae::AeCommand::kParamsSetup);
+  assert(zsoda::ae::MapStubCommandId(3) == zsoda::ae::AeCommand::kRender);
+  assert(zsoda::ae::MapStubCommandId(404) == zsoda::ae::AeCommand::kUnknown);
+
+  std::string error;
+  assert(!zsoda::ae::BuildStubDispatch(1, nullptr, &error));
+  assert(error == "missing dispatch output");
+
+  zsoda::ae::AeDispatchContext render_dispatch;
+  error.clear();
+  assert(zsoda::ae::BuildStubDispatch(3, &render_dispatch, &error));
+  assert(render_dispatch.host.command_id == 3);
+  assert(render_dispatch.command.command == zsoda::ae::AeCommand::kRender);
+  assert(render_dispatch.command.host == &render_dispatch.host);
+  assert(render_dispatch.command.error == &error);
+  assert(render_dispatch.command.params_update == nullptr);
+  assert(render_dispatch.command.render_request == nullptr);
+  assert(render_dispatch.command.render_response == nullptr);
+
+  zsoda::ae::AeDispatchContext unknown_dispatch;
+  assert(zsoda::ae::BuildStubDispatch(99, &unknown_dispatch, &error));
+  assert(unknown_dispatch.command.command == zsoda::ae::AeCommand::kUnknown);
 }
 
 void TestParamSetupAndModelMenu() {
@@ -113,6 +141,65 @@ void TestRenderUsesCurrentAndOverrideParams() {
   assert(!response.message.empty());
 }
 
+void TestRouterPayloadValidation() {
+  auto engine = std::make_shared<zsoda::inference::ManagedInferenceEngine>("models");
+  std::string error;
+  assert(engine->Initialize("depth-anything-v3-small", &error));
+  auto pipeline = std::make_shared<zsoda::core::RenderPipeline>(engine);
+  zsoda::ae::AeCommandRouter router(pipeline, engine);
+
+  zsoda::ae::AeCommandContext update_context;
+  update_context.command = zsoda::ae::AeCommand::kUpdateParams;
+  update_context.error = &error;
+  assert(!router.Handle(update_context));
+  assert(error == "missing params update payload");
+
+  zsoda::ae::AeCommandContext render_context;
+  render_context.command = zsoda::ae::AeCommand::kRender;
+  render_context.error = &error;
+  error.clear();
+  assert(!router.Handle(render_context));
+  assert(error == "invalid render command arguments");
+
+  zsoda::ae::AeHostCommandContext host;
+  host.command_id = 3;
+  render_context.host = &host;
+  error.clear();
+  // Bridge path accepts host-only render commands until AE SDK payload
+  // extraction is wired.
+  assert(router.Handle(render_context));
+  assert(error.empty());
+
+  zsoda::ae::AeCommandRouter null_pipeline_router(nullptr, engine);
+  error.clear();
+  assert(!null_pipeline_router.Handle(render_context));
+  assert(error == "invalid render command arguments");
+}
+
+void TestPluginEntryValidation() {
+  assert(ZSodaEffectMainStub(0) == 0);
+  assert(ZSodaEffectMainStub(2) == 0);
+  assert(ZSodaEffectMainStub(12345) == -1);
+  assert(ZSodaSetModelIdStub(nullptr) == -1);
+
+  constexpr int kWidth = 4;
+  constexpr int kHeight = 4;
+  constexpr int kPixels = kWidth * kHeight;
+
+  float src[kPixels];
+  float out[kPixels];
+  for (int i = 0; i < kPixels; ++i) {
+    src[i] = static_cast<float>(i) / static_cast<float>(kPixels);
+    out[i] = 0.0F;
+  }
+
+  assert(ZSodaRenderGrayFrameStub(nullptr, kWidth, kHeight, 10, out, kPixels) == -1);
+  assert(ZSodaRenderGrayFrameStub(src, kWidth, kHeight, 10, nullptr, kPixels) == -1);
+  assert(ZSodaRenderGrayFrameStub(src, 0, kHeight, 10, out, kPixels) == -1);
+  assert(ZSodaRenderGrayFrameStub(src, kWidth, -1, 10, out, kPixels) == -1);
+  assert(ZSodaRenderGrayFrameStub(src, kWidth, kHeight, 10, out, kPixels - 1) == -1);
+}
+
 void TestPluginEntryBridgePath() {
   assert(ZSodaEffectMainStub(1) == 0);
   assert(ZSodaSetModelIdStub("depth-anything-v3-large") == 0);
@@ -148,7 +235,10 @@ void TestPluginEntryBridgePath() {
 }  // namespace
 
 void RunAeRouterTests() {
+  TestStubCommandAndDispatchMapping();
   TestParamSetupAndModelMenu();
   TestRenderUsesCurrentAndOverrideParams();
+  TestRouterPayloadValidation();
+  TestPluginEntryValidation();
   TestPluginEntryBridgePath();
 }

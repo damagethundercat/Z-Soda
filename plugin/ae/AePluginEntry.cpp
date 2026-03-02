@@ -1,4 +1,4 @@
-#include "ae/AeCommandRouter.h"
+#include "ae/AeHostAdapter.h"
 
 #include <cstdint>
 #include <memory>
@@ -11,23 +11,9 @@
 namespace zsoda::ae {
 namespace {
 
-AeCommand MapCommand(int command_id) {
-  switch (command_id) {
-    case 0:
-      return AeCommand::kAbout;
-    case 1:
-      return AeCommand::kGlobalSetup;
-    case 2:
-      return AeCommand::kParamsSetup;
-    case 3:
-      return AeCommand::kRender;
-    default:
-      return AeCommand::kUnknown;
-  }
-}
-
 std::shared_ptr<zsoda::inference::IInferenceEngine> GetEngine() {
-  static std::shared_ptr<zsoda::inference::IInferenceEngine> engine = zsoda::inference::CreateDefaultEngine();
+  static std::shared_ptr<zsoda::inference::IInferenceEngine> engine =
+      zsoda::inference::CreateDefaultEngine();
   return engine;
 }
 
@@ -41,20 +27,20 @@ zsoda::ae::AeCommandRouter& GetRouter() {
   return router;
 }
 
+int Dispatch(const AeDispatchContext& dispatch) {
+  return GetRouter().Handle(dispatch.command) ? 0 : -1;
+}
+
 }  // namespace
 }  // namespace zsoda::ae
 
 extern "C" int ZSodaEffectMainStub(int command_id) {
   std::string error;
-  const auto command = zsoda::ae::MapCommand(command_id);
-  zsoda::ae::AeHostCommandContext host_context;
-  host_context.command_id = command_id;
-
-  zsoda::ae::AeCommandContext context;
-  context.command = command;
-  context.host = &host_context;
-  context.error = &error;
-  return zsoda::ae::GetRouter().Handle(context) ? 0 : -1;
+  zsoda::ae::AeDispatchContext dispatch;
+  if (!zsoda::ae::BuildStubDispatch(command_id, &dispatch, &error)) {
+    return -1;
+  }
+  return zsoda::ae::Dispatch(dispatch);
 }
 
 extern "C" int ZSodaSetModelIdStub(const char* model_id) {
@@ -124,3 +110,41 @@ extern "C" int ZSodaRenderGrayFrameStub(const float* src,
   }
   return 0;
 }
+
+#if defined(ZSODA_WITH_AE_SDK) && ZSODA_WITH_AE_SDK
+
+#ifndef DllExport
+#define DllExport
+#endif
+
+extern "C" DllExport PF_Err EffectMain(PF_Cmd cmd,
+                                       PF_InData* in_data,
+                                       PF_OutData* out_data,
+                                       PF_ParamDef* params[],
+                                       PF_LayerDef* output,
+                                       void* extra) {
+  std::string error;
+
+  zsoda::ae::AeDispatchContext dispatch;
+  zsoda::ae::AeSdkEntryPayload payload;
+  payload.command = cmd;
+  payload.in_data = in_data;
+  payload.out_data = out_data;
+  payload.params = params;
+  payload.output = output;
+  payload.extra = extra;
+
+  if (!zsoda::ae::BuildSdkDispatch(payload, &dispatch, &error)) {
+    return PF_Err_INTERNAL_STRUCT_DAMAGED;
+  }
+
+  if (dispatch.command.command == zsoda::ae::AeCommand::kUnknown) {
+    // Skeleton entrypoint ignores unsupported commands until individual handlers
+    // are wired.
+    return PF_Err_NONE;
+  }
+
+  return zsoda::ae::Dispatch(dispatch) == 0 ? PF_Err_NONE : PF_Err_INTERNAL_STRUCT_DAMAGED;
+}
+
+#endif

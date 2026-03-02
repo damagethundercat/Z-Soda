@@ -1,5 +1,6 @@
 #pragma once
 
+#include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -8,6 +9,9 @@
 #include "inference/InferenceEngine.h"
 #include "inference/ModelCatalog.h"
 #include "inference/RuntimeOptions.h"
+#if defined(ZSODA_WITH_ONNX_RUNTIME)
+#include "inference/OnnxRuntimeBackend.h"
+#endif
 
 namespace zsoda::inference {
 
@@ -44,6 +48,9 @@ class ManagedInferenceEngine final : public IInferenceEngine {
   RuntimeBackend active_backend_ = RuntimeBackend::kCpu;
   bool using_fallback_engine_ = true;
   DummyInferenceEngine fallback_engine_;
+#if defined(ZSODA_WITH_ONNX_RUNTIME)
+  std::unique_ptr<IOnnxRuntimeBackend> onnx_backend_;
+#endif
 };
 
 }  // namespace zsoda::inference

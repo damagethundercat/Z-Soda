@@ -4,6 +4,10 @@
 #include <filesystem>
 #include <utility>
 
+#if defined(ZSODA_WITH_ONNX_RUNTIME)
+#include "inference/OnnxRuntimeBackend.h"
+#endif
+
 namespace zsoda::inference {
 
 ManagedInferenceEngine::ManagedInferenceEngine(std::string model_root)
@@ -61,6 +65,23 @@ bool ManagedInferenceEngine::Run(const InferenceRequest& request,
     return false;
   }
 
+  bool used_fallback_path = true;
+#if defined(ZSODA_WITH_ONNX_RUNTIME)
+  if (onnx_backend_ != nullptr && !using_fallback_engine_) {
+    std::string onnx_error;
+    if (onnx_backend_->Run(request, out_depth, &onnx_error)) {
+      used_fallback_path = false;
+    }
+  }
+#endif
+
+  if (!used_fallback_path) {
+    if (error != nullptr) {
+      error->clear();
+    }
+    return true;
+  }
+
   std::string dummy_error;
   if (!fallback_engine_.Run(request, out_depth, &dummy_error)) {
     if (error) {
@@ -69,8 +90,8 @@ bool ManagedInferenceEngine::Run(const InferenceRequest& request,
     return false;
   }
 
-  // Apply a small model-specific curve shift so model switching has visible effect,
-  // even before ONNX Runtime backend wiring is added.
+  // Apply a small model-specific curve shift so model switching has visible effect
+  // while the fallback depth path is active.
   const auto& desc = out_depth->desc();
   const float bias = ModelBias();
   for (int y = 0; y < desc.height; ++y) {
@@ -103,10 +124,14 @@ bool ManagedInferenceEngine::UsingFallbackEngine() const {
 
 void ManagedInferenceEngine::ConfigureBackend() {
 #if defined(ZSODA_WITH_ONNX_RUNTIME)
-  using_fallback_engine_ = false;
-  active_backend_ = options_.preferred_backend == RuntimeBackend::kAuto
-                        ? RuntimeBackend::kCpu
-                        : options_.preferred_backend;
+  onnx_backend_ = CreateOnnxRuntimeBackend(options_, nullptr);
+  if (onnx_backend_ != nullptr) {
+    using_fallback_engine_ = false;
+    active_backend_ = onnx_backend_->ActiveBackend();
+  } else {
+    using_fallback_engine_ = true;
+    active_backend_ = RuntimeBackend::kCpu;
+  }
 #else
   using_fallback_engine_ = true;
   active_backend_ = RuntimeBackend::kCpu;
@@ -140,6 +165,15 @@ bool ManagedInferenceEngine::SelectModelLocked(const std::string& model_id, std:
     }
     return false;
   }
+
+#if defined(ZSODA_WITH_ONNX_RUNTIME)
+  if (onnx_backend_ != nullptr) {
+    std::string backend_error;
+    using_fallback_engine_ = !onnx_backend_->SelectModel(model_id, model_path, &backend_error);
+  } else {
+    using_fallback_engine_ = true;
+  }
+#endif
 
   active_model_id_ = model_id;
   active_model_path_ = model_path;

@@ -8,6 +8,7 @@ Depth Scanner-style After Effects plugin scaffold.
 - Live progress (Korean): `PROGRESS.md`
 - Research references: `docs/research/`
 - Perf/QA harness guide: `docs/perf/README.md`
+- Final-mile packaging guide (.aex/.plugin): `docs/build/README.md`
 
 ## Current Layout
 - `plugin/ae`: AE command routing and plugin entry stub
@@ -47,6 +48,10 @@ Current runtime note:
 - The model/session management path is implemented.
 - ONNX Runtime execution backend is not wired yet in this scaffold; if model files are missing, safe fallback depth path is used.
 
+## AE Packaging Status
+- Final-mile `.aex/.plugin` packaging path is documented in `docs/build/README.md`.
+- Current workspace is Linux/WSL2 without `cmake`, AE SDK, MSBuild, or Xcode, so native packaging commands are not executable here.
+
 ## Build & Test
 Preferred (when `cmake` is available):
 ```bash
@@ -58,7 +63,7 @@ ctest --test-dir build --output-on-failure
 Fallback (current environment):
 ```bash
 g++ -std=c++20 -Iplugin \
-  plugin/ae/AeCommandRouter.cpp plugin/ae/AeParams.cpp plugin/ae/AePluginEntry.cpp \
+  plugin/ae/AeHostAdapter.cpp plugin/ae/AeCommandRouter.cpp plugin/ae/AeParams.cpp plugin/ae/AePluginEntry.cpp \
   plugin/core/BufferPool.cpp plugin/core/Cache.cpp plugin/core/DepthOps.cpp \
   plugin/core/RenderPipeline.cpp plugin/core/Tiler.cpp \
   plugin/inference/DummyInferenceEngine.cpp plugin/inference/EngineFactory.cpp \
@@ -73,7 +78,7 @@ g++ -std=c++20 -Iplugin \
 Performance harness fallback:
 ```bash
 g++ -std=c++20 -Iplugin \
-  plugin/ae/AeCommandRouter.cpp plugin/ae/AeParams.cpp plugin/ae/AePluginEntry.cpp \
+  plugin/ae/AeHostAdapter.cpp plugin/ae/AeCommandRouter.cpp plugin/ae/AeParams.cpp plugin/ae/AePluginEntry.cpp \
   plugin/core/BufferPool.cpp plugin/core/Cache.cpp plugin/core/DepthOps.cpp \
   plugin/core/RenderPipeline.cpp plugin/core/Tiler.cpp \
   plugin/inference/DummyInferenceEngine.cpp plugin/inference/EngineFactory.cpp \
@@ -82,4 +87,20 @@ g++ -std=c++20 -Iplugin \
   -o /tmp/zsoda_perf_harness
 /tmp/zsoda_perf_harness --mode benchmark --quiet
 /tmp/zsoda_perf_harness --mode stability --frames 1000 --quiet
+```
+
+Optional ORT-scaffold compile check:
+```bash
+g++ -std=c++20 -DZSODA_WITH_ONNX_RUNTIME=1 -Iplugin \
+  plugin/ae/AeHostAdapter.cpp plugin/ae/AeCommandRouter.cpp plugin/ae/AeParams.cpp plugin/ae/AePluginEntry.cpp \
+  plugin/core/BufferPool.cpp plugin/core/Cache.cpp plugin/core/DepthOps.cpp \
+  plugin/core/RenderPipeline.cpp plugin/core/Tiler.cpp \
+  plugin/inference/DummyInferenceEngine.cpp plugin/inference/EngineFactory.cpp \
+  plugin/inference/ManagedInferenceEngine.cpp plugin/inference/ModelCatalog.cpp \
+  plugin/inference/OnnxRuntimeBackend.cpp \
+  tests/test_ae_params.cpp tests/test_ae_router.cpp tests/test_cache.cpp \
+  tests/test_depth_ops.cpp tests/test_inference_engine.cpp \
+  tests/test_render_pipeline.cpp tests/test_tiler.cpp \
+  -o /tmp/zsoda_tests_ort
+/tmp/zsoda_tests_ort
 ```
