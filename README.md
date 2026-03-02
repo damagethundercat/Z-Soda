@@ -67,6 +67,11 @@ cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
 
+Quick local CI check:
+```bash
+bash tools/run_local_ci.sh
+```
+
 Optional ONNX Runtime API build (requires local ORT headers + library):
 ```bash
 cmake -S . -B build-ort \
