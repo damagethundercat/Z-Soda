@@ -109,7 +109,7 @@ function Print-ArtifactInfo {
   )
 
   $hash = Get-FileHash -Algorithm SHA256 -LiteralPath $Path
-  Write-Host "$Label:"
+  Write-Host "$($Label):"
   Write-Host "  path:   $Path"
   Write-Host "  sha256: $($hash.Hash.ToLowerInvariant())"
 }
