@@ -3,8 +3,8 @@
 이 문서는 작업 진행도와 남은 작업을 공유하기 위한 운영 문서입니다.
 
 ## 1. 전체 진행률
-- 전체 진행률: **89%** (`PLAN.md`의 `P1`~`P5` 기준, `P3`/`P4`/`P5` 고도화 및 진단 경로 확장)
-- 마지막 업데이트: **2026-03-02** (ONNX 스캐폴드 검증 강화 + PF_Cmd_RENDER 페이로드 추출 고도화)
+- 전체 진행률: **92%** (`PLAN.md`의 `P1`~`P5` 기준, ORT API 옵션 경로까지 확장)
+- 마지막 업데이트: **2026-03-02** (ORT API 실세션 옵션 경로 + CMake/문서 확장 반영)
 - 갱신 원칙: **작업 단위 완료 시 즉시 업데이트**
 
 ## 2. 현재 작업 상태
@@ -42,6 +42,7 @@
 - [x] `D25` 리더 리뷰 노트 추가: 이번 라운드 수용 기준 요약 + Windows/macOS AE SDK 환경의 실 `.aex/.plugin` 산출 전 필수 잔여 조건 정리 (`docs/build/2026-03-02-leader-review-note.md`)
 - [x] `D26` 호스트 버퍼 렌더 브리지(입출력 픽셀 변환 경로), 적응형 타일 재시도 폴백, 추론 백엔드 상태 진단 추가 + 관련 테스트 확장 후 재검증 완료 (`plugin/ae/*`, `plugin/core/RenderPipeline.cpp`, `plugin/inference/ManagedInferenceEngine*`, `tests/*`)
 - [x] `D27` ONNX Runtime 스캐폴드의 모델 경로 검증/전처리 준비/진단 문자열 확장 + `PF_Cmd_RENDER` 추출 스캐폴드(안전 프레임 해시/픽셀 포맷 후보 계산) 고도화 및 회귀 테스트 통과 (`plugin/inference/OnnxRuntimeBackend.cpp`, `plugin/inference/ManagedInferenceEngine.cpp`, `plugin/ae/AeHostAdapter*`, `tests/test_inference_engine.cpp`, `tests/test_ae_router.cpp`)
+- [x] `D28` ORT API 옵션 경로 추가(`ZSODA_WITH_ONNX_RUNTIME_API`) 및 실제 세션 생성/실행 파이프라인(전처리 NCHW + 출력 정규화/리사이즈) 통합, CMake 옵션/문서 확장, 비-API 회귀 테스트 재통과 (`plugin/inference/OnnxRuntimeBackend.cpp`, `plugin/CMakeLists.txt`, `README.md`, `docs/build/README.md`, `tests/test_inference_engine.cpp`)
 
 ## 4. 남은 작업
 1. `P3` 구현: AE 파라미터와 모델 선택 UI(`model_id`)를 실제 핸들러에 연결
@@ -50,8 +51,9 @@
 4. `P4` 잔여: OOM/백엔드 실패 원인별 정책 세분화(타일 크기 자동 축소는 반영 완료, VRAM 힌트 기반 다운스케일 비율 연동 남음)
 5. `P5` 구축: 성능/회귀/장시간 안정성 테스트 파이프라인 정리(현재 하네스는 1차 완료)
 6. `P5` 구축: 문서화된 최종 패키징 경로를 실제 CMake 타깃(`.aex/.plugin`) 및 배포 스크립트로 연결
-7. 실제 ONNX Runtime 백엔드 연결 (현재는 스캐폴드/검증/진단 강화 완료, 실제 ORT 세션 실행 경로 대체 필요)
+7. ORT API 경로의 네이티브 실검증 (현재 환경은 ORT 헤더/라이브러리 부재로 API ON 빌드 미검증)
 8. CMake 기반 빌드/테스트 루트 검증 (`cmake` 도구 설치 후 재검증)
+9. ORT 백엔드 GPU 프로바이더(CUDA/DirectML/Metal/CoreML) 분기 연결 및 OS별 fallback 정책 문서화
 
 ## 5. 이슈 및 리스크
 - 플러그인 스캐폴드는 구축되었지만 AE SDK 실제 엔트리/파라미터 바인딩은 아직 스텁 단계임.

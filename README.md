@@ -46,7 +46,8 @@ export ZSODA_MODEL_MANIFEST=models/models.manifest
 
 Current runtime note:
 - The model/session management path is implemented.
-- ONNX Runtime execution backend is not wired yet in this scaffold; if model files are missing, safe fallback depth path is used.
+- Default build keeps scaffold mode (`ZSODA_WITH_ONNX_RUNTIME=ON`, `ZSODA_WITH_ONNX_RUNTIME_API` unset): ORT API is not used and safe fallback depth path is used on run.
+- Optional API mode (`ZSODA_WITH_ONNX_RUNTIME_API=ON`) enables real ONNX Runtime C++ session create/select/run (CPU-first path).
 
 ## AE Packaging Status
 - Final-mile `.aex/.plugin` packaging path is documented in `docs/build/README.md`.
@@ -58,6 +59,17 @@ Preferred (when `cmake` is available):
 cmake -S . -B build
 cmake --build build -j
 ctest --test-dir build --output-on-failure
+```
+
+Optional ONNX Runtime API build (requires local ORT headers + library):
+```bash
+cmake -S . -B build-ort \
+  -DZSODA_WITH_ONNX_RUNTIME=ON \
+  -DZSODA_WITH_ONNX_RUNTIME_API=ON \
+  -DONNXRUNTIME_INCLUDE_DIR=/abs/path/to/onnxruntime/include \
+  -DONNXRUNTIME_LIBRARY=/abs/path/to/libonnxruntime.so
+cmake --build build-ort -j
+ctest --test-dir build-ort --output-on-failure
 ```
 
 Fallback (current environment):
@@ -89,7 +101,7 @@ g++ -std=c++20 -Iplugin \
 /tmp/zsoda_perf_harness --mode stability --frames 1000 --quiet
 ```
 
-Optional ORT-scaffold compile check:
+Optional ORT-scaffold compile check (API off):
 ```bash
 g++ -std=c++20 -DZSODA_WITH_ONNX_RUNTIME=1 -Iplugin \
   plugin/ae/AeHostAdapter.cpp plugin/ae/AeCommandRouter.cpp plugin/ae/AeParams.cpp plugin/ae/AePluginEntry.cpp \

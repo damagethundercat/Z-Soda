@@ -39,6 +39,14 @@ This document records the packaging path from CMake build output to After Effect
   - directory that directly contains `AE_Effect.h`
 - `-DZSODA_WITH_AE_SDK=ON`
   - enables conditional `EffectMain` entrypoint scaffold
+- `-DZSODA_WITH_ONNX_RUNTIME=ON`
+  - enables ONNX backend module in plugin build
+- `-DZSODA_WITH_ONNX_RUNTIME_API=ON`
+  - enables real ONNX Runtime C++ API execution path (default is scaffold/off)
+  - requires:
+    - `-DONNXRUNTIME_INCLUDE_DIR=<absolute-path-containing-onnxruntime_cxx_api.h>`
+    - `-DONNXRUNTIME_LIBRARY=<absolute-path-to-onnxruntime-binary>`
+  - if any required path is missing, configure step stops with `FATAL_ERROR`
 
 ## Windows Commands (PowerShell)
 
@@ -48,6 +56,10 @@ $env:AE_SDK_ROOT = "C:\SDKs\AdobeAfterEffectsSDK"
 cmake -S . -B build-win -G "Visual Studio 17 2022" -A x64 `
   -DZSODA_BUILD_TESTS=OFF `
   -DZSODA_WITH_AE_SDK=ON `
+  -DZSODA_WITH_ONNX_RUNTIME=ON `
+  -DZSODA_WITH_ONNX_RUNTIME_API=ON `
+  -DONNXRUNTIME_INCLUDE_DIR="C:\onnxruntime\include" `
+  -DONNXRUNTIME_LIBRARY="C:\onnxruntime\lib\onnxruntime.lib" `
   -DCMAKE_BUILD_TYPE=Release `
   -DAE_SDK_ROOT="$env:AE_SDK_ROOT"
 
@@ -76,6 +88,10 @@ export AE_SDK_ROOT="$HOME/SDKs/AdobeAfterEffectsSDK"
 cmake -S . -B build-mac -G Xcode \
   -DZSODA_BUILD_TESTS=OFF \
   -DZSODA_WITH_AE_SDK=ON \
+  -DZSODA_WITH_ONNX_RUNTIME=ON \
+  -DZSODA_WITH_ONNX_RUNTIME_API=ON \
+  -DONNXRUNTIME_INCLUDE_DIR="$HOME/onnxruntime/include" \
+  -DONNXRUNTIME_LIBRARY="$HOME/onnxruntime/lib/libonnxruntime.dylib" \
   -DCMAKE_BUILD_TYPE=Release \
   -DAE_SDK_ROOT="$AE_SDK_ROOT"
 

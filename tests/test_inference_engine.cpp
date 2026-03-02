@@ -112,7 +112,11 @@ void TestRuntimeBackendOptions() {
   assert(engine.RequestedBackend() == zsoda::inference::RuntimeBackend::kCuda);
 #if defined(ZSODA_WITH_ONNX_RUNTIME)
   assert(!engine.UsingFallbackEngine());
+#if defined(ZSODA_WITH_ONNX_RUNTIME_API)
+  assert(engine.ActiveBackend() == zsoda::inference::RuntimeBackend::kCpu);
+#else
   assert(engine.ActiveBackend() == zsoda::inference::RuntimeBackend::kCuda);
+#endif
 #else
   assert(engine.UsingFallbackEngine());
   assert(engine.ActiveBackend() == zsoda::inference::RuntimeBackend::kCpu);
@@ -178,9 +182,14 @@ void TestBackendStatusDiagnostics() {
   assert(!after.fallback_reason.empty());
 #if defined(ZSODA_WITH_ONNX_RUNTIME)
   assert(Contains(after.engine_name, "DummyDepthEngine"));
+#if defined(ZSODA_WITH_ONNX_RUNTIME_API)
+  assert(Contains(after.engine_name, "fallback_from=OnnxRuntimeBackend["));
+  assert(Contains(after.fallback_reason, "onnx runtime session create failed:"));
+#else
   assert(Contains(after.engine_name, "fallback_from=OnnxRuntimeBackendScaffold["));
   assert(Contains(after.fallback_reason, "execution is not available in this build"));
   assert(Contains(after.fallback_reason, "model_id=status-depth-v1"));
+#endif
 #else
   assert(after.engine_name == "DummyDepthEngine");
 #endif
@@ -260,7 +269,11 @@ void TestMissingModelFileDiagnostics() {
 #if defined(ZSODA_WITH_ONNX_RUNTIME)
   const auto status = engine.BackendStatus();
   assert(Contains(status.engine_name, "DummyDepthEngine"));
+#if defined(ZSODA_WITH_ONNX_RUNTIME_API)
+  assert(Contains(status.engine_name, "fallback_from=OnnxRuntimeBackend["));
+#else
   assert(Contains(status.engine_name, "fallback_from=OnnxRuntimeBackendScaffold["));
+#endif
   assert(Contains(status.fallback_reason, "model path does not exist:"));
   assert(Contains(status.fallback_reason, "missing_depth_v1.onnx"));
 #endif
@@ -285,7 +298,11 @@ void TestOnnxBackendValidationScaffold() {
   auto backend = zsoda::inference::CreateOnnxRuntimeBackend(options, &error);
   assert(backend != nullptr);
   assert(error.empty());
+#if defined(ZSODA_WITH_ONNX_RUNTIME_API)
+  assert(Contains(backend->Name(), "OnnxRuntimeBackend[cpu]"));
+#else
   assert(Contains(backend->Name(), "OnnxRuntimeBackendScaffold[cuda]"));
+#endif
 
   error.clear();
   assert(!backend->SelectModel("", "placeholder.onnx", &error));
@@ -316,6 +333,10 @@ void TestOnnxBackendValidationScaffold() {
   const auto valid_model = temp_dir.path() / "depth_anything_v3_small.onnx";
   WriteTextFile(valid_model, "dummy");
   error.clear();
+#if defined(ZSODA_WITH_ONNX_RUNTIME_API)
+  assert(!backend->SelectModel("depth-anything-v3-small", valid_model.string(), &error));
+  assert(Contains(error, "onnx runtime session create failed:"));
+#else
   assert(backend->SelectModel("depth-anything-v3-small", valid_model.string(), &error));
   assert(error.empty());
 
@@ -330,6 +351,7 @@ void TestOnnxBackendValidationScaffold() {
   assert(Contains(error, "execution is not available in this build"));
   assert(Contains(error, "model_id=depth-anything-v3-small"));
   assert(Contains(error, valid_model.string()));
+#endif
 }
 #endif
 
