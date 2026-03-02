@@ -15,8 +15,17 @@ enum class AeCommand {
   kAbout,
   kGlobalSetup,
   kParamsSetup,
+  kUpdateParams,
   kRender,
   kUnknown,
+};
+
+struct AeHostCommandContext {
+  int command_id = -1;
+  void* in_data = nullptr;
+  void* out_data = nullptr;
+  void* params = nullptr;
+  void* extra = nullptr;
 };
 
 struct RenderRequest {
@@ -31,15 +40,21 @@ struct RenderResponse {
   std::string message;
 };
 
+struct AeCommandContext {
+  AeCommand command = AeCommand::kUnknown;
+  const AeHostCommandContext* host = nullptr;
+  const AeParamValues* params_update = nullptr;
+  const RenderRequest* render_request = nullptr;
+  RenderResponse* render_response = nullptr;
+  std::string* error = nullptr;
+};
+
 class AeCommandRouter {
  public:
   AeCommandRouter(std::shared_ptr<zsoda::core::RenderPipeline> pipeline,
                   std::shared_ptr<zsoda::inference::IInferenceEngine> engine);
 
-  bool Handle(AeCommand command,
-              const RenderRequest* render_request,
-              RenderResponse* render_response,
-              std::string* error);
+  bool Handle(const AeCommandContext& context);
   bool UpdateParams(const AeParamValues& params, std::string* error);
   [[nodiscard]] AeParamValues CurrentParams() const;
   [[nodiscard]] const std::vector<std::string>& ModelMenu() const;

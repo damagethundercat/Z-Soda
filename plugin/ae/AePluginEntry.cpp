@@ -47,11 +47,14 @@ zsoda::ae::AeCommandRouter& GetRouter() {
 extern "C" int ZSodaEffectMainStub(int command_id) {
   std::string error;
   const auto command = zsoda::ae::MapCommand(command_id);
-  if (command == zsoda::ae::AeCommand::kRender) {
-    // AE SDK integration path will supply render payload through PF_Cmd_RENDER.
-    return 0;
-  }
-  return zsoda::ae::GetRouter().Handle(command, nullptr, nullptr, &error) ? 0 : -1;
+  zsoda::ae::AeHostCommandContext host_context;
+  host_context.command_id = command_id;
+
+  zsoda::ae::AeCommandContext context;
+  context.command = command;
+  context.host = &host_context;
+  context.error = &error;
+  return zsoda::ae::GetRouter().Handle(context) ? 0 : -1;
 }
 
 extern "C" int ZSodaSetModelIdStub(const char* model_id) {
@@ -61,7 +64,11 @@ extern "C" int ZSodaSetModelIdStub(const char* model_id) {
   auto params = zsoda::ae::GetRouter().CurrentParams();
   params.model_id = model_id;
   std::string error;
-  return zsoda::ae::GetRouter().UpdateParams(params, &error) ? 0 : -1;
+  zsoda::ae::AeCommandContext context;
+  context.command = zsoda::ae::AeCommand::kUpdateParams;
+  context.params_update = &params;
+  context.error = &error;
+  return zsoda::ae::GetRouter().Handle(context) ? 0 : -1;
 }
 
 extern "C" int ZSodaRenderGrayFrameStub(const float* src,
@@ -97,7 +104,15 @@ extern "C" int ZSodaRenderGrayFrameStub(const float* src,
 
   zsoda::ae::RenderResponse response;
   std::string error;
-  if (!zsoda::ae::GetRouter().Handle(zsoda::ae::AeCommand::kRender, &request, &response, &error)) {
+  zsoda::ae::AeHostCommandContext host_context;
+  host_context.command_id = 3;
+  zsoda::ae::AeCommandContext context;
+  context.command = zsoda::ae::AeCommand::kRender;
+  context.host = &host_context;
+  context.render_request = &request;
+  context.render_response = &response;
+  context.error = &error;
+  if (!zsoda::ae::GetRouter().Handle(context)) {
     return -1;
   }
 

@@ -7,12 +7,14 @@
 #include "inference/DummyInferenceEngine.h"
 #include "inference/InferenceEngine.h"
 #include "inference/ModelCatalog.h"
+#include "inference/RuntimeOptions.h"
 
 namespace zsoda::inference {
 
 class ManagedInferenceEngine final : public IInferenceEngine {
  public:
   explicit ManagedInferenceEngine(std::string model_root);
+  ManagedInferenceEngine(std::string model_root, RuntimeOptions options);
 
   const char* Name() const override { return "ManagedInferenceEngine"; }
   bool Initialize(const std::string& model_id, std::string* error) override;
@@ -22,17 +24,25 @@ class ManagedInferenceEngine final : public IInferenceEngine {
   bool Run(const InferenceRequest& request,
            zsoda::core::FrameBuffer* out_depth,
            std::string* error) const override;
+  [[nodiscard]] RuntimeBackend RequestedBackend() const;
+  [[nodiscard]] RuntimeBackend ActiveBackend() const;
+  [[nodiscard]] bool UsingFallbackEngine() const;
 
  private:
+  void ConfigureBackend();
+  void LoadManifest();
   bool SelectModelLocked(const std::string& model_id, std::string* error);
   float ModelBias() const;
 
   std::string model_root_;
+  RuntimeOptions options_;
   ModelCatalog catalog_;
   mutable std::mutex mutex_;
   std::string active_model_id_;
   std::string active_model_path_;
   bool model_file_exists_ = false;
+  RuntimeBackend active_backend_ = RuntimeBackend::kCpu;
+  bool using_fallback_engine_ = true;
   DummyInferenceEngine fallback_engine_;
 };
 

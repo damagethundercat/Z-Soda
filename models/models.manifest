@@ -1,0 +1,5 @@
+# id|display_name|relative_path|download_url|preferred_default
+depth-anything-v3-small|Depth Anything v3 Small|depth-anything-v3/depth_anything_v3_small.onnx|https://huggingface.co/depth-anything/Depth-Anything-V3/resolve/main/depth_anything_v3_small.onnx|true
+depth-anything-v3-base|Depth Anything v3 Base|depth-anything-v3/depth_anything_v3_base.onnx|https://huggingface.co/depth-anything/Depth-Anything-V3/resolve/main/depth_anything_v3_base.onnx|false
+depth-anything-v3-large|Depth Anything v3 Large|depth-anything-v3/depth_anything_v3_large.onnx|https://huggingface.co/depth-anything/Depth-Anything-V3/resolve/main/depth_anything_v3_large.onnx|false
+midas-dpt-large|MiDaS DPT Large|midas/dpt_large_384.onnx|https://github.com/isl-org/MiDaS/releases/download/v3_1/dpt_large_384.onnx|false

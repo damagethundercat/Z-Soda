@@ -37,7 +37,8 @@ struct RenderParams {
 enum class RenderStatus {
   kCacheHit,
   kInference,
-  kFallback,
+  kFallbackTiled,
+  kFallbackDownscaled,
   kSafeOutput,
 };
 
@@ -64,6 +65,10 @@ class RenderPipeline {
                          int overlap,
                          FrameBuffer* depth,
                          std::string* error) const;
+  bool RunDownscaledInference(const FrameBuffer& source,
+                              int quality,
+                              FrameBuffer* depth,
+                              std::string* error) const;
   FrameBuffer BuildOutput(const FrameBuffer& normalized_depth, const RenderParams& params) const;
   RenderOutput SafeOutput(const FrameBuffer& source, const std::string& message) const;
 

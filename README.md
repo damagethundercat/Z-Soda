@@ -7,6 +7,7 @@ Depth Scanner-style After Effects plugin scaffold.
 - Execution plan: `PLAN.md`
 - Live progress (Korean): `PROGRESS.md`
 - Research references: `docs/research/`
+- Perf/QA harness guide: `docs/perf/README.md`
 
 ## Current Layout
 - `plugin/ae`: AE command routing and plugin entry stub
@@ -36,6 +37,12 @@ Custom model root example:
 export ZSODA_MODEL_ROOT=/path/to/models
 ```
 
+Optional runtime options:
+```bash
+export ZSODA_INFERENCE_BACKEND=cpu      # auto|cpu|cuda|directml|metal|coreml
+export ZSODA_MODEL_MANIFEST=models/models.manifest
+```
+
 Current runtime note:
 - The model/session management path is implemented.
 - ONNX Runtime execution backend is not wired yet in this scaffold; if model files are missing, safe fallback depth path is used.
@@ -51,11 +58,28 @@ ctest --test-dir build --output-on-failure
 Fallback (current environment):
 ```bash
 g++ -std=c++20 -Iplugin \
-  plugin/ae/AeCommandRouter.cpp plugin/ae/AePluginEntry.cpp \
+  plugin/ae/AeCommandRouter.cpp plugin/ae/AeParams.cpp plugin/ae/AePluginEntry.cpp \
   plugin/core/BufferPool.cpp plugin/core/Cache.cpp plugin/core/DepthOps.cpp \
   plugin/core/RenderPipeline.cpp plugin/core/Tiler.cpp \
   plugin/inference/DummyInferenceEngine.cpp plugin/inference/EngineFactory.cpp \
-  tests/test_cache.cpp tests/test_depth_ops.cpp tests/test_tiler.cpp \
+  plugin/inference/ManagedInferenceEngine.cpp plugin/inference/ModelCatalog.cpp \
+  tests/test_ae_params.cpp tests/test_ae_router.cpp tests/test_cache.cpp \
+  tests/test_depth_ops.cpp tests/test_inference_engine.cpp \
+  tests/test_render_pipeline.cpp tests/test_tiler.cpp \
   -o /tmp/zsoda_tests
 /tmp/zsoda_tests
+```
+
+Performance harness fallback:
+```bash
+g++ -std=c++20 -Iplugin \
+  plugin/ae/AeCommandRouter.cpp plugin/ae/AeParams.cpp plugin/ae/AePluginEntry.cpp \
+  plugin/core/BufferPool.cpp plugin/core/Cache.cpp plugin/core/DepthOps.cpp \
+  plugin/core/RenderPipeline.cpp plugin/core/Tiler.cpp \
+  plugin/inference/DummyInferenceEngine.cpp plugin/inference/EngineFactory.cpp \
+  plugin/inference/ManagedInferenceEngine.cpp plugin/inference/ModelCatalog.cpp \
+  tests/perf_harness.cpp \
+  -o /tmp/zsoda_perf_harness
+/tmp/zsoda_perf_harness --mode benchmark --quiet
+/tmp/zsoda_perf_harness --mode stability --frames 1000 --quiet
 ```

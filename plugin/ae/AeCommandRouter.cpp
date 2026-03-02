@@ -8,43 +8,60 @@ AeCommandRouter::AeCommandRouter(std::shared_ptr<zsoda::core::RenderPipeline> pi
                                  std::shared_ptr<zsoda::inference::IInferenceEngine> engine)
     : pipeline_(std::move(pipeline)), engine_(std::move(engine)), current_params_(DefaultAeParams()) {}
 
-bool AeCommandRouter::Handle(AeCommand command,
-                             const RenderRequest* render_request,
-                             RenderResponse* render_response,
-                             std::string* error) {
-  switch (command) {
+bool AeCommandRouter::Handle(const AeCommandContext& context) {
+  switch (context.command) {
     case AeCommand::kAbout:
       return true;
 
     case AeCommand::kGlobalSetup:
     case AeCommand::kParamsSetup:
-      return RefreshModelMenu(error);
+      return RefreshModelMenu(context.error);
+
+    case AeCommand::kUpdateParams:
+      if (context.params_update == nullptr) {
+        if (context.error) {
+          *context.error = "missing params update payload";
+        }
+        return false;
+      }
+      return UpdateParams(*context.params_update, context.error);
 
     case AeCommand::kRender: {
-      if (pipeline_ == nullptr || render_request == nullptr || render_response == nullptr) {
-        if (error) {
-          *error = "invalid render command arguments";
+      if (pipeline_ == nullptr) {
+        if (context.error) {
+          *context.error = "invalid render command arguments";
+        }
+        return false;
+      }
+      if (context.render_request == nullptr || context.render_response == nullptr) {
+        // Accept host-only render bridge invocation. PF_Cmd payload wiring will fill
+        // render_request/render_response once AE SDK integration is enabled.
+        if (context.host != nullptr) {
+          return true;
+        }
+        if (context.error) {
+          *context.error = "invalid render command arguments";
         }
         return false;
       }
 
-      const AeParamValues params = render_request->params_override.has_value()
-                                       ? *render_request->params_override
+      const AeParamValues params = context.render_request->params_override.has_value()
+                                       ? *context.render_request->params_override
                                        : current_params_;
       auto render_params = ToRenderParams(params);
-      render_params.frame_hash = render_request->frame_hash;
+      render_params.frame_hash = context.render_request->frame_hash;
 
-      const auto output = pipeline_->Render(render_request->source, render_params);
-      render_response->output = output.frame;
-      render_response->status = output.status;
-      render_response->message = output.message;
+      const auto output = pipeline_->Render(context.render_request->source, render_params);
+      context.render_response->output = output.frame;
+      context.render_response->status = output.status;
+      context.render_response->message = output.message;
       return true;
     }
 
     case AeCommand::kUnknown:
     default:
-      if (error) {
-        *error = "unknown command";
+      if (context.error) {
+        *context.error = "unknown command";
       }
       return false;
   }

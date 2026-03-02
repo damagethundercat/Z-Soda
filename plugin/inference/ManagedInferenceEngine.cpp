@@ -2,11 +2,18 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <utility>
 
 namespace zsoda::inference {
 
 ManagedInferenceEngine::ManagedInferenceEngine(std::string model_root)
-    : model_root_(std::move(model_root)) {}
+    : ManagedInferenceEngine(std::move(model_root), RuntimeOptions{}) {}
+
+ManagedInferenceEngine::ManagedInferenceEngine(std::string model_root, RuntimeOptions options)
+    : model_root_(std::move(model_root)), options_(std::move(options)) {
+  ConfigureBackend();
+  LoadManifest();
+}
 
 bool ManagedInferenceEngine::Initialize(const std::string& model_id, std::string* error) {
   std::scoped_lock lock(mutex_);
@@ -29,6 +36,7 @@ bool ManagedInferenceEngine::SelectModel(const std::string& model_id, std::strin
 }
 
 std::vector<std::string> ManagedInferenceEngine::ListModelIds() const {
+  std::scoped_lock lock(mutex_);
   std::vector<std::string> result;
   result.reserve(catalog_.models().size());
   for (const auto& model : catalog_.models()) {
@@ -79,6 +87,39 @@ bool ManagedInferenceEngine::Run(const InferenceRequest& request,
     error->clear();
   }
   return true;
+}
+
+RuntimeBackend ManagedInferenceEngine::RequestedBackend() const {
+  return options_.preferred_backend;
+}
+
+RuntimeBackend ManagedInferenceEngine::ActiveBackend() const {
+  return active_backend_;
+}
+
+bool ManagedInferenceEngine::UsingFallbackEngine() const {
+  return using_fallback_engine_;
+}
+
+void ManagedInferenceEngine::ConfigureBackend() {
+#if defined(ZSODA_WITH_ONNX_RUNTIME)
+  using_fallback_engine_ = false;
+  active_backend_ = options_.preferred_backend == RuntimeBackend::kAuto
+                        ? RuntimeBackend::kCpu
+                        : options_.preferred_backend;
+#else
+  using_fallback_engine_ = true;
+  active_backend_ = RuntimeBackend::kCpu;
+#endif
+}
+
+void ManagedInferenceEngine::LoadManifest() {
+  std::string manifest_error;
+  if (!options_.model_manifest_path.empty()) {
+    catalog_.LoadManifestFile(options_.model_manifest_path, &manifest_error);
+    return;
+  }
+  catalog_.LoadManifestFromRoot(model_root_, &manifest_error);
 }
 
 bool ManagedInferenceEngine::SelectModelLocked(const std::string& model_id, std::string* error) {
