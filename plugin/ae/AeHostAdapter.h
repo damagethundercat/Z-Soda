@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -35,6 +37,28 @@ struct AeHostRenderBridgeResult {
   std::string message;
 };
 
+constexpr std::size_t kAePixelFormatCandidateCapacity = 3;
+
+struct AeFrameHashSeed {
+  std::int64_t current_time = 0;
+  std::int64_t time_step = 0;
+  std::int64_t time_scale = 0;
+  int width = 0;
+  int height = 0;
+  std::size_t source_row_bytes = 0;
+  std::size_t output_row_bytes = 0;
+  const void* source_pixels = nullptr;
+  const void* output_pixels = nullptr;
+  const void* host_in_data = nullptr;
+  const void* host_output = nullptr;
+};
+
+std::uint64_t ComputeSafeFrameHash(const AeFrameHashSeed& seed);
+std::size_t BuildHostRenderPixelFormatCandidates(
+    int width,
+    std::size_t row_bytes,
+    std::array<zsoda::core::PixelFormat, kAePixelFormatCandidateCapacity>* candidates);
+
 AeCommand MapStubCommandId(int command_id);
 bool BuildStubDispatch(int command_id, AeDispatchContext* dispatch, std::string* error);
 bool BuildHostBufferRenderDispatch(const AeHostRenderBridgePayload& payload,
@@ -57,9 +81,15 @@ struct AeSdkEntryPayload {
 };
 
 struct AeSdkRenderPayloadScaffold {
-  // Populated once PF_Cmd_RENDER world extraction is wired.
+  bool command_is_render = false;
+  bool source_is_valid = false;
+  bool output_is_valid = false;
+  bool dimensions_match = false;
   AeHostRenderBridgePayload host_render{};
   bool has_host_buffers = false;
+  std::uint64_t frame_hash = 0;
+  std::array<zsoda::core::PixelFormat, kAePixelFormatCandidateCapacity> pixel_format_candidates{};
+  std::size_t pixel_format_candidate_count = 0;
 };
 
 AeCommand MapPfCommand(PF_Cmd command);

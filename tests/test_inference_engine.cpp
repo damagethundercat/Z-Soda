@@ -8,6 +8,9 @@
 #include "core/Frame.h"
 #include "inference/ManagedInferenceEngine.h"
 #include "inference/ModelCatalog.h"
+#if defined(ZSODA_WITH_ONNX_RUNTIME)
+#include "inference/OnnxRuntimeBackend.h"
+#endif
 #include "inference/RuntimeOptions.h"
 
 namespace {
@@ -131,9 +134,18 @@ void TestRunRequiresSelectedModel() {
 }
 
 void TestBackendStatusDiagnostics() {
+  TempDir temp_dir;
+  const auto manifest = temp_dir.path() / zsoda::inference::ModelCatalog::DefaultManifestFilename();
+  WriteTextFile(
+      manifest,
+      "# id|display_name|relative_path|download_url|preferred_default\n"
+      "status-depth-v1|Status Depth v1|status/status_depth_v1.onnx|https://example.com/status_depth_v1.onnx|true\n");
+  const auto model_path = temp_dir.path() / "status/status_depth_v1.onnx";
+  WriteTextFile(model_path, "dummy");
+
   zsoda::inference::RuntimeOptions options;
   options.preferred_backend = zsoda::inference::RuntimeBackend::kCuda;
-  zsoda::inference::ManagedInferenceEngine engine("models", options);
+  zsoda::inference::ManagedInferenceEngine engine(temp_dir.path().string(), options);
 
   const auto initial = engine.BackendStatus();
   assert(initial.requested_backend == zsoda::inference::RuntimeBackend::kCuda);
@@ -148,9 +160,10 @@ void TestBackendStatusDiagnostics() {
   assert(Contains(initial_status, "engine="));
   assert(Contains(initial_status, "configured_fallback="));
   assert(Contains(initial_status, "last_run_fallback="));
+  assert(Contains(initial_status, "fallback_reason="));
 
   std::string error;
-  assert(engine.Initialize("depth-anything-v3-small", &error));
+  assert(engine.Initialize("status-depth-v1", &error));
   const auto source = MakeSource();
 
   zsoda::inference::InferenceRequest request;
@@ -163,8 +176,16 @@ void TestBackendStatusDiagnostics() {
   const auto after = engine.BackendStatus();
   assert(after.last_run_used_fallback);
   assert(!after.fallback_reason.empty());
+#if defined(ZSODA_WITH_ONNX_RUNTIME)
+  assert(Contains(after.engine_name, "DummyDepthEngine"));
+  assert(Contains(after.engine_name, "fallback_from=OnnxRuntimeBackendScaffold["));
+  assert(Contains(after.fallback_reason, "execution is not available in this build"));
+  assert(Contains(after.fallback_reason, "model_id=status-depth-v1"));
+#else
   assert(after.engine_name == "DummyDepthEngine");
+#endif
   assert(Contains(engine.BackendStatusString(), "last_run_fallback=true"));
+  assert(Contains(engine.BackendStatusString(), "fallback_reason="));
 }
 
 void TestManifestLoadingAndDefaults() {
@@ -236,6 +257,13 @@ void TestMissingModelFileDiagnostics() {
   std::string error;
   assert(engine.Initialize("missing-depth-v1", &error));
   assert(Contains(error, "model file not found:"));
+#if defined(ZSODA_WITH_ONNX_RUNTIME)
+  const auto status = engine.BackendStatus();
+  assert(Contains(status.engine_name, "DummyDepthEngine"));
+  assert(Contains(status.engine_name, "fallback_from=OnnxRuntimeBackendScaffold["));
+  assert(Contains(status.fallback_reason, "model path does not exist:"));
+  assert(Contains(status.fallback_reason, "missing_depth_v1.onnx"));
+#endif
 
   const auto source = MakeSource();
   zsoda::inference::InferenceRequest request;
@@ -247,6 +275,63 @@ void TestMissingModelFileDiagnostics() {
   assert(!output.empty());
   assert(error == "selected model file is not installed; using fallback depth path");
 }
+
+#if defined(ZSODA_WITH_ONNX_RUNTIME)
+void TestOnnxBackendValidationScaffold() {
+  zsoda::inference::RuntimeOptions options;
+  options.preferred_backend = zsoda::inference::RuntimeBackend::kCuda;
+
+  std::string error;
+  auto backend = zsoda::inference::CreateOnnxRuntimeBackend(options, &error);
+  assert(backend != nullptr);
+  assert(error.empty());
+  assert(Contains(backend->Name(), "OnnxRuntimeBackendScaffold[cuda]"));
+
+  error.clear();
+  assert(!backend->SelectModel("", "placeholder.onnx", &error));
+  assert(Contains(error, "model id cannot be empty"));
+
+  error.clear();
+  assert(!backend->SelectModel("depth-anything-v3-small", "", &error));
+  assert(Contains(error, "model path cannot be empty"));
+
+  TempDir temp_dir;
+  const auto missing = temp_dir.path() / "missing.onnx";
+  error.clear();
+  assert(!backend->SelectModel("depth-anything-v3-small", missing.string(), &error));
+  assert(Contains(error, "model path does not exist:"));
+
+  const auto model_dir = temp_dir.path() / "as-directory";
+  std::filesystem::create_directories(model_dir);
+  error.clear();
+  assert(!backend->SelectModel("depth-anything-v3-small", model_dir.string(), &error));
+  assert(Contains(error, "model path is not a regular file:"));
+
+  const auto wrong_extension = temp_dir.path() / "depth_anything_v3_small.txt";
+  WriteTextFile(wrong_extension, "dummy");
+  error.clear();
+  assert(!backend->SelectModel("depth-anything-v3-small", wrong_extension.string(), &error));
+  assert(Contains(error, "model file extension must be .onnx:"));
+
+  const auto valid_model = temp_dir.path() / "depth_anything_v3_small.onnx";
+  WriteTextFile(valid_model, "dummy");
+  error.clear();
+  assert(backend->SelectModel("depth-anything-v3-small", valid_model.string(), &error));
+  assert(error.empty());
+
+  const auto source = MakeSource();
+  zsoda::inference::InferenceRequest request;
+  request.source = &source;
+  request.quality = 1;
+
+  zsoda::core::FrameBuffer output;
+  error.clear();
+  assert(!backend->Run(request, &output, &error));
+  assert(Contains(error, "execution is not available in this build"));
+  assert(Contains(error, "model_id=depth-anything-v3-small"));
+  assert(Contains(error, valid_model.string()));
+}
+#endif
 
 }  // namespace
 
@@ -260,4 +345,7 @@ void RunInferenceEngineTests() {
   TestManifestLoadValidation();
   TestManifestModelSelectionRunPath();
   TestMissingModelFileDiagnostics();
+#if defined(ZSODA_WITH_ONNX_RUNTIME)
+  TestOnnxBackendValidationScaffold();
+#endif
 }

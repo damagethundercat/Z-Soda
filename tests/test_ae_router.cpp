@@ -1,3 +1,4 @@
+#include <array>
 #include <cassert>
 #include <cstdint>
 #include <memory>
@@ -67,6 +68,63 @@ void TestStubCommandAndDispatchMapping() {
   zsoda::ae::AeDispatchContext unknown_dispatch;
   assert(zsoda::ae::BuildStubDispatch(99, &unknown_dispatch, &error));
   assert(unknown_dispatch.command.command == zsoda::ae::AeCommand::kUnknown);
+}
+
+void TestSafeFrameHashSeed() {
+  zsoda::ae::AeFrameHashSeed seed;
+  seed.current_time = 120;
+  seed.time_step = 2;
+  seed.time_scale = 24;
+  seed.width = 1920;
+  seed.height = 1080;
+  seed.source_row_bytes = 1920U * 16U;
+  seed.output_row_bytes = 1920U * 16U;
+
+  int source_token = 11;
+  int output_token = 22;
+  seed.source_pixels = &source_token;
+  seed.output_pixels = &output_token;
+
+  const std::uint64_t hash_a = zsoda::ae::ComputeSafeFrameHash(seed);
+  const std::uint64_t hash_b = zsoda::ae::ComputeSafeFrameHash(seed);
+  assert(hash_a != 0);
+  assert(hash_a == hash_b);
+
+  seed.current_time += 1;
+  const std::uint64_t hash_c = zsoda::ae::ComputeSafeFrameHash(seed);
+  assert(hash_c != hash_a);
+
+  zsoda::ae::AeFrameHashSeed empty_seed;
+  const std::uint64_t empty_hash = zsoda::ae::ComputeSafeFrameHash(empty_seed);
+  assert(empty_hash != 0);
+}
+
+void TestPixelFormatCandidatesFromRowBytes() {
+  std::array<zsoda::core::PixelFormat, zsoda::ae::kAePixelFormatCandidateCapacity> candidates{};
+
+  std::size_t count =
+      zsoda::ae::BuildHostRenderPixelFormatCandidates(8, 8U * 16U, &candidates);
+  assert(count == 3U);
+  assert(candidates[0] == zsoda::core::PixelFormat::kRGBA32F);
+  assert(candidates[1] == zsoda::core::PixelFormat::kRGBA16);
+  assert(candidates[2] == zsoda::core::PixelFormat::kRGBA8);
+
+  count = zsoda::ae::BuildHostRenderPixelFormatCandidates(8, 8U * 8U, &candidates);
+  assert(count == 2U);
+  assert(candidates[0] == zsoda::core::PixelFormat::kRGBA16);
+  assert(candidates[1] == zsoda::core::PixelFormat::kRGBA8);
+
+  count = zsoda::ae::BuildHostRenderPixelFormatCandidates(8, 8U * 4U, &candidates);
+  assert(count == 1U);
+  assert(candidates[0] == zsoda::core::PixelFormat::kRGBA8);
+
+  count = zsoda::ae::BuildHostRenderPixelFormatCandidates(0, 0U, &candidates);
+  assert(count == zsoda::ae::kAePixelFormatCandidateCapacity);
+  assert(candidates[0] == zsoda::core::PixelFormat::kRGBA8);
+  assert(candidates[1] == zsoda::core::PixelFormat::kRGBA16);
+  assert(candidates[2] == zsoda::core::PixelFormat::kRGBA32F);
+
+  assert(zsoda::ae::BuildHostRenderPixelFormatCandidates(8, 32U, nullptr) == 0U);
 }
 
 void TestParamSetupAndModelMenu() {
@@ -534,6 +592,8 @@ void TestPluginEntryHostBufferBridgePath() {
 
 void RunAeRouterTests() {
   TestStubCommandAndDispatchMapping();
+  TestSafeFrameHashSeed();
+  TestPixelFormatCandidatesFromRowBytes();
   TestParamSetupAndModelMenu();
   TestRenderUsesCurrentAndOverrideParams();
   TestRenderBridgeFrameHashCacheBehavior();

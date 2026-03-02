@@ -3,8 +3,8 @@
 이 문서는 작업 진행도와 남은 작업을 공유하기 위한 운영 문서입니다.
 
 ## 1. 전체 진행률
-- 전체 진행률: **86%** (`PLAN.md`의 `P1`~`P5` 기준, `P3`/`P4`/`P5` 핵심 기반 고도화 진행)
-- 마지막 업데이트: **2026-03-02** (호스트 버퍼 브리지/적응형 타일 폴백/백엔드 진단 반영)
+- 전체 진행률: **89%** (`PLAN.md`의 `P1`~`P5` 기준, `P3`/`P4`/`P5` 고도화 및 진단 경로 확장)
+- 마지막 업데이트: **2026-03-02** (ONNX 스캐폴드 검증 강화 + PF_Cmd_RENDER 페이로드 추출 고도화)
 - 갱신 원칙: **작업 단위 완료 시 즉시 업데이트**
 
 ## 2. 현재 작업 상태
@@ -41,15 +41,16 @@
 - [x] `D24` ORT 옵션 경로 2차 통합 검증 (`ZSODA_WITH_ONNX_RUNTIME=1` 테스트 빌드 통과)
 - [x] `D25` 리더 리뷰 노트 추가: 이번 라운드 수용 기준 요약 + Windows/macOS AE SDK 환경의 실 `.aex/.plugin` 산출 전 필수 잔여 조건 정리 (`docs/build/2026-03-02-leader-review-note.md`)
 - [x] `D26` 호스트 버퍼 렌더 브리지(입출력 픽셀 변환 경로), 적응형 타일 재시도 폴백, 추론 백엔드 상태 진단 추가 + 관련 테스트 확장 후 재검증 완료 (`plugin/ae/*`, `plugin/core/RenderPipeline.cpp`, `plugin/inference/ManagedInferenceEngine*`, `tests/*`)
+- [x] `D27` ONNX Runtime 스캐폴드의 모델 경로 검증/전처리 준비/진단 문자열 확장 + `PF_Cmd_RENDER` 추출 스캐폴드(안전 프레임 해시/픽셀 포맷 후보 계산) 고도화 및 회귀 테스트 통과 (`plugin/inference/OnnxRuntimeBackend.cpp`, `plugin/inference/ManagedInferenceEngine.cpp`, `plugin/ae/AeHostAdapter*`, `tests/test_inference_engine.cpp`, `tests/test_ae_router.cpp`)
 
 ## 4. 남은 작업
 1. `P3` 구현: AE 파라미터와 모델 선택 UI(`model_id`)를 실제 핸들러에 연결
 2. `P3` 구현: AE SDK 실제 `PF_Cmd_*` 경로에 라우터/파라미터 연결
-3. `P3` 구현: `PF_Cmd_RENDER` payload에서 `PixelConversion` 경로를 실제 호출로 연결
+3. `P3` 구현: `PF_Cmd_RENDER` payload에서 `PixelConversion` 경로를 16/32 bpc까지 확정 포맷으로 연결
 4. `P4` 잔여: OOM/백엔드 실패 원인별 정책 세분화(타일 크기 자동 축소는 반영 완료, VRAM 힌트 기반 다운스케일 비율 연동 남음)
 5. `P5` 구축: 성능/회귀/장시간 안정성 테스트 파이프라인 정리(현재 하네스는 1차 완료)
 6. `P5` 구축: 문서화된 최종 패키징 경로를 실제 CMake 타깃(`.aex/.plugin`) 및 배포 스크립트로 연결
-7. 실제 ONNX Runtime 백엔드 연결 (현재는 백엔드 선택 옵션 + 매니페스트 기반 카탈로그 + 안전 폴백/진단 경로까지 반영)
+7. 실제 ONNX Runtime 백엔드 연결 (현재는 스캐폴드/검증/진단 강화 완료, 실제 ORT 세션 실행 경로 대체 필요)
 8. CMake 기반 빌드/테스트 루트 검증 (`cmake` 도구 설치 후 재검증)
 
 ## 5. 이슈 및 리스크

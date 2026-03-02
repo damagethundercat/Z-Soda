@@ -143,9 +143,17 @@ InferenceBackendStatus ManagedInferenceEngine::BackendStatus() const {
   status.last_run_used_fallback = last_run_used_fallback_;
   status.active_backend_name = RuntimeBackendName(active_backend_);
 #if defined(ZSODA_WITH_ONNX_RUNTIME)
-  const bool route_to_onnx = (onnx_backend_ != nullptr && !using_fallback_engine_ &&
-                              !status.last_run_used_fallback);
-  status.engine_name = route_to_onnx ? onnx_backend_->Name() : fallback_engine_.Name();
+  if (onnx_backend_ != nullptr) {
+    const std::string backend_name = onnx_backend_->Name();
+    if (!using_fallback_engine_ && !status.last_run_used_fallback) {
+      status.engine_name = backend_name;
+    } else {
+      status.engine_name =
+          std::string(fallback_engine_.Name()) + " (fallback_from=" + backend_name + ")";
+    }
+  } else {
+    status.engine_name = fallback_engine_.Name();
+  }
 #else
   status.engine_name = fallback_engine_.Name();
 #endif
@@ -167,10 +175,8 @@ std::string ManagedInferenceEngine::BackendStatusString() const {
   result.append(status.using_fallback_engine ? "true" : "false");
   result.append(", last_run_fallback=");
   result.append(status.last_run_used_fallback ? "true" : "false");
-  if (!status.fallback_reason.empty()) {
-    result.append(", reason=");
-    result.append(status.fallback_reason);
-  }
+  result.append(", fallback_reason=");
+  result.append(status.fallback_reason.empty() ? "none" : status.fallback_reason);
   return result;
 }
 
