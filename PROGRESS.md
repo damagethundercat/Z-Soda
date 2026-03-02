@@ -3,8 +3,8 @@
 이 문서는 작업 진행도와 남은 작업을 공유하기 위한 운영 문서입니다.
 
 ## 1. 전체 진행률
-- 전체 진행률: **94%** (`PLAN.md`의 `P1`~`P5` 기준, macOS 번들 메타데이터까지 반영)
-- 마지막 업데이트: **2026-03-02** (macOS `.plugin` 번들 속성/`Info.plist` 반영)
+- 전체 진행률: **95%** (`PLAN.md`의 `P1`~`P5` 기준, 렌더 페이로드 포맷 확정 로직 고도화)
+- 마지막 업데이트: **2026-03-02** (`PF_Cmd_RENDER` 포맷 선택(8/16/32) 보강 + 회귀 테스트 통과)
 - 갱신 원칙: **작업 단위 완료 시 즉시 업데이트**
 
 ## 2. 현재 작업 상태
@@ -45,11 +45,12 @@
 - [x] `D28` ORT API 옵션 경로 추가(`ZSODA_WITH_ONNX_RUNTIME_API`) 및 실제 세션 생성/실행 파이프라인(전처리 NCHW + 출력 정규화/리사이즈) 통합, CMake 옵션/문서 확장, 비-API 회귀 테스트 재통과 (`plugin/inference/OnnxRuntimeBackend.cpp`, `plugin/CMakeLists.txt`, `README.md`, `docs/build/README.md`, `tests/test_inference_engine.cpp`)
 - [x] `D29` CMake에 AE SDK 기반 패키징 타깃 정의 추가(Windows `zsoda_aex`, macOS `zsoda_plugin_bundle`) 및 빌드 문서 동기화 (`plugin/CMakeLists.txt`, `README.md`, `docs/build/README.md`)
 - [x] `D30` macOS `zsoda_plugin_bundle`에 `.plugin` 번들 속성/`Info.plist` 템플릿 연결 및 패키징 문서 반영 (`plugin/CMakeLists.txt`, `plugin/ae/Info.plist.in`, `README.md`, `docs/build/README.md`)
+- [x] `D31` `PF_Cmd_RENDER` 스캐폴드의 호스트 픽셀 포맷 선택 로직 고도화(Stride 기반 8/16/32 추론 + source/output 힌트 충돌 검증) 및 단위 테스트 추가 (`plugin/ae/AeHostAdapter.*`, `tests/test_ae_router.cpp`)
 
 ## 4. 남은 작업
 1. `P3` 구현: AE 파라미터와 모델 선택 UI(`model_id`)를 실제 핸들러에 연결
 2. `P3` 구현: AE SDK 실제 `PF_Cmd_*` 경로에 라우터/파라미터 연결
-3. `P3` 구현: `PF_Cmd_RENDER` payload에서 `PixelConversion` 경로를 16/32 bpc까지 확정 포맷으로 연결
+3. `P3` 구현: `PF_Cmd_RENDER` payload에서 `PixelConversion` 경로를 SDK 픽셀 타입 힌트까지 사용해 16/32 bpc 확정률 추가 개선
 4. `P4` 잔여: OOM/백엔드 실패 원인별 정책 세분화(타일 크기 자동 축소는 반영 완료, VRAM 힌트 기반 다운스케일 비율 연동 남음)
 5. `P5` 구축: 성능/회귀/장시간 안정성 테스트 파이프라인 정리(현재 하네스는 1차 완료)
 6. `P5` 구축: 문서화된 최종 패키징 경로를 실제 CMake 타깃(`.aex/.plugin`) 및 배포 스크립트로 연결

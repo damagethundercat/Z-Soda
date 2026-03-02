@@ -58,6 +58,13 @@ std::size_t BuildHostRenderPixelFormatCandidates(
     int width,
     std::size_t row_bytes,
     std::array<zsoda::core::PixelFormat, kAePixelFormatCandidateCapacity>* candidates);
+std::optional<zsoda::core::PixelFormat> InferHostRenderPixelFormatFromStride(int width,
+                                                                              std::size_t row_bytes);
+std::optional<zsoda::core::PixelFormat> SelectHostRenderPixelFormat(
+    const std::array<zsoda::core::PixelFormat, kAePixelFormatCandidateCapacity>& candidates,
+    std::size_t candidate_count,
+    std::optional<zsoda::core::PixelFormat> source_stride_hint,
+    std::optional<zsoda::core::PixelFormat> output_stride_hint);
 
 AeCommand MapStubCommandId(int command_id);
 bool BuildStubDispatch(int command_id, AeDispatchContext* dispatch, std::string* error);

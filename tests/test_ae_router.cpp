@@ -2,6 +2,7 @@
 #include <cassert>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -125,6 +126,41 @@ void TestPixelFormatCandidatesFromRowBytes() {
   assert(candidates[2] == zsoda::core::PixelFormat::kRGBA32F);
 
   assert(zsoda::ae::BuildHostRenderPixelFormatCandidates(8, 32U, nullptr) == 0U);
+}
+
+void TestPixelFormatInferenceFromStride() {
+  assert(zsoda::ae::InferHostRenderPixelFormatFromStride(8, 8U * 4U) ==
+         zsoda::core::PixelFormat::kRGBA8);
+  assert(zsoda::ae::InferHostRenderPixelFormatFromStride(8, 8U * 8U) ==
+         zsoda::core::PixelFormat::kRGBA16);
+  assert(zsoda::ae::InferHostRenderPixelFormatFromStride(8, 8U * 16U) ==
+         zsoda::core::PixelFormat::kRGBA32F);
+  assert(!zsoda::ae::InferHostRenderPixelFormatFromStride(8, 65U).has_value());
+  assert(!zsoda::ae::InferHostRenderPixelFormatFromStride(0, 64U).has_value());
+}
+
+void TestSelectHostRenderPixelFormat() {
+  std::array<zsoda::core::PixelFormat, zsoda::ae::kAePixelFormatCandidateCapacity> candidates{};
+  candidates[0] = zsoda::core::PixelFormat::kRGBA32F;
+  candidates[1] = zsoda::core::PixelFormat::kRGBA16;
+  candidates[2] = zsoda::core::PixelFormat::kRGBA8;
+
+  assert(zsoda::ae::SelectHostRenderPixelFormat(candidates,
+                                                3,
+                                                zsoda::core::PixelFormat::kRGBA16,
+                                                zsoda::core::PixelFormat::kRGBA16) ==
+         zsoda::core::PixelFormat::kRGBA16);
+  assert(zsoda::ae::SelectHostRenderPixelFormat(candidates,
+                                                3,
+                                                zsoda::core::PixelFormat::kRGBA8,
+                                                std::nullopt) == zsoda::core::PixelFormat::kRGBA8);
+  assert(!zsoda::ae::SelectHostRenderPixelFormat(candidates,
+                                                 3,
+                                                 zsoda::core::PixelFormat::kRGBA8,
+                                                 zsoda::core::PixelFormat::kRGBA16)
+              .has_value());
+  assert(zsoda::ae::SelectHostRenderPixelFormat(
+             candidates, 1, std::nullopt, std::nullopt) == zsoda::core::PixelFormat::kRGBA32F);
 }
 
 void TestParamSetupAndModelMenu() {
@@ -594,6 +630,8 @@ void RunAeRouterTests() {
   TestStubCommandAndDispatchMapping();
   TestSafeFrameHashSeed();
   TestPixelFormatCandidatesFromRowBytes();
+  TestPixelFormatInferenceFromStride();
+  TestSelectHostRenderPixelFormat();
   TestParamSetupAndModelMenu();
   TestRenderUsesCurrentAndOverrideParams();
   TestRenderBridgeFrameHashCacheBehavior();

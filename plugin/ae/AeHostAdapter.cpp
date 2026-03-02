@@ -239,6 +239,64 @@ std::size_t BuildHostRenderPixelFormatCandidates(
   return count;
 }
 
+std::optional<zsoda::core::PixelFormat> InferHostRenderPixelFormatFromStride(int width,
+                                                                              std::size_t row_bytes) {
+  if (width <= 0) {
+    return std::nullopt;
+  }
+
+  const std::size_t width_size = static_cast<std::size_t>(width);
+  if (width_size == 0 || row_bytes % width_size != 0) {
+    return std::nullopt;
+  }
+
+  const std::size_t bytes_per_pixel = row_bytes / width_size;
+  switch (bytes_per_pixel) {
+    case sizeof(std::uint8_t) * 4U:
+      return zsoda::core::PixelFormat::kRGBA8;
+    case sizeof(std::uint16_t) * 4U:
+      return zsoda::core::PixelFormat::kRGBA16;
+    case sizeof(float) * 4U:
+      return zsoda::core::PixelFormat::kRGBA32F;
+    default:
+      return std::nullopt;
+  }
+}
+
+std::optional<zsoda::core::PixelFormat> SelectHostRenderPixelFormat(
+    const std::array<zsoda::core::PixelFormat, kAePixelFormatCandidateCapacity>& candidates,
+    std::size_t candidate_count,
+    std::optional<zsoda::core::PixelFormat> source_stride_hint,
+    std::optional<zsoda::core::PixelFormat> output_stride_hint) {
+  const auto is_candidate = [&](zsoda::core::PixelFormat format) {
+    for (std::size_t i = 0; i < candidate_count; ++i) {
+      if (candidates[i] == format) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  if (candidate_count == 0) {
+    return std::nullopt;
+  }
+  if (source_stride_hint.has_value() && output_stride_hint.has_value() &&
+      source_stride_hint != output_stride_hint) {
+    return std::nullopt;
+  }
+
+  if (source_stride_hint.has_value() && is_candidate(*source_stride_hint)) {
+    return source_stride_hint;
+  }
+  if (output_stride_hint.has_value() && is_candidate(*output_stride_hint)) {
+    return output_stride_hint;
+  }
+  if (candidate_count == 1) {
+    return candidates[0];
+  }
+  return std::nullopt;
+}
+
 bool BuildStubDispatch(int command_id, AeDispatchContext* dispatch, std::string* error) {
   if (dispatch == nullptr) {
     SetError(error, "missing dispatch output");
@@ -446,24 +504,32 @@ bool TryExtractPfCmdRenderPayload(const AeSdkEntryPayload& payload,
                                            candidate_row_bytes,
                                            &scaffold->pixel_format_candidates);
 
+  const auto source_stride_hint =
+      InferHostRenderPixelFormatFromStride(source_width, source_row_bytes);
+  const auto output_stride_hint =
+      InferHostRenderPixelFormatFromStride(output_width, output_row_bytes);
+  const auto selected_format = SelectHostRenderPixelFormat(scaffold->pixel_format_candidates,
+                                                            scaffold->pixel_format_candidate_count,
+                                                            source_stride_hint,
+                                                            output_stride_hint);
+
   if (!scaffold->source_is_valid || !scaffold->output_is_valid || !scaffold->dimensions_match ||
-      scaffold->pixel_format_candidate_count != 1) {
+      !selected_format.has_value()) {
     // Keep extraction metadata for diagnostics, but avoid wiring host buffers
     // until pixel format detection is unambiguous.
     return true;
   }
 
-  const zsoda::core::PixelFormat selected_format = scaffold->pixel_format_candidates[0];
   scaffold->host_render.source.pixels = source_pixels;
   scaffold->host_render.source.width = output_width;
   scaffold->host_render.source.height = output_height;
   scaffold->host_render.source.row_bytes = source_row_bytes;
-  scaffold->host_render.source.format = selected_format;
+  scaffold->host_render.source.format = *selected_format;
   scaffold->host_render.destination.pixels = output_pixels;
   scaffold->host_render.destination.width = output_width;
   scaffold->host_render.destination.height = output_height;
   scaffold->host_render.destination.row_bytes = output_row_bytes;
-  scaffold->host_render.destination.format = selected_format;
+  scaffold->host_render.destination.format = *selected_format;
   scaffold->has_host_buffers = true;
   return true;
 }
