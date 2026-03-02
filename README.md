@@ -9,6 +9,10 @@ Depth Scanner-style After Effects plugin scaffold.
 - Research references: `docs/research/`
 - Perf/QA harness guide: `docs/perf/README.md`
 - Final-mile packaging guide (.aex/.plugin): `docs/build/README.md`
+- Leader review note (acceptance/remaining gates): `docs/build/2026-03-02-leader-review-note.md`
+- AE smoke test guide: `docs/build/AE_SMOKE_TEST.md`
+- ORT runtime deploy note: `docs/build/ORT_RUNTIME_DEPLOY.md`
+- Windows `.aex` build helper script: `tools/build_aex.ps1`
 
 ## Current Layout
 - `plugin/ae`: AE command routing and plugin entry stub
@@ -62,6 +66,10 @@ Current runtime note:
   - `실패 시 점검 5항목`
   - `산출물 확인 명령`
 - Current workspace is Linux/WSL2 without `cmake`, AE SDK, MSBuild, or Xcode, so native packaging commands are not executable here.
+
+## 사용자 테스트 가능 시점
+- Windows 네이티브 환경(MSVC + AE SDK + CMake + ONNX Runtime 경로) 준비 즉시 사용자 테스트를 시작할 수 있습니다.
+- 시작 절차는 `docs/build/README.md`의 `Windows 빠른 시작 10단계`를 기준으로 진행하면 됩니다.
 
 ## Build & Test
 Preferred (when `cmake` is available):

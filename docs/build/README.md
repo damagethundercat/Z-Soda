@@ -2,6 +2,21 @@
 
 This document records the packaging path from CMake build output to After Effects installable artifacts.
 
+## Related Docs/Scripts
+
+- Leader acceptance/remaining gates note:
+  - `docs/build/2026-03-02-leader-review-note.md`
+- AE smoke test guide:
+  - `docs/build/AE_SMOKE_TEST.md`
+- ORT runtime deploy note:
+  - `docs/build/ORT_RUNTIME_DEPLOY.md`
+- Packaging helper scripts:
+  - `tools/build_aex.ps1` (Windows CMake configure/build + `.aex` 해시 출력)
+  - `tools/package_plugin.sh`
+  - `tools/package_plugin.ps1`
+- Local CI/scripted verification:
+  - `tools/run_local_ci.sh`
+
 ## Scope
 
 - Target artifacts:
@@ -118,6 +133,16 @@ Copy-Item "build-win/plugin/Release/ZSoda.aex" `
      -DAE_SDK_ROOT="$env:AE_SDK_ROOT"
    ```
 
+   ```powershell
+   # Shortcut: 위 configure/build 과정을 한 번에 실행하려면
+   .\tools\build_aex.ps1 `
+     -AeSdkIncludeDir "$env:AE_SDK_ROOT\Examples\Headers" `
+     -OrtIncludeDir "$env:ORT_INCLUDE" `
+     -OrtLibrary "$env:ORT_LIB" `
+     -BuildDir "build-win" `
+     -Config Release
+   ```
+
 5. 공통 코어 타깃(`zsoda_plugin`)을 빌드합니다.
 
    ```powershell
@@ -144,6 +169,20 @@ Copy-Item "build-win/plugin/Release/ZSoda.aex" `
    ```powershell
    .\tools\package_plugin.ps1 -Platform windows -BuildDir build-win -OutputDir dist -IncludeManifest
    ```
+
+   ```powershell
+   # Optional: onnxruntime.dll까지 함께 복사
+   .\tools\package_plugin.ps1 -Platform windows -BuildDir build-win -OutputDir dist -IncludeManifest `
+     -OrtRuntimeDllPath "C:\onnxruntime\lib\onnxruntime.dll"
+   ```
+
+## 사용자 테스트 가능 시점
+
+- **Windows 환경 준비 즉시** 사용자 테스트를 시작할 수 있습니다.
+- 기준 조건:
+  - AE SDK/VS2022/CMake/ONNX Runtime 경로 검증 완료
+  - `zsoda_aex` 빌드 성공
+  - `MediaCore` 경로 복사 후 AE에서 플러그인 로드 확인
 
 ## 실패 시 점검 5항목
 

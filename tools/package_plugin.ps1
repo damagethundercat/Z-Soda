@@ -9,7 +9,9 @@ param(
   [Parameter(Mandatory = $true)]
   [string]$OutputDir,
 
-  [switch]$IncludeManifest
+  [switch]$IncludeManifest,
+
+  [string]$OrtRuntimeDllPath
 )
 
 $ErrorActionPreference = "Stop"
@@ -67,6 +69,19 @@ if ($IncludeManifest) {
   }
 }
 
+$ortRuntimeCopiedPath = $null
+if ($Platform -eq "windows") {
+  if ([string]::IsNullOrWhiteSpace($OrtRuntimeDllPath)) {
+    Write-Warning "OrtRuntimeDllPath is not provided; skipping onnxruntime.dll copy."
+  } elseif (-not (Test-Path -LiteralPath $OrtRuntimeDllPath -PathType Leaf)) {
+    Write-Warning "OrtRuntimeDllPath does not point to a file: '$OrtRuntimeDllPath'. Skipping onnxruntime.dll copy."
+  } else {
+    $ortDestination = Join-Path $OutputDir "onnxruntime.dll"
+    Copy-Item -LiteralPath $OrtRuntimeDllPath -Destination $ortDestination -Force
+    $ortRuntimeCopiedPath = $ortDestination
+  }
+}
+
 if (Get-Command Get-FileHash -ErrorAction SilentlyContinue) {
   if ($Platform -eq "windows") {
     $hash = Get-FileHash -Algorithm SHA256 -LiteralPath $destination
@@ -89,4 +104,7 @@ Write-Host "  source:   $artifactPath"
 Write-Host "  output:   $destination"
 if ($IncludeManifest) {
   Write-Host "  manifest: $(Join-Path $OutputDir 'models.manifest')"
+}
+if ($ortRuntimeCopiedPath) {
+  Write-Host "  ort dll:  $ortRuntimeCopiedPath"
 }

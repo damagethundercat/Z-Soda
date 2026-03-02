@@ -4,7 +4,7 @@
 
 ## 1. 전체 진행률
 - 전체 진행률: **99%** (`PLAN.md`의 `P1`~`P5` 기준, `P3/P4/P5`는 마무리 단계)
-- 마지막 업데이트: **2026-03-02** (`PARAM_SETUP` 등록 스캐폴드 + SDK 픽셀 힌트 결합 경로 반영)
+- 마지막 업데이트: **2026-03-02** (Windows `.aex` 빌드 헬퍼/ORT 런타임 배포 노트/AE 스모크 테스트 체크리스트 반영)
 - 갱신 원칙: **작업 단위 완료 시 즉시 업데이트**
 
 ## 2. 현재 작업 상태
@@ -12,7 +12,7 @@
 - [x] `P2` 모델/세션 생명주기 + 캐시 우선 렌더 파이프라인 — 상태: `완료`
 - [ ] `P3` Depth Map/Slicing 모드 + 8/16/32 bpc 경계 변환 — 상태: `진행중 (93%)` (완료: `PF_Cmd_USER_CHANGED_PARAM` 매핑+`params[]` 추출/렌더 override, `PARAM_SETUP` `PF_ADD_*` 등록 스캐폴드, SDK 픽셀 힌트+stride 결합 포맷 추론 / 남은 핵심: 실제 AE SDK 환경에서 파라미터 UI 등록/렌더 연동 실검증)
 - [ ] `P4` OOM/백엔드 실패 대비 타일링·다운스케일 폴백 — 상태: `진행중 (88%)` (완료: `직접->타일->다운스케일->안전 출력` 폴백 체인, 적응형 타일 재시도+VRAM budget 기반 비율 조정 / 남은 핵심: SDK/OS 메모리 신호 연계, OOM/백엔드 실패 원인별 정책 세분화)
-- [ ] `P5` 테스트/벤치마크/안정성 검증 + 패키징 스크립트 — 상태: `진행중 (82%)` (완료: perf harness+CTest 등록, 로컬/CI 공용 검증 스크립트·워크플로 및 패키징 문서/스크립트 정리 / 남은 핵심: 네이티브 host 기준 최종 `.aex/.plugin` 실검증, ORT API ON 경로 실빌드 검증)
+- [ ] `P5` 테스트/벤치마크/안정성 검증 + 패키징 스크립트 — 상태: `진행중 (86%)` (완료: perf harness+CTest 등록, 로컬/CI 공용 검증 스크립트·워크플로, Windows `.aex` 빌드 헬퍼(`tools/build_aex.ps1`), ORT 런타임 배포 노트/AE 스모크 테스트 체크리스트 추가 / 남은 핵심: 네이티브 host 기준 최종 `.aex/.plugin` 실검증, ORT API ON 경로 실빌드 검증)
 
 ## 3. 최근 완료 작업
 - [x] `D1` 문서 역할 분리 완료 (`AGENTS.md` 필수 지침, `PLAN.md` 실행 계획, `PROGRESS.md` 진행 현황)
@@ -51,6 +51,8 @@
 - [x] `D34` 로컬/CI 공용 검증 스크립트(`tools/run_local_ci.sh`) 및 GitHub Actions 워크플로(`.github/workflows/ci.yml`) 추가, 로컬 실행 통과
 - [x] `D35` AE SDK 경로에 `PF_Cmd_USER_CHANGED_PARAM` -> `AeCommand::kUpdateParams` 매핑 추가, `params[]` 기반 `AeParamValues` 추출/렌더 override 연결, 스텁 파라미터 설정 API(`ZSodaSetParamsStub`) 및 회귀 테스트 보강 (`plugin/ae/AeHostAdapter.*`, `plugin/ae/AePluginEntry.cpp`, `tests/test_ae_router.cpp`)
 - [x] `D36` AE SDK `PARAM_SETUP`에 `PF_ADD_*` 기반 파라미터 등록 스캐폴드 추가, `SEQUENCE_*`/`SMART_*` 안전 no-op 매핑 확장, `PF_Cmd_RENDER` 포맷 선택 시 SDK 픽셀 힌트(in_data/world/accessor) 결합 반영 (`plugin/ae/AeHostAdapter.cpp`)
+- [x] `D37` 문서 동기화: 문서 인덱스에 새 문서/스크립트 참조 링크 추가 + `사용자 테스트 가능 시점` 섹션 반영 (`README.md`, `docs/build/README.md`, `PROGRESS.md`)
+- [x] `D38` Windows 빌드/검증 고도화: `tools/build_aex.ps1` 추가(설정/빌드/산출물 SHA256/MediaCore 복사 옵션), `tools/package_plugin.ps1`에 `-OrtRuntimeDllPath` 옵션 추가, ORT 런타임 배포 노트/AE 스모크 테스트 체크리스트 추가 (`tools/build_aex.ps1`, `tools/package_plugin.ps1`, `docs/build/ORT_RUNTIME_DEPLOY.md`, `docs/build/AE_SMOKE_TEST.md`, `README.md`, `docs/build/README.md`)
 
 ## 4. 남은 작업
 1. `P3` 구현: AE 파라미터와 모델 선택 UI(`model_id`)를 실제 `PARAM_SETUP` 등록 코드와 AE 호스트에서 실검증
@@ -58,7 +60,7 @@
 3. `P3` 구현: `PF_Cmd_RENDER` payload에서 SDK 픽셀 타입 힌트 결합 경로의 16/32 bpc 실호스트 검증
 4. `P4` 잔여: OOM/백엔드 실패 원인별 정책 세분화(타일 자동 축소 + VRAM 힌트 기반 다운스케일 비율은 반영 완료, SDK/OS별 메모리 신호 연계 남음)
 5. `P5` 구축: 성능/회귀/장시간 안정성 테스트 파이프라인 정리(로컬/CI 기본 자동화 완료, 네이티브 host 검증 파이프라인 추가 필요)
-6. `P5` 구축: 문서화된 최종 패키징 경로를 실제 CMake 타깃(`.aex/.plugin`) 및 배포 스크립트로 연결 (스크립트 추가 완료, 네이티브 호스트 실검증 남음)
+6. `P5` 구축: 문서화된 최종 패키징 경로를 실제 CMake 타깃(`.aex/.plugin`) 및 배포 스크립트로 연결 (Windows 빌드/패키징 스크립트는 추가 완료, 네이티브 호스트 실검증 남음)
 7. ORT API 경로의 네이티브 실검증 (현재 환경은 ORT 헤더/라이브러리 부재로 API ON 빌드 미검증)
 8. CMake 기반 빌드/테스트 루트 검증 (`cmake` 도구 설치 후 재검증)
 9. ORT 백엔드 GPU 프로바이더(CUDA/DirectML/Metal/CoreML) 분기 연결 및 OS별 fallback 정책 문서화
