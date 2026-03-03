@@ -3,10 +3,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
-#include <mutex>
 #include <optional>
 #include <unordered_map>
 
+#include "core/CompatMutex.h"
 #include "core/Frame.h"
 
 namespace zsoda::core {
@@ -48,7 +48,7 @@ class DepthCache {
   void TrimIfNeeded();
 
   std::size_t max_entries_ = 32;
-  mutable std::mutex mutex_;
+  mutable CompatMutex mutex_;
   std::unordered_map<RenderCacheKey, FrameBuffer, RenderCacheKeyHash> entries_;
   std::deque<RenderCacheKey> lru_;
 };

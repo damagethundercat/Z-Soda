@@ -27,6 +27,8 @@ param(
   [ValidateSet("Win32", "x64", "ARM64")]
   [string]$Platform = "x64",
 
+  [string]$MsvcRuntime = 'MultiThreaded$<$<CONFIG:Debug>:Debug>',
+
   [switch]$Clean,
 
   [switch]$CopyToMediaCore,
@@ -243,6 +245,7 @@ $configureArgs = @(
   "-DZSODA_WITH_AE_SDK=ON",
   "-DZSODA_WITH_ONNX_RUNTIME=ON",
   "-DZSODA_WITH_ONNX_RUNTIME_API=$([int]$EnableOrtApi.IsPresent)",
+  "-DZSODA_MSVC_RUNTIME_LIBRARY=$MsvcRuntime",
   "-DZSODA_ONNXRUNTIME_DIRECT_LINK_MODE=$OrtDirectLinkMode",
   "-DAE_SDK_INCLUDE_DIR=$aeSdkIncludeDirAbs",
   "-DONNXRUNTIME_INCLUDE_DIR=$ortIncludeDirAbs",

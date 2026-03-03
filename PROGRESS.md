@@ -4,7 +4,7 @@
 
 ## 1. 전체 진행률
 - 전체 진행률: **99%** (`PLAN.md`의 `P1`~`P5` 기준, `P3/P4/P5`는 마무리 단계)
-- 마지막 업데이트: **2026-03-03** (외부 참조 리서치 반영 + ORT side-by-side 강제 로드/AE 엔트리 예외 방어층 추가)
+- 마지막 업데이트: **2026-03-03** (Context7 버전 검증 반영 + CRT 의존 완화용 호환 락/정적 런타임 제어 추가)
 - 갱신 원칙: **작업 단위 완료 시 즉시 업데이트**
 
 ## 2. 현재 작업 상태
@@ -12,7 +12,7 @@
 - [x] `P2` 모델/세션 생명주기 + 캐시 우선 렌더 파이프라인 — 상태: `완료`
 - [ ] `P3` Depth Map/Slicing 모드 + 8/16/32 bpc 경계 변환 — 상태: `진행중 (95%)` (완료: `PF_Cmd_USER_CHANGED_PARAM` 매핑+`params[]` 추출/렌더 override, `PARAM_SETUP` `PF_ADD_*` 등록 스캐폴드, SDK 픽셀 힌트+stride 결합 포맷 추론, AE SDK 25.6 헤더 호환 컴파일 수정 / 남은 핵심: 실제 AE 호스트에서 파라미터 UI 등록/렌더 연동 실검증)
 - [ ] `P4` OOM/백엔드 실패 대비 타일링·다운스케일 폴백 — 상태: `진행중 (88%)` (완료: `직접->타일->다운스케일->안전 출력` 폴백 체인, 적응형 타일 재시도+VRAM budget 기반 비율 조정 / 남은 핵심: SDK/OS 메모리 신호 연계, OOM/백엔드 실패 원인별 정책 세분화)
-- [ ] `P5` 테스트/벤치마크/안정성 검증 + 패키징 스크립트 — 상태: `진행중 (96%)` (완료: perf harness+CTest 등록, 로컬/CI 공용 검증 스크립트·워크플로, Windows `.aex` 빌드 헬퍼(`tools/build_aex.ps1`), ORT 런타임 배포 노트/AE 스모크 테스트 체크리스트 추가, ORT API ON + SDK ON 테스트 빌드/단위 테스트 검증, MediaCore 배치 및 산출물 해시 일치 검증, `package_plugin.ps1` Windows 패키지/manifest/ORT DLL/SHA256 산출 확인, dump 기반 예외/레지스터 컨텍스트 추출 검토 및 예외 메시지 경로 `nullptr` 방어 패치 적용, AE 엔트리/스텁 예외 방어층(SEH + C++ 예외 로그) 추가, ORT DLL 기본 로드를 side-by-side 절대경로 우선으로 강화 / 남은 핵심: 네이티브 host 기준 AE 스모크/렌더 큐 실검증)
+- [ ] `P5` 테스트/벤치마크/안정성 검증 + 패키징 스크립트 — 상태: `진행중 (97%)` (완료: perf harness+CTest 등록, 로컬/CI 공용 검증 스크립트·워크플로, Windows `.aex` 빌드 헬퍼(`tools/build_aex.ps1`), ORT 런타임 배포 노트/AE 스모크 테스트 체크리스트 추가, ORT API ON + SDK ON 테스트 빌드/단위 테스트 검증, MediaCore 배치 및 산출물 해시 일치 검증, `package_plugin.ps1` Windows 패키지/manifest/ORT DLL/SHA256 산출 확인, dump 기반 예외/레지스터 컨텍스트 추출 검토 및 예외 메시지 경로 `nullptr` 방어 패치 적용, AE 엔트리/스텁 예외 방어층(SEH + C++ 예외 로그) 추가, ORT DLL 기본 로드를 side-by-side 절대경로 우선으로 강화, `std::mutex` 의존 경로를 호환 락(`SRWLOCK`)으로 치환, CMake/빌드 스크립트에 `MSVC_RUNTIME_LIBRARY` 고정 옵션 추가 / 남은 핵심: 네이티브 host 기준 AE 스모크/렌더 큐 실검증)
 
 ## 3. 최근 완료 작업
 - [x] `D1` 문서 역할 분리 완료 (`AGENTS.md` 필수 지침, `PLAN.md` 실행 계획, `PROGRESS.md` 진행 현황)
@@ -99,3 +99,6 @@
 - [x] `D57` 외부 참조 심화 분석: `NevermindNilas/TheAnimeScripter` 내부 코드 기반으로 AE 연동/모델 운영/provider fallback 패턴을 조사하고 Z-Soda 적용 항목 정리 (`docs/research/2026-03-03-theanimescripter-reference.md`)
 - [x] `D58` ORT 경로 충돌 구조 개선: DLL 경로 미지정 시 `onnxruntime.dll` bare name 로드 대신 플러그인 모듈 인접(side-by-side) 경로를 우선 탐색하고, 미발견 시 명시 오류로 fallback 전환 (`plugin/inference/OrtDynamicLoader.cpp`)
 - [x] `D59` 호스트 크래시 완화층 추가: `EffectMain`/스텁 엔트리 함수에 C++ 예외 가드 + Windows SEH 가드 및 `%TEMP%\\ZSoda_AE_Runtime.log` 진단 로그 경로 추가 (`plugin/ae/AePluginEntry.cpp`)
+- [x] `D60` CRT 경로 의존 완화: `ManagedInferenceEngine`/`DepthCache`/`BufferPool`의 `std::mutex` + `std::scoped_lock` 사용을 `CompatMutex/CompatLockGuard`로 치환해 Windows에서 `MSVCP _Mtx_lock` 경유를 제거 (`plugin/core/CompatMutex.h`, `plugin/core/Cache.*`, `plugin/core/BufferPool.*`, `plugin/inference/ManagedInferenceEngine.*`)
+- [x] `D61` 빌드 런타임 제어 강화: CMake `CMP0091 NEW` + `ZSODA_MSVC_RUNTIME_LIBRARY`(기본 `/MT`) 옵션 추가, Windows 빌드 스크립트/핸드오프 문서 동기화 (`CMakeLists.txt`, `tools/build_aex.ps1`, `docs/build/README.md`, `docs/build/LOCAL_AGENT_HANDOFF.md`)
+- [x] `D62` Context7 기반 버전 검증: ONNX Runtime `OrtApiBase::GetApi()` 미지원 버전 시 `nullptr` 반환 규칙 및 CMake `MSVC_RUNTIME_LIBRARY` 적용 조건(CMP0091) 확인

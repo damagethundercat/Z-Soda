@@ -1,9 +1,9 @@
 #pragma once
 
 #include <memory>
-#include <mutex>
 #include <vector>
 
+#include "core/CompatMutex.h"
 #include "core/Frame.h"
 
 namespace zsoda::core {
@@ -16,7 +16,7 @@ class BufferPool {
 
  private:
   std::size_t max_buffers_ = 8;
-  std::mutex mutex_;
+  CompatMutex mutex_;
   std::vector<std::shared_ptr<FrameBuffer>> free_list_;
 };
 

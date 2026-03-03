@@ -7,7 +7,7 @@ namespace zsoda::core {
 BufferPool::BufferPool(std::size_t max_buffers) : max_buffers_(std::max<std::size_t>(1, max_buffers)) {}
 
 std::shared_ptr<FrameBuffer> BufferPool::Acquire(const FrameDesc& desc) {
-  std::scoped_lock lock(mutex_);
+  CompatLockGuard lock(mutex_);
 
   for (auto it = free_list_.begin(); it != free_list_.end(); ++it) {
     const auto candidate = *it;
@@ -27,7 +27,7 @@ void BufferPool::Release(std::shared_ptr<FrameBuffer> buffer) {
   if (!buffer) {
     return;
   }
-  std::scoped_lock lock(mutex_);
+  CompatLockGuard lock(mutex_);
   if (free_list_.size() >= max_buffers_) {
     return;
   }

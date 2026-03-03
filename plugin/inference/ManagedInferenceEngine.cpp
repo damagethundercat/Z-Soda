@@ -27,13 +27,13 @@ ManagedInferenceEngine::ManagedInferenceEngine(std::string model_root, RuntimeOp
 }
 
 bool ManagedInferenceEngine::Initialize(const std::string& model_id, std::string* error) {
-  std::scoped_lock lock(mutex_);
+  zsoda::core::CompatLockGuard lock(mutex_);
   const std::string target = model_id.empty() ? catalog_.DefaultModelId() : model_id;
   return SelectModelLocked(target, error);
 }
 
 bool ManagedInferenceEngine::SelectModel(const std::string& model_id, std::string* error) {
-  std::scoped_lock lock(mutex_);
+  zsoda::core::CompatLockGuard lock(mutex_);
   if (model_id.empty()) {
     if (error) {
       *error = "model id cannot be empty";
@@ -47,7 +47,7 @@ bool ManagedInferenceEngine::SelectModel(const std::string& model_id, std::strin
 }
 
 std::vector<std::string> ManagedInferenceEngine::ListModelIds() const {
-  std::scoped_lock lock(mutex_);
+  zsoda::core::CompatLockGuard lock(mutex_);
   std::vector<std::string> result;
   result.reserve(catalog_.models().size());
   for (const auto& model : catalog_.models()) {
@@ -57,14 +57,14 @@ std::vector<std::string> ManagedInferenceEngine::ListModelIds() const {
 }
 
 std::string ManagedInferenceEngine::ActiveModelId() const {
-  std::scoped_lock lock(mutex_);
+  zsoda::core::CompatLockGuard lock(mutex_);
   return active_model_id_;
 }
 
 bool ManagedInferenceEngine::Run(const InferenceRequest& request,
                                  zsoda::core::FrameBuffer* out_depth,
                                  std::string* error) const {
-  std::scoped_lock lock(mutex_);
+  zsoda::core::CompatLockGuard lock(mutex_);
   if (active_model_id_.empty()) {
     if (error) {
       *error = "model is not selected";
@@ -142,7 +142,7 @@ bool ManagedInferenceEngine::UsingFallbackEngine() const {
 }
 
 InferenceBackendStatus ManagedInferenceEngine::BackendStatus() const {
-  std::scoped_lock lock(mutex_);
+  zsoda::core::CompatLockGuard lock(mutex_);
   InferenceBackendStatus status;
   status.requested_backend = options_.preferred_backend;
   status.active_backend = active_backend_;

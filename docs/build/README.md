@@ -94,6 +94,10 @@ This document records the packaging path from CMake build output to After Effect
     - `-DONNXRUNTIME_INCLUDE_DIR=<absolute-path-containing-onnxruntime_cxx_api.h>`
     - `-DONNXRUNTIME_LIBRARY=<absolute-path-to-onnxruntime-binary>`
   - if any required path is missing, configure step stops with `FATAL_ERROR`
+- `-DZSODA_MSVC_RUNTIME_LIBRARY=...` (Windows/MSVC)
+  - Runtime 링크 모드를 명시적으로 고정
+  - 기본값: `MultiThreaded$<$<CONFIG:Debug>:Debug>` (`/MT`, debug는 `/MTd`)
+  - 동적 CRT가 필요할 때만 `MultiThreaded$<$<CONFIG:Debug>:Debug>DLL` (`/MD`)로 변경
 
 ## Windows Commands (PowerShell)
 
@@ -105,6 +109,7 @@ cmake -S . -B build-win -G "Visual Studio 17 2022" -A x64 `
   -DZSODA_WITH_AE_SDK=ON `
   -DZSODA_WITH_ONNX_RUNTIME=ON `
   -DZSODA_WITH_ONNX_RUNTIME_API=ON `
+  -DZSODA_MSVC_RUNTIME_LIBRARY="MultiThreaded$<$<CONFIG:Debug>:Debug>" `
   -DONNXRUNTIME_INCLUDE_DIR="C:\onnxruntime\include" `
   -DONNXRUNTIME_LIBRARY="C:\onnxruntime\lib\onnxruntime.lib" `
   -DCMAKE_BUILD_TYPE=Release `

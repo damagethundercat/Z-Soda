@@ -1,10 +1,10 @@
 #pragma once
 
 #include <memory>
-#include <mutex>
 #include <string>
 #include <vector>
 
+#include "core/CompatMutex.h"
 #include "inference/DummyInferenceEngine.h"
 #include "inference/InferenceEngine.h"
 #include "inference/ModelCatalog.h"
@@ -53,7 +53,7 @@ class ManagedInferenceEngine final : public IInferenceEngine {
   std::string model_root_;
   RuntimeOptions options_;
   ModelCatalog catalog_;
-  mutable std::mutex mutex_;
+  mutable zsoda::core::CompatMutex mutex_;
   std::string active_model_id_;
   std::string active_model_path_;
   bool model_file_exists_ = false;

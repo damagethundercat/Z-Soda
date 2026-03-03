@@ -49,6 +49,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build_aex.ps1 ^
   -AeSdkIncludeDir "%AE_HEADERS%" ^
   -OrtIncludeDir "%ORT_INCLUDE%" ^
   -OrtLibrary "%ORT_LIB%" ^
+  -MsvcRuntime "MultiThreaded$<$<CONFIG:Debug>:Debug>" ^
   -BuildDir "build-win" ^
   -Config Release ^
   -CopyToMediaCore
@@ -62,6 +63,7 @@ copy /Y "%ORT_DLL_DIR%\onnxruntime.dll" "C:\Program Files\Adobe\Common\Plug-ins\
 주의:
 - `C:\Program Files\Adobe\Common\Plug-ins\7.0\MediaCore` 쓰기 시 `Access is denied`가 나오면 **관리자 권한 PowerShell/CMD**로 재실행해야 한다.
 - 테스트/실행 중 `The requested API version [24] is not available ... [1, 17]`가 나오면 Adobe ORT 1.17.x와 plugin ORT 1.24.x 충돌 가능성이 높다. 임시 복사로 우회하지 말고 아래 `명시적 ORT 로딩 전략` 기준으로 점검한다.
+- CRT 버전 불일치 이슈를 줄이기 위해 기본 런타임은 정적 CRT(`/MT`)다. 강제로 `/MD`가 필요하지 않다면 `-MsvcRuntime` 기본값을 유지한다.
 
 결과 확인:
 ```cmd

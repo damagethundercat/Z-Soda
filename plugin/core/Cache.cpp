@@ -30,7 +30,7 @@ bool DepthCache::Find(const RenderCacheKey& key, FrameBuffer* out) const {
   if (out == nullptr) {
     return false;
   }
-  std::scoped_lock lock(mutex_);
+  CompatLockGuard lock(mutex_);
   const auto it = entries_.find(key);
   if (it == entries_.end()) {
     return false;
@@ -40,26 +40,26 @@ bool DepthCache::Find(const RenderCacheKey& key, FrameBuffer* out) const {
 }
 
 void DepthCache::Insert(const RenderCacheKey& key, const FrameBuffer& value) {
-  std::scoped_lock lock(mutex_);
+  CompatLockGuard lock(mutex_);
   entries_[key] = value;
   Touch(key);
   TrimIfNeeded();
 }
 
 void DepthCache::Clear() {
-  std::scoped_lock lock(mutex_);
+  CompatLockGuard lock(mutex_);
   entries_.clear();
   lru_.clear();
 }
 
 void DepthCache::SetLimit(std::size_t max_entries) {
-  std::scoped_lock lock(mutex_);
+  CompatLockGuard lock(mutex_);
   max_entries_ = std::max<std::size_t>(1, max_entries);
   TrimIfNeeded();
 }
 
 std::size_t DepthCache::size() const {
-  std::scoped_lock lock(mutex_);
+  CompatLockGuard lock(mutex_);
   return entries_.size();
 }
 
