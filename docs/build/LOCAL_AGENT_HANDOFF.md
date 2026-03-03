@@ -326,3 +326,35 @@ artifacts/diagnostics/ae_loader_diag_YYYYMMDD_HHMMSS/
   1. `summary.txt`
   2. `logs\plugin_loading_zsoda_context.txt`
   3. `plugin_cache\zsoda_plugin_cache.json`
+
+### Session update (2026-03-03 17:50, local rebuild after latest pull)
+- Pulled latest `main` to `21678b1` and rebuilt from local Windows environment.
+- Normal build path (without probe) succeeds:
+  - `tools\build_aex.ps1 ... -Config Release -CopyToMediaCore`
+  - `build-win\plugin\Release\ZSoda.aex` generated and copied to `MediaCore`.
+- User retest still reproduces the same AE error.
+
+#### Current blocker 1: AE loader reject persists
+- `Plugin Loading.log` still reports:
+  - `Loading ...\ZSoda.aex`
+  - `No loaders recognized this plugin, so the plugin is set to Ignore.`
+- `PluginCache\en_US\ZSoda.aex_*` keys keep returning with `Ignore=1`.
+- `%TEMP%\ZSoda_AE_Runtime.log` is still not generated, indicating `EffectMain` is likely never reached.
+
+#### Current blocker 2: Loader probe build is broken
+- Running handoff-recommended probe build:
+  - `tools\build_aex.ps1 ... -BuildLoaderProbe -CopyToMediaCore`
+- Fails at `plugin/ae/LoaderProbeEntry.cpp` compile step:
+  - `C2065`: `in_data` undeclared in `DoAbout` (line ~27, `PF_SPRINTF` usage context)
+  - `C2440`: invalid cast from `PF_PixelPtr` to `uint8_t*` / `const uint8_t*` (lines ~70-71)
+  - `C3536`: `dst`/`src` used before initialization (derived errors, line ~73)
+- Result: `zsoda_loader_probe_aex` target currently cannot be used for isolation test.
+
+#### Immediate request for next WSL pass
+1. Fix `plugin/ae/LoaderProbeEntry.cpp` so `-BuildLoaderProbe` completes successfully.
+2. Rebuild with probe enabled and verify both:
+   - `build-win\plugin\Release\ZSodaLoaderProbe.aex`
+   - `build-win\plugin\Release\ZSodaLoaderProbe.loader_check.txt`
+3. Run AE load test with probe and compare outcomes:
+   - if probe loads but ZSoda fails: issue likely inside ZSoda implementation/deps.
+   - if probe also fails with same loader message: issue likely PiPL/loader contract or host-side policy.
