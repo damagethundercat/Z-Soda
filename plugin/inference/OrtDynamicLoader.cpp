@@ -24,6 +24,80 @@ namespace zsoda::inference {
 namespace {
 
 #if defined(_WIN32)
+HMODULE CurrentModuleHandle() {
+  HMODULE module = nullptr;
+  const void* address = reinterpret_cast<const void*>(&CurrentModuleHandle);
+  const BOOL ok =
+      ::GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                               GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           reinterpret_cast<LPCWSTR>(address),
+                           &module);
+  if (!ok) {
+    return nullptr;
+  }
+  return module;
+}
+
+bool QueryModulePath(HMODULE module, std::wstring* path, std::string* error) {
+  if (module == nullptr || path == nullptr) {
+    if (error != nullptr) {
+      *error = "internal error: module/path pointer is null";
+    }
+    return false;
+  }
+
+  std::vector<wchar_t> buffer(260U, L'\0');
+  for (int attempt = 0; attempt < 6; ++attempt) {
+    const DWORD written =
+        ::GetModuleFileNameW(module, buffer.data(), static_cast<DWORD>(buffer.size()));
+    if (written == 0U) {
+      if (error != nullptr) {
+        *error = "GetModuleFileNameW failed: " + std::to_string(::GetLastError());
+      }
+      return false;
+    }
+    if (written < buffer.size() - 1U) {
+      path->assign(buffer.data(), static_cast<std::size_t>(written));
+      return true;
+    }
+    buffer.resize(buffer.size() * 2U, L'\0');
+  }
+
+  if (error != nullptr) {
+    *error = "GetModuleFileNameW failed: path length exceeded retry limit";
+  }
+  return false;
+}
+
+std::wstring ParentDirectory(const std::wstring& path) {
+  if (path.empty()) {
+    return {};
+  }
+  const std::size_t pos = path.find_last_of(L"\\/");
+  if (pos == std::wstring::npos) {
+    return {};
+  }
+  return path.substr(0, pos);
+}
+
+bool FileExists(const std::wstring& path) {
+  if (path.empty()) {
+    return false;
+  }
+  const DWORD attrs = ::GetFileAttributesW(path.c_str());
+  return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0;
+}
+
+std::wstring JoinPath(const std::wstring& dir, const std::wstring& leaf) {
+  if (dir.empty()) {
+    return leaf;
+  }
+  if (dir.back() == L'\\' || dir.back() == L'/') {
+    return dir + leaf;
+  }
+  return dir + L"\\" + leaf;
+}
+
 struct OrtApiBaseCompat {
   const OrtApi* (ORT_API_CALL* GetApi)(std::uint32_t version);
   const char* (ORT_API_CALL* GetVersionString)(void);
@@ -156,9 +230,27 @@ bool ResolveLoadPath(const std::string& dll_path,
   }
 
   if (dll_path.empty()) {
-    *load_path_wide = L"onnxruntime.dll";
-    *load_path_utf8 = "onnxruntime.dll";
-    return true;
+    std::string module_path_error;
+    std::wstring module_path;
+    const HMODULE module = CurrentModuleHandle();
+    if (module != nullptr && QueryModulePath(module, &module_path, &module_path_error)) {
+      const std::wstring candidate =
+          JoinPath(ParentDirectory(module_path), std::wstring(L"onnxruntime.dll"));
+      if (FileExists(candidate)) {
+        *load_path_wide = candidate;
+        return WideToUtf8(*load_path_wide, load_path_utf8, error);
+      }
+    }
+    if (error != nullptr) {
+      std::ostringstream oss;
+      oss << "onnxruntime dll path is not configured and side-by-side dll was not found"
+          << " (expected next to plugin module)."
+          << " set ZSODA_ONNXRUNTIME_LIBRARY or pass ZSODA_ONNXRUNTIME_DLL_PATH_HINT."
+          << " module_resolve_error="
+          << (module_path_error.empty() ? "<none>" : module_path_error);
+      *error = oss.str();
+    }
+    return false;
   }
 
   std::wstring requested_wide;

@@ -108,6 +108,11 @@ if ($p) {
 - 정상: ORT 모듈 경로가 플러그인 배포 경로(예: `...\ZSoda\...\runtime\onnxruntime.dll`)이고 API 협상 성공
 - 비정상: `System32`/Adobe 경로 ORT가 잡히거나 API 협상 실패. 이 경우 crash 대신 fallback 출력이어야 함
 
+추가(2026-03-03):
+- 최신 코드에서는 ORT DLL 경로가 비어 있으면 bare-name 로딩(`onnxruntime.dll`)을 허용하지 않고, **플러그인 모듈 인접(side-by-side) DLL**을 우선 찾는다.
+- 찾지 못하면 ORT 초기화는 실패하고 fallback 경로로 전환된다(하드 크래시 대신 안전 출력).
+- 적용 중 오류 분석은 `%TEMP%\ZSoda_AE_Runtime.log`를 먼저 확인한다(SEH/C++ 예외 로그).
+
 ## 5) AE 스모크 테스트
 
 - AE 재시작 후 `ZSoda` 이펙트 로드 확인

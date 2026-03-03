@@ -2,11 +2,20 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <exception>
 #include <limits>
 #include <memory>
 #include <optional>
 #include <string>
 #include <vector>
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 #include "ae/AeParams.h"
 #include "core/RenderPipeline.h"
@@ -50,19 +59,64 @@ int Dispatch(const AeDispatchContext& dispatch) {
   return GetRouter().Handle(dispatch.command) ? 0 : -1;
 }
 
+#if defined(_WIN32)
+void AppendDiagnosticsLine(const char* tag, const char* detail) {
+  char temp_path[MAX_PATH] = {};
+  const DWORD written = ::GetTempPathA(MAX_PATH, temp_path);
+  if (written == 0 || written >= MAX_PATH) {
+    return;
+  }
+
+  char log_path[MAX_PATH] = {};
+  std::snprintf(log_path, sizeof(log_path), "%s%s", temp_path, "ZSoda_AE_Runtime.log");
+  FILE* file = std::fopen(log_path, "ab");
+  if (file == nullptr) {
+    return;
+  }
+
+  SYSTEMTIME now = {};
+  ::GetLocalTime(&now);
+  const char* safe_tag = tag != nullptr ? tag : "<null>";
+  const char* safe_detail = detail != nullptr ? detail : "<null>";
+  std::fprintf(file,
+               "%04u-%02u-%02u %02u:%02u:%02u.%03u | %s | %s\r\n",
+               static_cast<unsigned>(now.wYear),
+               static_cast<unsigned>(now.wMonth),
+               static_cast<unsigned>(now.wDay),
+               static_cast<unsigned>(now.wHour),
+               static_cast<unsigned>(now.wMinute),
+               static_cast<unsigned>(now.wSecond),
+               static_cast<unsigned>(now.wMilliseconds),
+               safe_tag,
+               safe_detail);
+  std::fclose(file);
+}
+
+void LogSehException(const char* entrypoint, unsigned int code) {
+  char message[128] = {};
+  std::snprintf(message, sizeof(message), "SEH exception code=0x%08X", code);
+  AppendDiagnosticsLine(entrypoint, message);
+}
+#else
+void AppendDiagnosticsLine(const char* /*tag*/, const char* /*detail*/) {}
+void LogSehException(const char* /*entrypoint*/, unsigned int /*code*/) {}
+#endif
+
 }  // namespace
 }  // namespace zsoda::ae
 
-extern "C" int ZSodaRenderHostBufferStub(const void* src,
-                                         int width,
-                                         int height,
-                                         int src_row_bytes,
-                                         int pixel_format,
-                                         std::uint64_t frame_hash,
-                                         void* out,
-                                         int out_row_bytes);
+namespace {
 
-extern "C" int ZSodaEffectMainStub(int command_id) {
+int ZSodaRenderHostBufferStubImpl(const void* src,
+                                  int width,
+                                  int height,
+                                  int src_row_bytes,
+                                  int pixel_format,
+                                  std::uint64_t frame_hash,
+                                  void* out,
+                                  int out_row_bytes);
+
+int ZSodaEffectMainStubImpl(int command_id) {
   std::string error;
   zsoda::ae::AeDispatchContext dispatch;
   if (!zsoda::ae::BuildStubDispatch(command_id, &dispatch, &error)) {
@@ -71,7 +125,7 @@ extern "C" int ZSodaEffectMainStub(int command_id) {
   return zsoda::ae::Dispatch(dispatch);
 }
 
-extern "C" int ZSodaSetModelIdStub(const char* model_id) {
+int ZSodaSetModelIdStubImpl(const char* model_id) {
   if (model_id == nullptr) {
     return -1;
   }
@@ -85,17 +139,17 @@ extern "C" int ZSodaSetModelIdStub(const char* model_id) {
   return zsoda::ae::GetRouter().Handle(context) ? 0 : -1;
 }
 
-extern "C" int ZSodaSetParamsStub(const char* model_id,
-                                  int quality,
-                                  int output_mode,
-                                  int invert,
-                                  float min_depth,
-                                  float max_depth,
-                                  float softness,
-                                  int cache_enabled,
-                                  int tile_size,
-                                  int overlap,
-                                  int vram_budget_mb) {
+int ZSodaSetParamsStubImpl(const char* model_id,
+                           int quality,
+                           int output_mode,
+                           int invert,
+                           float min_depth,
+                           float max_depth,
+                           float softness,
+                           int cache_enabled,
+                           int tile_size,
+                           int overlap,
+                           int vram_budget_mb) {
   auto params = zsoda::ae::GetRouter().CurrentParams();
   if (model_id != nullptr && model_id[0] != '\0') {
     params.model_id = model_id;
@@ -122,12 +176,12 @@ extern "C" int ZSodaSetParamsStub(const char* model_id,
   return zsoda::ae::GetRouter().Handle(context) ? 0 : -1;
 }
 
-extern "C" int ZSodaRenderGrayFrameStub(const float* src,
-                                        int width,
-                                        int height,
-                                        std::uint64_t frame_hash,
-                                        float* out,
-                                        int out_size) {
+int ZSodaRenderGrayFrameStubImpl(const float* src,
+                                 int width,
+                                 int height,
+                                 std::uint64_t frame_hash,
+                                 float* out,
+                                 int out_size) {
   if (src == nullptr || out == nullptr || width <= 0 || height <= 0) {
     return -1;
   }
@@ -155,14 +209,14 @@ extern "C" int ZSodaRenderGrayFrameStub(const float* src,
     return -1;
   }
   const int row_bytes = static_cast<int>(row_bytes_size);
-  if (ZSodaRenderHostBufferStub(rgba_source.data(),
-                                width,
-                                height,
-                                row_bytes,
-                                static_cast<int>(zsoda::core::PixelFormat::kRGBA32F),
-                                frame_hash,
-                                rgba_output.data(),
-                                row_bytes) != 0) {
+  if (ZSodaRenderHostBufferStubImpl(rgba_source.data(),
+                                    width,
+                                    height,
+                                    row_bytes,
+                                    static_cast<int>(zsoda::core::PixelFormat::kRGBA32F),
+                                    frame_hash,
+                                    rgba_output.data(),
+                                    row_bytes) != 0) {
     return -1;
   }
 
@@ -172,14 +226,14 @@ extern "C" int ZSodaRenderGrayFrameStub(const float* src,
   return 0;
 }
 
-extern "C" int ZSodaRenderHostBufferStub(const void* src,
-                                         int width,
-                                         int height,
-                                         int src_row_bytes,
-                                         int pixel_format,
-                                         std::uint64_t frame_hash,
-                                         void* out,
-                                         int out_row_bytes) {
+int ZSodaRenderHostBufferStubImpl(const void* src,
+                                  int width,
+                                  int height,
+                                  int src_row_bytes,
+                                  int pixel_format,
+                                  std::uint64_t frame_hash,
+                                  void* out,
+                                  int out_row_bytes) {
   if (src == nullptr || out == nullptr || width <= 0 || height <= 0 || src_row_bytes <= 0 ||
       out_row_bytes <= 0) {
     return -1;
@@ -209,6 +263,211 @@ extern "C" int ZSodaRenderHostBufferStub(const void* src,
              : -1;
 }
 
+}  // namespace
+
+int ZSodaEffectMainStubGuarded(int command_id) {
+  try {
+    return ZSodaEffectMainStubImpl(command_id);
+  } catch (const std::exception& ex) {
+    zsoda::ae::AppendDiagnosticsLine("ZSodaEffectMainStub", ex.what());
+    return -1;
+  } catch (...) {
+    zsoda::ae::AppendDiagnosticsLine("ZSodaEffectMainStub", "unknown c++ exception");
+    return -1;
+  }
+}
+
+int ZSodaSetModelIdStubGuarded(const char* model_id) {
+  try {
+    return ZSodaSetModelIdStubImpl(model_id);
+  } catch (const std::exception& ex) {
+    zsoda::ae::AppendDiagnosticsLine("ZSodaSetModelIdStub", ex.what());
+    return -1;
+  } catch (...) {
+    zsoda::ae::AppendDiagnosticsLine("ZSodaSetModelIdStub", "unknown c++ exception");
+    return -1;
+  }
+}
+
+int ZSodaSetParamsStubGuarded(const char* model_id,
+                              int quality,
+                              int output_mode,
+                              int invert,
+                              float min_depth,
+                              float max_depth,
+                              float softness,
+                              int cache_enabled,
+                              int tile_size,
+                              int overlap,
+                              int vram_budget_mb) {
+  try {
+    return ZSodaSetParamsStubImpl(model_id,
+                                  quality,
+                                  output_mode,
+                                  invert,
+                                  min_depth,
+                                  max_depth,
+                                  softness,
+                                  cache_enabled,
+                                  tile_size,
+                                  overlap,
+                                  vram_budget_mb);
+  } catch (const std::exception& ex) {
+    zsoda::ae::AppendDiagnosticsLine("ZSodaSetParamsStub", ex.what());
+    return -1;
+  } catch (...) {
+    zsoda::ae::AppendDiagnosticsLine("ZSodaSetParamsStub", "unknown c++ exception");
+    return -1;
+  }
+}
+
+int ZSodaRenderGrayFrameStubGuarded(const float* src,
+                                    int width,
+                                    int height,
+                                    std::uint64_t frame_hash,
+                                    float* out,
+                                    int out_size) {
+  try {
+    return ZSodaRenderGrayFrameStubImpl(src, width, height, frame_hash, out, out_size);
+  } catch (const std::exception& ex) {
+    zsoda::ae::AppendDiagnosticsLine("ZSodaRenderGrayFrameStub", ex.what());
+    return -1;
+  } catch (...) {
+    zsoda::ae::AppendDiagnosticsLine("ZSodaRenderGrayFrameStub", "unknown c++ exception");
+    return -1;
+  }
+}
+
+int ZSodaRenderHostBufferStubGuarded(const void* src,
+                                     int width,
+                                     int height,
+                                     int src_row_bytes,
+                                     int pixel_format,
+                                     std::uint64_t frame_hash,
+                                     void* out,
+                                     int out_row_bytes) {
+  try {
+    return ZSodaRenderHostBufferStubImpl(
+        src, width, height, src_row_bytes, pixel_format, frame_hash, out, out_row_bytes);
+  } catch (const std::exception& ex) {
+    zsoda::ae::AppendDiagnosticsLine("ZSodaRenderHostBufferStub", ex.what());
+    return -1;
+  } catch (...) {
+    zsoda::ae::AppendDiagnosticsLine("ZSodaRenderHostBufferStub", "unknown c++ exception");
+    return -1;
+  }
+}
+
+extern "C" int ZSodaEffectMainStub(int command_id) {
+#if defined(_WIN32) && defined(_MSC_VER)
+  __try {
+    return ZSodaEffectMainStubGuarded(command_id);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    zsoda::ae::LogSehException("ZSodaEffectMainStub", static_cast<unsigned>(GetExceptionCode()));
+    return -1;
+  }
+#else
+  return ZSodaEffectMainStubGuarded(command_id);
+#endif
+}
+
+extern "C" int ZSodaSetModelIdStub(const char* model_id) {
+#if defined(_WIN32) && defined(_MSC_VER)
+  __try {
+    return ZSodaSetModelIdStubGuarded(model_id);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    zsoda::ae::LogSehException("ZSodaSetModelIdStub", static_cast<unsigned>(GetExceptionCode()));
+    return -1;
+  }
+#else
+  return ZSodaSetModelIdStubGuarded(model_id);
+#endif
+}
+
+extern "C" int ZSodaSetParamsStub(const char* model_id,
+                                  int quality,
+                                  int output_mode,
+                                  int invert,
+                                  float min_depth,
+                                  float max_depth,
+                                  float softness,
+                                  int cache_enabled,
+                                  int tile_size,
+                                  int overlap,
+                                  int vram_budget_mb) {
+#if defined(_WIN32) && defined(_MSC_VER)
+  __try {
+    return ZSodaSetParamsStubGuarded(model_id,
+                                     quality,
+                                     output_mode,
+                                     invert,
+                                     min_depth,
+                                     max_depth,
+                                     softness,
+                                     cache_enabled,
+                                     tile_size,
+                                     overlap,
+                                     vram_budget_mb);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    zsoda::ae::LogSehException("ZSodaSetParamsStub", static_cast<unsigned>(GetExceptionCode()));
+    return -1;
+  }
+#else
+  return ZSodaSetParamsStubGuarded(model_id,
+                                   quality,
+                                   output_mode,
+                                   invert,
+                                   min_depth,
+                                   max_depth,
+                                   softness,
+                                   cache_enabled,
+                                   tile_size,
+                                   overlap,
+                                   vram_budget_mb);
+#endif
+}
+
+extern "C" int ZSodaRenderGrayFrameStub(const float* src,
+                                        int width,
+                                        int height,
+                                        std::uint64_t frame_hash,
+                                        float* out,
+                                        int out_size) {
+#if defined(_WIN32) && defined(_MSC_VER)
+  __try {
+    return ZSodaRenderGrayFrameStubGuarded(src, width, height, frame_hash, out, out_size);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    zsoda::ae::LogSehException("ZSodaRenderGrayFrameStub", static_cast<unsigned>(GetExceptionCode()));
+    return -1;
+  }
+#else
+  return ZSodaRenderGrayFrameStubGuarded(src, width, height, frame_hash, out, out_size);
+#endif
+}
+
+extern "C" int ZSodaRenderHostBufferStub(const void* src,
+                                         int width,
+                                         int height,
+                                         int src_row_bytes,
+                                         int pixel_format,
+                                         std::uint64_t frame_hash,
+                                         void* out,
+                                         int out_row_bytes) {
+#if defined(_WIN32) && defined(_MSC_VER)
+  __try {
+    return ZSodaRenderHostBufferStubGuarded(
+        src, width, height, src_row_bytes, pixel_format, frame_hash, out, out_row_bytes);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    zsoda::ae::LogSehException("ZSodaRenderHostBufferStub",
+                               static_cast<unsigned>(GetExceptionCode()));
+    return -1;
+  }
+#else
+  return ZSodaRenderHostBufferStubGuarded(
+      src, width, height, src_row_bytes, pixel_format, frame_hash, out, out_row_bytes);
+#endif
+}
+
 #if defined(ZSODA_WITH_AE_SDK) && ZSODA_WITH_AE_SDK
 
 #ifndef DllExport
@@ -219,12 +478,12 @@ extern "C" int ZSodaRenderHostBufferStub(const void* src,
 #endif
 #endif
 
-extern "C" DllExport PF_Err EffectMain(PF_Cmd cmd,
-                                       PF_InData* in_data,
-                                       PF_OutData* out_data,
-                                       PF_ParamDef* params[],
-                                       PF_LayerDef* output,
-                                       void* extra) {
+PF_Err EffectMainImpl(PF_Cmd cmd,
+                      PF_InData* in_data,
+                      PF_OutData* out_data,
+                      PF_ParamDef* params[],
+                      PF_LayerDef* output,
+                      void* extra) {
   std::string error;
 
   zsoda::ae::AeDispatchContext dispatch;
@@ -247,6 +506,41 @@ extern "C" DllExport PF_Err EffectMain(PF_Cmd cmd,
   }
 
   return zsoda::ae::Dispatch(dispatch) == 0 ? PF_Err_NONE : PF_Err_INTERNAL_STRUCT_DAMAGED;
+}
+
+PF_Err EffectMainGuarded(PF_Cmd cmd,
+                         PF_InData* in_data,
+                         PF_OutData* out_data,
+                         PF_ParamDef* params[],
+                         PF_LayerDef* output,
+                         void* extra) {
+  try {
+    return EffectMainImpl(cmd, in_data, out_data, params, output, extra);
+  } catch (const std::exception& ex) {
+    zsoda::ae::AppendDiagnosticsLine("EffectMain", ex.what());
+    return PF_Err_INTERNAL_STRUCT_DAMAGED;
+  } catch (...) {
+    zsoda::ae::AppendDiagnosticsLine("EffectMain", "unknown c++ exception");
+    return PF_Err_INTERNAL_STRUCT_DAMAGED;
+  }
+}
+
+extern "C" DllExport PF_Err EffectMain(PF_Cmd cmd,
+                                       PF_InData* in_data,
+                                       PF_OutData* out_data,
+                                       PF_ParamDef* params[],
+                                       PF_LayerDef* output,
+                                       void* extra) {
+#if defined(_WIN32) && defined(_MSC_VER)
+  __try {
+    return EffectMainGuarded(cmd, in_data, out_data, params, output, extra);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    zsoda::ae::LogSehException("EffectMain", static_cast<unsigned>(GetExceptionCode()));
+    return PF_Err_INTERNAL_STRUCT_DAMAGED;
+  }
+#else
+  return EffectMainGuarded(cmd, in_data, out_data, params, output, extra);
+#endif
 }
 
 #endif
