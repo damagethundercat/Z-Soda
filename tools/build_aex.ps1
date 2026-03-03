@@ -84,6 +84,22 @@ function Resolve-AbsolutePath {
   throw "Path does not exist: $Path"
 }
 
+function Get-ZsodaGlobalOutFlagsToken {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$HeaderPath
+  )
+
+  Assert-Path -Path $HeaderPath -PathType Leaf -Message "ZSodaAeFlags header not found: $HeaderPath"
+  $content = Get-Content -LiteralPath $HeaderPath -Raw
+  $pattern = '(?m)^\s*#define\s+ZSODA_AE_GLOBAL_OUTFLAGS\s+(0x[0-9A-Fa-f]+)\b'
+  $match = [regex]::Match($content, $pattern)
+  if (-not $match.Success) {
+    throw "Failed to parse ZSODA_AE_GLOBAL_OUTFLAGS from: $HeaderPath"
+  }
+  return $match.Groups[1].Value
+}
+
 function Invoke-CMake {
   param(
     [Parameter(Mandatory = $true)]
@@ -186,8 +202,7 @@ function Assert-RrSignature {
     [string[]]$RequiredTokens = @(
       "CodeWin64X86",
       "EffectMain",
-      "AE_Effect_Global_OutFlags",
-      "0x04008120"
+      "AE_Effect_Global_OutFlags"
     )
   )
 
@@ -329,6 +344,8 @@ function Build-LoaderCheckSummary {
     [Parameter(Mandatory = $true)]
     [string]$PiPlRrPath,
 
+    [string]$OutFlagsToken,
+
     [string]$PiPlRcPath,
 
     [string]$PiPlRrcPath
@@ -345,7 +362,11 @@ function Build-LoaderCheckSummary {
     $lines += "pipl_rrc: $PiPlRrcPath"
   }
   $lines += "checks:"
-  $lines += "  - pipl_rr literal tokens: CodeWin64X86/EffectMain/AE_Effect_Global_OutFlags/0x04008120"
+  if ([string]::IsNullOrWhiteSpace($OutFlagsToken)) {
+    $lines += "  - pipl_rr literal tokens: CodeWin64X86/EffectMain/AE_Effect_Global_OutFlags/<unspecified>"
+  } else {
+    $lines += "  - pipl_rr literal tokens: CodeWin64X86/EffectMain/AE_Effect_Global_OutFlags/$OutFlagsToken"
+  }
   $lines += "  - aex export: EffectMain"
   $lines += "  - aex section: .rsrc"
   return $lines
@@ -510,6 +531,8 @@ if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
 }
 
 $repoRoot = Resolve-AbsolutePath -Path (Join-Path $PSScriptRoot "..")
+$zsodaAeFlagsHeader = Join-Path $repoRoot "plugin\ae\ZSodaAeFlags.h"
+$expectedOutFlagsToken = Get-ZsodaGlobalOutFlagsToken -HeaderPath $zsodaAeFlagsHeader
 $buildDirAbs = Resolve-AbsolutePath -Path $BuildDir -AllowMissing
 $aeSdkIncludeDirAbs = Resolve-AbsolutePath -Path $AeSdkIncludeDir
 $ortIncludeDirAbs = Resolve-AbsolutePath -Path $OrtIncludeDir
@@ -658,26 +681,33 @@ if ($BuildLoaderProbe) {
   $loaderProbePiPlRrc = Find-OptionalGeneratedPiPlArtifact -BuildDir $buildDirAbs -FileName "ZSodaLoaderProbePiPL.rrc"
 }
 
-Assert-RrSignature -PiPlRrPath $piplRr
+Assert-RrSignature -PiPlRrPath $piplRr -RequiredTokens @(
+  "CodeWin64X86",
+  "EffectMain",
+  "AE_Effect_Global_OutFlags",
+  $expectedOutFlagsToken
+)
 Assert-AexLoaderSignature -AexPath $aex -Platform $Platform
 if ($BuildLoaderProbe) {
   Assert-RrSignature -PiPlRrPath $loaderProbePiPlRr -RequiredTokens @(
     "CodeWin64X86",
     "EffectMain",
     "AE_Effect_Match_Name",
-    "ZSoda Loader Probe"
+    "ZSoda Loader Probe",
+    "AE_Effect_Global_OutFlags",
+    $expectedOutFlagsToken
   )
   Assert-AexLoaderSignature -AexPath $loaderProbeAex -Platform $Platform
 }
 
 $aexDir = Split-Path -Path $aex -Parent
 $loaderSummaryPath = Join-Path $aexDir "ZSoda.loader_check.txt"
-$summaryLines = Build-LoaderCheckSummary -AexPath $aex -PiPlRrPath $piplRr -PiPlRcPath $piplRc -PiPlRrcPath $piplRrc
+$summaryLines = Build-LoaderCheckSummary -AexPath $aex -PiPlRrPath $piplRr -OutFlagsToken $expectedOutFlagsToken -PiPlRcPath $piplRc -PiPlRrcPath $piplRrc
 Write-LoaderCheckSummary -SummaryPath $loaderSummaryPath -Lines $summaryLines
 if ($BuildLoaderProbe) {
   $loaderProbeAexDir = Split-Path -Path $loaderProbeAex -Parent
   $loaderProbeSummaryPath = Join-Path $loaderProbeAexDir "ZSodaLoaderProbe.loader_check.txt"
-  $loaderProbeSummaryLines = Build-LoaderCheckSummary -AexPath $loaderProbeAex -PiPlRrPath $loaderProbePiPlRr -PiPlRcPath $loaderProbePiPlRc -PiPlRrcPath $loaderProbePiPlRrc
+  $loaderProbeSummaryLines = Build-LoaderCheckSummary -AexPath $loaderProbeAex -PiPlRrPath $loaderProbePiPlRr -OutFlagsToken $expectedOutFlagsToken -PiPlRcPath $loaderProbePiPlRc -PiPlRrcPath $loaderProbePiPlRrc
   Write-LoaderCheckSummary -SummaryPath $loaderProbeSummaryPath -Lines $loaderProbeSummaryLines
 }
 

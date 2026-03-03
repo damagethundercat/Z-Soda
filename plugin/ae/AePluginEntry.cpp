@@ -2,6 +2,7 @@
 #include "ae/ZSodaAeFlags.h"
 #include "ae/ZSodaVersion.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -149,6 +150,60 @@ int ZSodaRenderHostBufferStubImpl(const void* src,
                                   int out_row_bytes);
 
 #if defined(ZSODA_WITH_AE_SDK) && ZSODA_WITH_AE_SDK
+bool TryCopyRenderInputToOutput(PF_ParamDef* params[], PF_LayerDef* output) {
+  if (params == nullptr || params[0] == nullptr || output == nullptr || output->data == nullptr) {
+    return false;
+  }
+
+  const PF_LayerDef* input = &params[0]->u.ld;
+  if (input == nullptr || input->data == nullptr) {
+    return false;
+  }
+  if (input->height <= 0 || input->rowbytes <= 0 || output->height <= 0 || output->rowbytes <= 0) {
+    return false;
+  }
+
+  const A_long rows = std::min(input->height, output->height);
+  const A_long bytes_to_copy = std::min(input->rowbytes, output->rowbytes);
+  if (rows <= 0 || bytes_to_copy <= 0) {
+    return false;
+  }
+
+  auto* dst = reinterpret_cast<std::uint8_t*>(output->data);
+  const auto* src = reinterpret_cast<const std::uint8_t*>(input->data);
+  for (A_long y = 0; y < rows; ++y) {
+    std::memcpy(dst, src, static_cast<std::size_t>(bytes_to_copy));
+    dst += output->rowbytes;
+    src += input->rowbytes;
+  }
+  return true;
+}
+
+void TryApplyRenderPassThrough(PF_Cmd cmd,
+                               PF_ParamDef* params[],
+                               PF_LayerDef* output,
+                               const char* reason) {
+  if (cmd != PF_Cmd_RENDER) {
+    return;
+  }
+  const bool copied = TryCopyRenderInputToOutput(params, output);
+  if (copied) {
+    std::string detail = "render fallback pass-through applied";
+    if (reason != nullptr && reason[0] != '\0') {
+      detail += ": ";
+      detail += reason;
+    }
+    zsoda::ae::AppendDiagnosticsLine("EffectMain", detail.c_str());
+  } else {
+    std::string detail = "render fallback pass-through skipped (invalid input/output)";
+    if (reason != nullptr && reason[0] != '\0') {
+      detail += ": ";
+      detail += reason;
+    }
+    zsoda::ae::AppendDiagnosticsLine("EffectMain", detail.c_str());
+  }
+}
+
 PF_Err RunLoaderOnlyEffectMain(PF_Cmd cmd,
                                PF_InData* in_data,
                                PF_OutData* out_data,
@@ -179,27 +234,7 @@ PF_Err RunLoaderOnlyEffectMain(PF_Cmd cmd,
       }
       return PF_Err_NONE;
     case PF_Cmd_RENDER: {
-      if (params == nullptr || params[0] == nullptr || output == nullptr || output->data == nullptr) {
-        return PF_Err_NONE;
-      }
-      const PF_LayerDef* input = &params[0]->u.ld;
-      if (input->data == nullptr) {
-        return PF_Err_NONE;
-      }
-      const A_long rows = output->height;
-      const A_long bytes_to_copy =
-          (output->rowbytes < input->rowbytes) ? output->rowbytes : input->rowbytes;
-      if (rows <= 0 || bytes_to_copy <= 0) {
-        return PF_Err_NONE;
-      }
-
-      auto* dst = reinterpret_cast<std::uint8_t*>(output->data);
-      const auto* src = reinterpret_cast<const std::uint8_t*>(input->data);
-      for (A_long y = 0; y < rows; ++y) {
-        std::memcpy(dst, src, static_cast<std::size_t>(bytes_to_copy));
-        dst += output->rowbytes;
-        src += input->rowbytes;
-      }
+      (void)TryCopyRenderInputToOutput(params, output);
       return PF_Err_NONE;
     }
     default:
@@ -603,6 +638,7 @@ PF_Err EffectMainImpl(PF_Cmd cmd,
         "BuildSdkDispatch failed: cmd=" + std::to_string(static_cast<int>(cmd)) +
         ", error=" + (error.empty() ? "<none>" : error);
     zsoda::ae::AppendDiagnosticsLine("EffectMain", detail.c_str());
+    TryApplyRenderPassThrough(cmd, params, output, "BuildSdkDispatch failed");
     return PF_Err_NONE;
   }
   if (!error.empty() && cmd != PF_Cmd_RENDER) {
@@ -615,6 +651,7 @@ PF_Err EffectMainImpl(PF_Cmd cmd,
   if (dispatch.command.command == zsoda::ae::AeCommand::kUnknown) {
     // Skeleton entrypoint ignores unsupported commands until individual handlers
     // are wired.
+    TryApplyRenderPassThrough(cmd, params, output, "mapped command is unknown");
     return PF_Err_NONE;
   }
 
@@ -627,6 +664,7 @@ PF_Err EffectMainImpl(PF_Cmd cmd,
       ", mapped=" + std::to_string(static_cast<int>(dispatch.command.command)) +
       ", error=" + (error.empty() ? "<none>" : error);
   zsoda::ae::AppendDiagnosticsLine("EffectMain", detail.c_str());
+  TryApplyRenderPassThrough(cmd, params, output, "router dispatch failed");
   return PF_Err_NONE;
 #endif
 }
@@ -641,9 +679,11 @@ PF_Err EffectMainGuarded(PF_Cmd cmd,
     return EffectMainImpl(cmd, in_data, out_data, params, output, extra);
   } catch (const std::exception& ex) {
     zsoda::ae::AppendDiagnosticsLine("EffectMain", ex.what());
+    TryApplyRenderPassThrough(cmd, params, output, "caught c++ exception");
     return PF_Err_NONE;
   } catch (...) {
     zsoda::ae::AppendDiagnosticsLine("EffectMain", "unknown c++ exception");
+    TryApplyRenderPassThrough(cmd, params, output, "caught unknown c++ exception");
     return PF_Err_NONE;
   }
 }

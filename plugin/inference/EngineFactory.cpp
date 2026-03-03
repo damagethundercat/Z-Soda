@@ -83,6 +83,9 @@ std::shared_ptr<IInferenceEngine> CreateDefaultEngine() {
   if (!runtime_paths.onnxruntime_library_path.empty()) {
     options.onnxruntime_library_path = runtime_paths.onnxruntime_library_path;
   }
+  if (!runtime_paths.onnxruntime_library_dir.empty()) {
+    options.onnxruntime_library_dir = runtime_paths.onnxruntime_library_dir;
+  }
 
   const char* env_ort_api = std::getenv("ZSODA_ONNXRUNTIME_API_VERSION");
   options.onnxruntime_api_version = ParsePositiveIntEnvOrDefault(env_ort_api, 0);

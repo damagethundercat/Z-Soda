@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #if defined(_WIN32)
@@ -96,6 +97,57 @@ std::wstring JoinPath(const std::wstring& dir, const std::wstring& leaf) {
     return dir + leaf;
   }
   return dir + L"\\" + leaf;
+}
+
+bool DirectoryExists(const std::wstring& path) {
+  if (path.empty()) {
+    return false;
+  }
+  const DWORD attrs = ::GetFileAttributesW(path.c_str());
+  return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0;
+}
+
+void AppendDiagnosticFragment(std::string* diagnostics, const std::string& fragment) {
+  if (diagnostics == nullptr || fragment.empty()) {
+    return;
+  }
+  if (!diagnostics->empty()) {
+    diagnostics->append("; ");
+  }
+  diagnostics->append(fragment);
+}
+
+void AppendUniqueDirectoryIfExists(const std::wstring& candidate, std::vector<std::wstring>* out) {
+  if (out == nullptr || candidate.empty() || !DirectoryExists(candidate)) {
+    return;
+  }
+  for (const auto& existing : *out) {
+    if (existing == candidate) {
+      return;
+    }
+  }
+  out->push_back(candidate);
+}
+
+std::vector<std::wstring> BuildDllSearchDirectories(const std::wstring& load_path_wide) {
+  std::vector<std::wstring> directories;
+  const std::wstring dll_dir = ParentDirectory(load_path_wide);
+  if (dll_dir.empty()) {
+    return directories;
+  }
+
+  const std::wstring parent_dir = ParentDirectory(dll_dir);
+  const std::wstring runtime_dir = JoinPath(parent_dir, L"runtime");
+  const std::wstring runtime_win64_dir = JoinPath(runtime_dir, L"win-x64");
+
+  AppendUniqueDirectoryIfExists(dll_dir, &directories);
+  AppendUniqueDirectoryIfExists(JoinPath(dll_dir, L"win-x64"), &directories);
+  AppendUniqueDirectoryIfExists(JoinPath(dll_dir, L"runtime"), &directories);
+  AppendUniqueDirectoryIfExists(JoinPath(JoinPath(dll_dir, L"runtime"), L"win-x64"), &directories);
+  AppendUniqueDirectoryIfExists(runtime_dir, &directories);
+  AppendUniqueDirectoryIfExists(runtime_win64_dir, &directories);
+
+  return directories;
 }
 
 struct OrtApiBaseCompat {
@@ -334,6 +386,58 @@ bool TryLoadOrtModuleWithFallback(const std::wstring& load_path_wide,
   *module = nullptr;
   attempts_diagnostics->clear();
 
+  const std::vector<std::wstring> search_dirs = BuildDllSearchDirectories(load_path_wide);
+
+  HMODULE kernel32 = ::GetModuleHandleW(L"kernel32.dll");
+  using SetDefaultDllDirectoriesFn = BOOL(WINAPI*)(DWORD);
+  using AddDllDirectoryFn = DLL_DIRECTORY_COOKIE(WINAPI*)(PCWSTR);
+  using RemoveDllDirectoryFn = BOOL(WINAPI*)(DLL_DIRECTORY_COOKIE);
+
+  const auto set_default_dirs = reinterpret_cast<SetDefaultDllDirectoriesFn>(
+      kernel32 == nullptr ? nullptr : ::GetProcAddress(kernel32, "SetDefaultDllDirectories"));
+  const auto add_dll_dir = reinterpret_cast<AddDllDirectoryFn>(
+      kernel32 == nullptr ? nullptr : ::GetProcAddress(kernel32, "AddDllDirectory"));
+  const auto remove_dll_dir = reinterpret_cast<RemoveDllDirectoryFn>(
+      kernel32 == nullptr ? nullptr : ::GetProcAddress(kernel32, "RemoveDllDirectory"));
+
+#if defined(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS)
+  const DWORD default_dll_search_flags = LOAD_LIBRARY_SEARCH_DEFAULT_DIRS;
+#else
+  const DWORD default_dll_search_flags = 0;
+#endif
+
+  if (set_default_dirs != nullptr && default_dll_search_flags != 0U) {
+    if (!set_default_dirs(default_dll_search_flags)) {
+      AppendDiagnosticFragment(attempts_diagnostics,
+                               "SetDefaultDllDirectories failed: " +
+                                   FormatWin32ErrorMessage(::GetLastError()));
+    }
+  }
+
+  std::vector<DLL_DIRECTORY_COOKIE> directory_cookies;
+  if (add_dll_dir != nullptr) {
+    for (const auto& directory : search_dirs) {
+      std::string directory_utf8;
+      std::string conversion_error;
+      if (!WideToUtf8(directory, &directory_utf8, &conversion_error)) {
+        directory_utf8 = "<utf8-convert-failed: " + conversion_error + ">";
+      }
+
+      const DLL_DIRECTORY_COOKIE cookie = add_dll_dir(directory.c_str());
+      if (cookie != nullptr) {
+        directory_cookies.push_back(cookie);
+        AppendDiagnosticFragment(attempts_diagnostics, "AddDllDirectory success: " + directory_utf8);
+      } else {
+        AppendDiagnosticFragment(attempts_diagnostics,
+                                 "AddDllDirectory failed: " + directory_utf8 + " (" +
+                                     FormatWin32ErrorMessage(::GetLastError()) + ")");
+      }
+    }
+  } else if (!search_dirs.empty()) {
+    AppendDiagnosticFragment(attempts_diagnostics,
+                             "AddDllDirectory API unavailable; using default process DLL search path");
+  }
+
   std::vector<LoadAttempt> attempts;
 #if defined(LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR) && defined(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS)
   attempts.push_back({LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS,
@@ -368,6 +472,14 @@ bool TryLoadOrtModuleWithFallback(const std::wstring& load_path_wide,
     attempts_diagnostics->append(attempt.label);
     attempts_diagnostics->append(": ");
     attempts_diagnostics->append(FormatWin32ErrorMessage(code));
+  }
+
+  if (remove_dll_dir != nullptr) {
+    for (const DLL_DIRECTORY_COOKIE cookie : directory_cookies) {
+      if (cookie != nullptr) {
+        (void)remove_dll_dir(cookie);
+      }
+    }
   }
 
   return false;

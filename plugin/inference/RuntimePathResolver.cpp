@@ -28,6 +28,16 @@ bool IsExistingFile(const std::filesystem::path& path) {
   return std::filesystem::is_regular_file(path, ec);
 }
 
+void SetResolvedOnnxRuntimeLibraryPath(RuntimePathResolution* resolved,
+                                       const std::filesystem::path& path) {
+  if (resolved == nullptr) {
+    return;
+  }
+  resolved->onnxruntime_library_path = path.string();
+  const auto parent = path.parent_path();
+  resolved->onnxruntime_library_dir = parent.empty() ? std::string() : parent.string();
+}
+
 std::optional<std::filesystem::path> ParsePluginDirectoryPath(
     const std::optional<std::string>& plugin_directory) {
   if (!plugin_directory.has_value() || plugin_directory->empty()) {
@@ -127,7 +137,7 @@ RuntimePathResolution ResolveRuntimePaths(const RuntimePathHints& hints) {
   }
 
   if (HasText(hints.onnxruntime_library_env)) {
-    resolved.onnxruntime_library_path = hints.onnxruntime_library_env;
+    SetResolvedOnnxRuntimeLibraryPath(&resolved, std::filesystem::path(hints.onnxruntime_library_env));
   } else if (plugin_directory.has_value()) {
     const std::vector<std::filesystem::path> candidates = {
         *plugin_directory / "runtime" / DefaultOnnxRuntimeLibraryFileName(),
@@ -135,7 +145,7 @@ RuntimePathResolution ResolveRuntimePaths(const RuntimePathHints& hints) {
     };
     for (const auto& candidate : candidates) {
       if (IsExistingFile(candidate)) {
-        resolved.onnxruntime_library_path = candidate.string();
+        SetResolvedOnnxRuntimeLibraryPath(&resolved, candidate);
         break;
       }
     }

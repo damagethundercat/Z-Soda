@@ -19,6 +19,7 @@ struct RuntimeOptions {
   RuntimeBackend preferred_backend = RuntimeBackend::kAuto;
   std::string model_manifest_path;
   std::string onnxruntime_library_path;
+  std::string onnxruntime_library_dir;
   int onnxruntime_api_version = 0;
   bool auto_download_missing_models = true;
 };

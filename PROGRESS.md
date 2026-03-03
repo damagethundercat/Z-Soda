@@ -4,7 +4,7 @@
 
 ## 1. 전체 진행률
 - 전체 진행률: **99%** (`PLAN.md`의 `P1`~`P5` 기준, `P3/P4/P5`는 마무리 단계)
-- 마지막 업데이트: **2026-03-03** (`D89`: 단일 설치 정책 강화(해시 동일 중복도 빌드 실패) + LoaderProbe 중복 검출 추가 및 로컬 CI 재통과)
+- 마지막 업데이트: **2026-03-03** (`D92`: ORT DLL 탐색 디렉터리 힌트 주입 + PiPL outflags 검증 토큰 자동 동기화 + EffectMain 렌더 실패 pass-through 보강)
 - 갱신 원칙: **작업 단위 완료 시 즉시 업데이트**
 
 ## 2. 현재 작업 상태
@@ -131,3 +131,5 @@
 - [x] `D88` `25::16 -> 25::3` 재발 차단 보강: `tools/build_aex.ps1`에 `MediaCore` 배치 후 `Effects` 경로의 `ZSoda.aex` 중복본 해시를 점검하는 가드를 추가해, 서로 다른 해시의 중복 설치가 감지되면 빌드를 실패시키고 정리 액션을 강제. 동시에 PiPL 생성 커맨드의 `DEPENDS`에 `ZSodaAeFlags.h`/`ZSodaVersion.h`를 명시해 outflags/버전 헤더 변경 시 리소스 재생성이 누락되지 않도록 강화 (`tools/build_aex.ps1`, `plugin/CMakeLists.txt`, `docs/build/LOCAL_AGENT_HANDOFF.md`)
 - [x] `D89` 로더 안정화 정책 상향: AE가 `duplicated effect plug-ins installed`를 선행 경고로 기록하는 재현 패턴을 반영해 `build_aex.ps1`의 중복 점검을 단일 설치 강제 정책으로 상향(해시가 같아도 실패), `ZSodaLoaderProbe.aex`까지 동일 검출을 적용. 운영 문서에 `중복 자체 금지` 규칙을 반영해 `25::16/25::3` 재발 가능성을 낮춤 (`tools/build_aex.ps1`, `docs/build/LOCAL_AGENT_HANDOFF.md`)
 - [x] `D90` 네이티브 강제 재검증(정리 -> 클린 빌드 -> 재현) 결과 동기화: `Effects` 중복 경로 제거 + `PluginCache\en_US\ZSoda*` 삭제 후 최신 `main`에서 재빌드/재배치했지만, AE 재실행 시 다시 `25::16(outflags mismatch 4008120 vs 4008020) -> 25::3` 순서로 재발하고 `Plugin Loading.log`의 `No loaders recognized ... Ignore` 및 `PluginCache` `Ignore=1` 재생성이 지속됨을 확인. 동시에 같은 세션의 `build-win\plugin\pipl\ZSodaPiPL.rr`에는 `AE_Effect_Global_OutFlags=0x04008120`이 기록되어 있어, `소스/rr 값`과 `AE가 판정한 PiPL 값`의 불일치가 핵심 블로커로 남음. 최신 전달 증거를 diagnostics 번들(`ae_loader_diag_20260303_220840`)로 고정 (`docs/build/LOCAL_AGENT_HANDOFF.md`, `PROGRESS.md`)
+- [x] `D91` `EffectMain` 안정화 2차: `BuildSdkDispatch`/`kUnknown`/`Dispatch` 실패 및 C++ 예외 경로에서 `PF_Cmd_RENDER`일 때 source→output pass-through를 강제 적용해 투명 출력 리스크를 낮추고, 실패 원인을 런타임 로그(`EffectMain`)에 남기도록 보강 (`plugin/ae/AePluginEntry.cpp`)
+- [x] `D92` ORT/PiPL 진단 신뢰도 보강: `RuntimePathResolver`에 `onnxruntime_library_dir` 해석을 추가해 런타임 옵션으로 전달하고, `OrtDynamicLoader`에서 `SetDefaultDllDirectories`+`AddDllDirectory` 기반 탐색 디렉터리 힌트를 로딩 전에 주입하도록 개선. 동시에 `build_aex.ps1`의 PiPL outflags 검증을 `ZSodaAeFlags.h` 파싱 기반으로 동기화해 하드코딩 토큰(`0x04008120`) 의존을 제거하고 loader summary에도 실제 기대값을 기록하도록 수정. 관련 경로 해석 테스트를 확장하고 로컬 CI 재통과 확인 (`plugin/inference/RuntimePathResolver.*`, `plugin/inference/RuntimeOptions.h`, `plugin/inference/EngineFactory.cpp`, `plugin/inference/OrtDynamicLoader.cpp`, `tools/build_aex.ps1`, `tests/test_runtime_path_resolver.cpp`, `tools/run_local_ci.sh`)

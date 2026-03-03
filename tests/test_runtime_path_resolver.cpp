@@ -50,6 +50,7 @@ void TestEnvironmentOverridesPluginDefaults() {
   assert(resolved.model_root == "/env/models");
   assert(resolved.model_manifest_path == "/env/models.custom.manifest");
   assert(resolved.onnxruntime_library_path == "/env/runtime/onnxruntime.custom");
+  assert(resolved.onnxruntime_library_dir == "/env/runtime");
 }
 
 void TestPluginAdjacentDefaults() {
@@ -70,6 +71,7 @@ void TestPluginAdjacentDefaults() {
   assert(std::filesystem::path(resolved.model_root) == models_dir);
   assert(std::filesystem::path(resolved.model_manifest_path) == manifest_path);
   assert(std::filesystem::path(resolved.onnxruntime_library_path) == ort_runtime_path);
+  assert(std::filesystem::path(resolved.onnxruntime_library_dir) == runtime_dir);
 }
 
 void TestPluginRootOrtFallback() {
@@ -87,6 +89,7 @@ void TestPluginRootOrtFallback() {
   const auto resolved = zsoda::inference::ResolveRuntimePaths(hints);
   assert(std::filesystem::path(resolved.model_root) == models_dir);
   assert(std::filesystem::path(resolved.onnxruntime_library_path) == ort_path);
+  assert(std::filesystem::path(resolved.onnxruntime_library_dir) == plugin_dir);
 }
 
 void TestFallbackToRepositoryRelativeDefaults() {
@@ -101,6 +104,7 @@ void TestFallbackToRepositoryRelativeDefaults() {
     assert(resolved.model_manifest_path.empty());
   }
   assert(resolved.onnxruntime_library_path.empty());
+  assert(resolved.onnxruntime_library_dir.empty());
 }
 
 }  // namespace

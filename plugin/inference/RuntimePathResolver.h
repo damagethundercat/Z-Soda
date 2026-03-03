@@ -16,6 +16,7 @@ struct RuntimePathResolution {
   std::string model_root;
   std::string model_manifest_path;
   std::string onnxruntime_library_path;
+  std::string onnxruntime_library_dir;
 };
 
 [[nodiscard]] const char* DefaultOnnxRuntimeLibraryFileName();
