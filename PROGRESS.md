@@ -4,7 +4,7 @@
 
 ## 1. 전체 진행률
 - 전체 진행률: **99%** (`PLAN.md`의 `P1`~`P5` 기준, `P3/P4/P5`는 마무리 단계)
-- 마지막 업데이트: **2026-03-03** (빌드 로더 게이트를 `.rr` + 최종 `.aex` 바이너리 검증으로 재설계하고 `ZSoda.loader_check.txt` 산출 추가)
+- 마지막 업데이트: **2026-03-03** (Windows 원클릭 로더 진단 스크립트 추가: PluginCache/Plugin Loading.log/.aex dumpbin 증거 일괄 수집)
 - 갱신 원칙: **작업 단위 완료 시 즉시 업데이트**
 
 ## 2. 현재 작업 상태
@@ -107,3 +107,4 @@
 - [x] `D65` 로컬 재현 로그 재확인 및 WSL 재위임 준비: 최신 `main(73464a4)` pull 후 `tools/build_aex.ps1` 재빌드 시 `Assert-PiPLSignature`가 `.rc`에서 `CodeWin64X86` 토큰 미검출로 실패(동일 시점 `.rr`에는 토큰 존재)함을 확인. AE 재실행 후에도 `Plugin Loading.log`에 `No loaders recognized ... set to Ignore`가 반복되고 `PluginCache\\en_US\\ZSoda.aex_*`가 `Ignore=1`로 재생성됨을 확인해 핸드오프 문서에 증적/다음 액션 반영 (`docs/build/LOCAL_AGENT_HANDOFF.md`)
 - [x] `D66` 빌드 로더 게이트 구조 개선: `tools/build_aex.ps1`를 `.rc` 토큰 검사 방식에서 `.rr` literal 시그니처 + 최종 `ZSoda.aex`(export/`.rsrc`/machine) 검증으로 전환하고, `ZSoda.loader_check.txt` 요약 산출 및 `LOCAL_AGENT_HANDOFF.md` 절차를 동기화 (`tools/build_aex.ps1`, `docs/build/LOCAL_AGENT_HANDOFF.md`)
 - [x] `D67` 듀얼 경로 로더 재현 고정: `MediaCore`/`Effects` 두 위치에 동일 SHA256 `ZSoda.aex`를 배치해 재현해도 양쪽 모두 `No loaders recognized ... set to Ignore`로 실패하고, `PluginCache\\en_US`에 경로별 `ZSoda.aex_*` 2개 키가 `Ignore=1`로 동시 생성됨을 확인. `%TEMP%\\ZSoda_AE_Runtime.log` 미생성과 `LoadLibraryW` 단독 성공/`dumpbin /dependents` 정상 결과를 함께 기록해 실패 지점을 AE 내부 로더 단계로 한정 (`docs/build/LOCAL_AGENT_HANDOFF.md`)
+- [x] `D68` 네이티브 진단 자동화 추가: `tools/collect_ae_loader_diagnostics.ps1`를 추가해 `PluginCache`(ZSoda 키/값), `Plugin Loading.log` 컨텍스트, 대상 `.aex`의 `dumpbin` 증거(`exports/headers/dependents/.rsrc`) + SHA256 + `LoadLibraryW` probe를 세션 폴더로 일괄 수집하도록 구현하고 핸드오프 문서에 실행법/산출물 구조를 반영 (`tools/collect_ae_loader_diagnostics.ps1`, `docs/build/LOCAL_AGENT_HANDOFF.md`)

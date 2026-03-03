@@ -152,6 +152,41 @@ if ($p) {
 - 스크립트 수정 시 `module: summary` 커밋 규칙을 따른다.
 - 작업 단위 완료 후 `PROGRESS.md`를 갱신한다.
 
+## 8) 원클릭 진단 수집 (Windows)
+
+로더 단계 이슈(`No loaders recognized`, `Ignore=1`) 재현 시 아래 스크립트로 증거를 한 번에 수집한다.
+
+CMD:
+```cmd
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\collect_ae_loader_diagnostics.ps1 ^
+  -AfterEffectsVersion "25.0" ^
+  -OutputRoot ".\artifacts\diagnostics" ^
+  -ContextLines 8
+```
+
+주요 수집 항목:
+- PluginCache: `HKCU\Software\Adobe\After Effects\25.0\PluginCache\en_US\ZSoda.aex_*` 키/값 덤프(JSON + TXT)
+- Plugin Loading.log: `ZSoda`/`No loaders recognized` 매치 라인 ±N 컨텍스트
+- `.aex` 증거: `dumpbin /exports /headers /dependents /rawdata:.rsrc`, SHA256, `LoadLibraryW` probe 결과
+
+출력 구조:
+```text
+artifacts/diagnostics/ae_loader_diag_YYYYMMDD_HHMMSS/
+  summary.txt
+  plugin_cache/
+    zsoda_plugin_cache.json
+    zsoda_plugin_cache.txt
+  logs/
+    Plugin Loading.log
+    plugin_loading_zsoda_context.txt
+  aex/
+    C_Program_Files_Adobe_Common_Plug-ins_7.0_MediaCore_ZSoda.aex.meta.txt
+    *.exports.txt
+    *.headers.txt
+    *.dependents.txt
+    *.rsrc.txt
+```
+
 ## Session Handoff (2026-03-03, for next WSL agent)
 
 ### Branch / Remote
