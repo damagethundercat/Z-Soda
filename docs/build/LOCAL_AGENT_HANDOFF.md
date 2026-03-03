@@ -227,3 +227,24 @@ if ($p) {
   - `Assert-AexLoaderSignature`: 최종 `ZSoda.aex`의 `EffectMain export`, `.rsrc` 섹션, 플랫폼 machine 타입 검증
   - 빌드 산출물 옆에 `ZSoda.loader_check.txt`를 생성해 게이트 요약 기록
 - 목적: `.rc` 인코딩/토큰 표현 차이로 인한 false fail을 제거하고, 실제 AE 로더 관점(최종 바이너리 기준)으로 실패를 조기에 차단.
+
+### Session update (2026-03-03 16:45, dual-path loader repro)
+- User retest still reproduces same init failure after loader-gate-enabled build.
+- `Plugin Loading.log` now confirms **both install paths** fail loader recognition:
+  - `C:\Program Files\Adobe\Common\Plug-ins\7.0\MediaCore\ZSoda.aex` -> `No loaders recognized this plugin, so the plugin is set to Ignore.`
+  - `C:\Program Files\Adobe\Adobe After Effects 2025\Support Files\Plug-ins\Effects\ZSoda.aex` -> `No loaders recognized this plugin, so the plugin is set to Ignore.`
+- `PluginCache\en_US` contains two ZSoda keys (path-hash variants), both `Ignore=1`:
+  - `ZSoda.aex_74697f7d-6eaa-731e-5ba9-290933586ec3`
+  - `ZSoda.aex_00f48907-5c13-bfaa-3f5b-d4f4b7658605`
+- `%TEMP%\ZSoda_AE_Runtime.log` remains absent, supporting that failure occurs before `EffectMain` dispatch.
+
+#### Extra evidence added in this session
+- `dumpbin /dependents` for `ZSoda.aex`: only `KERNEL32.dll` (static CRT build), no missing import signal.
+- Manual `LoadLibraryW()` probe on `ZSoda.aex` succeeds outside AE.
+- PiPL binary extraction from `ZSoda.aex` shows expected property keys including Win64 code token (`8664`/`EffectMain`) and effect metadata.
+- AE SDK sample PiPL transform (`CheckoutPiPL.r -> PiPLtool -> .rc`) shows the same Windows encoded pattern (`"4668"` in `.rc`), so this encoding itself is not abnormal.
+
+#### Next WSL focus
+1. Investigate why AE’s internal loader rejects this specific AEX despite valid export/resource signatures and successful raw DLL load.
+2. Correlate `PluginCache` hash entries to physical paths and verify whether one failing path can poison the other via shared cache logic.
+3. Attempt a minimal AE SDK sample effect build/load on the same machine to isolate whether issue is plugin-specific vs host policy/environment.
