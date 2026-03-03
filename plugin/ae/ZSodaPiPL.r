@@ -30,8 +30,10 @@ resource 'PiPL' (16000) {
       0
     },
     AE_Effect_Spec_Version {
-      PF_PLUG_IN_VERSION,
-      PF_PLUG_IN_SUBVERS
+      // Pin to AE 25.0-compatible spec (13.28) to avoid loader rejection
+      // when newer SDK headers provide a higher PF_PLUG_IN_SUBVERS.
+      13,
+      28
     },
     AE_Effect_Version {
       ZSODA_EFFECT_VERSION_HEX

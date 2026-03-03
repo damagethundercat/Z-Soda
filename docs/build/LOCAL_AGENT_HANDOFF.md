@@ -744,3 +744,21 @@ artifacts/diagnostics/ae_loader_diag_YYYYMMDD_HHMMSS/
    - `summary.txt`
    - `logs\plugin_loading_zsoda_context.txt`
    - `plugin_cache\zsoda_plugin_cache.json`
+
+### Session update (2026-03-03 23:10, native PiPL spec pin for AE 25.0)
+- Applied PiPL compatibility pin in both resources:
+  - `plugin/ae/ZSodaPiPL.r`: `AE_Effect_Spec_Version` -> `13, 28`
+  - `plugin/ae/ZSodaLoaderProbePiPL.r`: `AE_Effect_Spec_Version` -> `13, 28`
+- Clean rebuilt and deployed:
+  - Command: `tools/build_aex.ps1 -Clean -CopyToMediaCore` (with explicit AE/ORT paths)
+  - Result: success (exit code 0)
+  - SHA256:
+    - `build-win\plugin\Release\ZSoda.aex` = `71E0E63533AF3129F35C1C4066685137D6F3FA8D5BDA3FFD95C064C2A8CC5290`
+    - `C:\Program Files\Adobe\Common\Plug-ins\7.0\MediaCore\ZSoda.aex` = same hash
+- Verified PiPL spec value from built binary:
+  - `RVSe raw=0x001C000D` (major=28, minor=13)
+- Cleared stale PluginCache entries:
+  - Deleted `HKCU\Software\Adobe\After Effects\25.0\PluginCache\en_US\ZSoda*.aex_*`
+  - Post-check: no `ZSoda*` keys remain.
+- Next verify point in AE:
+  - Relaunch AE and check whether `No loaders recognized` disappears before proceeding to ORT 1114 axis.

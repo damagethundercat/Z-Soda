@@ -30,8 +30,9 @@ resource 'PiPL' (16001) {
       0
     },
     AE_Effect_Spec_Version {
-      PF_PLUG_IN_VERSION,
-      PF_PLUG_IN_SUBVERS
+      // Keep probe on the same host-compat spec as the main plugin.
+      13,
+      28
     },
     AE_Effect_Version {
       ZSODA_EFFECT_VERSION_HEX
