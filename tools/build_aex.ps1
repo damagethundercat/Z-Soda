@@ -39,7 +39,9 @@ param(
 
   [switch]$LoaderOnlyMain,
 
-  [string]$MediaCoreDir
+  [string]$MediaCoreDir,
+
+  [switch]$SkipDuplicateInstallCheck
 )
 
 $ErrorActionPreference = "Stop"
@@ -378,6 +380,85 @@ function Print-LoaderEvidence {
   }
 }
 
+function Get-Sha256Lower {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$Path
+  )
+
+  return (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant()
+}
+
+function Find-InstalledEffectsAexCandidates {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$FileName
+  )
+
+  $results = @()
+  $adobeRoot = Join-Path $env:ProgramFiles "Adobe"
+  if (-not (Test-Path -LiteralPath $adobeRoot -PathType Container)) {
+    return $results
+  }
+
+  $aeDirs = Get-ChildItem -LiteralPath $adobeRoot -Directory -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -like "Adobe After Effects*" }
+  foreach ($dir in $aeDirs) {
+    $candidate = Join-Path $dir.FullName ("Support Files\Plug-ins\Effects\{0}" -f $FileName)
+    if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+      $results += (Resolve-Path -LiteralPath $candidate).Path
+    }
+  }
+  return $results
+}
+
+function Assert-NoMismatchedInstalledCopies {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$PrimaryAexPath,
+
+    [Parameter(Mandatory = $true)]
+    [string]$FileName
+  )
+
+  if (-not (Test-Path -LiteralPath $PrimaryAexPath -PathType Leaf)) {
+    throw "Primary plugin path not found for duplicate check: $PrimaryAexPath"
+  }
+  $primaryAbs = (Resolve-Path -LiteralPath $PrimaryAexPath).Path
+  $primaryHash = Get-Sha256Lower -Path $primaryAbs
+
+  $mismatched = @()
+  $matched = @()
+  foreach ($candidate in (Find-InstalledEffectsAexCandidates -FileName $FileName)) {
+    if ($candidate -ieq $primaryAbs) {
+      continue
+    }
+    $candidateHash = Get-Sha256Lower -Path $candidate
+    if ($candidateHash -ieq $primaryHash) {
+      $matched += [PSCustomObject]@{ Path = $candidate; Hash = $candidateHash }
+    } else {
+      $mismatched += [PSCustomObject]@{ Path = $candidate; Hash = $candidateHash }
+    }
+  }
+
+  foreach ($same in $matched) {
+    Write-Warning ("Duplicate ZSoda.aex found with identical hash: {0} ({1})" -f $same.Path, $same.Hash)
+  }
+
+  if ($mismatched.Count -eq 0) {
+    return
+  }
+
+  $details = @()
+  $details += ("Primary: {0} ({1})" -f $primaryAbs, $primaryHash)
+  foreach ($entry in $mismatched) {
+    $details += ("Mismatch: {0} ({1})" -f $entry.Path, $entry.Hash)
+  }
+  $details += "Action: keep only one ZSoda.aex copy (recommended: MediaCore), remove stale Effects copies, then clear PluginCache ZSoda keys and retest."
+  $joined = $details -join [Environment]::NewLine
+  throw "Detected mismatched duplicate ZSoda.aex installs.`n$joined"
+}
+
 function Resolve-OrtRuntimeDll {
   param(
     [Parameter(Mandatory = $true)]
@@ -677,5 +758,9 @@ if ($CopyToMediaCore) {
     Print-ArtifactInfo -Label "mediacore_ort_dll" -Path $mediaCoreDllOutputAbs
   } else {
     Write-Warning "MediaCore copy requested but onnxruntime.dll is unavailable."
+  }
+
+  if (-not $SkipDuplicateInstallCheck) {
+    Assert-NoMismatchedInstalledCopies -PrimaryAexPath $mediaCoreOutputAbs -FileName "ZSoda.aex"
   }
 }

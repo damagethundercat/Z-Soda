@@ -4,7 +4,7 @@
 
 ## 1. 전체 진행률
 - 전체 진행률: **99%** (`PLAN.md`의 `P1`~`P5` 기준, `P3/P4/P5`는 마무리 단계)
-- 마지막 업데이트: **2026-03-03** (`D87`: 네이티브 재현 차단 2건 정식 반영(build_aex SwitchParameter 캐스팅/EffectMain 네임스페이스 호출) 및 로컬 CI 재통과)
+- 마지막 업데이트: **2026-03-03** (`D88`: outflags mismatch 재발 차단(중복 설치 해시 불일치 검출) + PiPL 생성 의존성 강화 반영 및 로컬 CI 재통과)
 - 갱신 원칙: **작업 단위 완료 시 즉시 업데이트**
 
 ## 2. 현재 작업 상태
@@ -128,3 +128,4 @@
 - [x] `D85` 적용 후 자동 다운로드 경로 추가: 모델 파일이 없을 때 `ManagedInferenceEngine`이 모델 매니페스트 URL을 기반으로 백그라운드 다운로드를 1회 큐잉하도록 `ModelAutoDownloader`를 도입(기본 활성, `ZSODA_AUTO_DOWNLOAD_MODELS=0`으로 비활성화 가능). 동일 모델 파일이 생성되면 이후 선택 경로에서 ONNX 백엔드 재승격을 시도해 폴백에서 실추론으로 전환되도록 개선. 관련 옵션/문서/로컬 CI 컴파일 목록/다운로더 검증 테스트를 동기화 (`plugin/inference/ModelAutoDownloader.*`, `plugin/inference/ManagedInferenceEngine.*`, `plugin/inference/RuntimeOptions.h`, `plugin/inference/EngineFactory.cpp`, `plugin/CMakeLists.txt`, `tests/test_inference_engine.cpp`, `tools/run_local_ci.sh`, `README.md`, `models/README.md`, `docs/build/README.md`, `docs/build/LOCAL_AGENT_HANDOFF.md`)
 - [x] `D86` `25::3` 재현 로그 재분석 및 handoff 동기화: 네이티브 재현 직후 `%TEMP%\\ZSoda_AE_Runtime.log`/`Plugin Loading.log`/`PluginCache`를 재확인해 최신 블로커를 문서화. `EngineStatus` 최신 2회(`2026-03-03 21:20:10.133`, `21:20:51.030`)에서 `MediaCore\\onnxruntime.dll` 로딩이 3단계 모두 `code=1114`로 실패(`loaded_path=<none>`, `negotiated_api_version=0`)함을 확인했고, 동시에 `PluginCache\\en_US`의 `ZSoda*.aex_*` 키가 여전히 `Ignore=1`인 상태를 확인해 ORT 초기화 실패 축과 Ignore 캐시 축이 공존하는 것으로 handoff에 반영 (`docs/build/LOCAL_AGENT_HANDOFF.md`, `PROGRESS.md`)
 - [x] `D87` 네이티브 빌드 재현 차단 2건 정식 반영: `tools/build_aex.ps1`의 CMake 플래그 생성 시 `SwitchParameter`를 직접 `[int]` 캐스팅하던 경로를 `IsPresent` 기반 `0/1` 값으로 변경하고, `EffectMainImpl`에서 `LogEngineStatusOnce()` 호출을 `zsoda::ae::LogEngineStatusOnce()`로 정규화해 네이티브에서 보고된 컴파일/실행 블로커를 제거. 로컬 CI(`tools/run_local_ci.sh`) 재통과로 회귀 없음 확인 (`tools/build_aex.ps1`, `plugin/ae/AePluginEntry.cpp`)
+- [x] `D88` `25::16 -> 25::3` 재발 차단 보강: `tools/build_aex.ps1`에 `MediaCore` 배치 후 `Effects` 경로의 `ZSoda.aex` 중복본 해시를 점검하는 가드를 추가해, 서로 다른 해시의 중복 설치가 감지되면 빌드를 실패시키고 정리 액션을 강제. 동시에 PiPL 생성 커맨드의 `DEPENDS`에 `ZSodaAeFlags.h`/`ZSodaVersion.h`를 명시해 outflags/버전 헤더 변경 시 리소스 재생성이 누락되지 않도록 강화 (`tools/build_aex.ps1`, `plugin/CMakeLists.txt`, `docs/build/LOCAL_AGENT_HANDOFF.md`)
