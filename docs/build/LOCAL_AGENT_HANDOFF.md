@@ -433,6 +433,33 @@ artifacts/diagnostics/ae_loader_diag_YYYYMMDD_HHMMSS/
 2. Add immediate logging of Win32 error code (`GetLastError`) right after failed `LoadLibraryW` and include decoded message text.
 3. Verify transitive dependency loadability of `C:\onnxruntime-win-x64-1.24.2\lib\onnxruntime.dll` under the same user/session context (AE-launched context preferred).
 
+### Session update (2026-03-03 20:00, same error after clean rebuild + retest)
+- Clean rebuild and MediaCore redeploy completed (`ZSoda.aex` + `onnxruntime.dll`).
+- User retest still reports the same AE error.
+- Checked `%TEMP%\ZSoda_AE_Runtime.log` again:
+  - `LastWrite`: `2026-03-03 20:00:02.582`
+  - latest `EngineStatus` still repeats the same ORT init fallback:
+    - `requested_path=attempted_load_path=C:\onnxruntime-win-x64-1.24.2\lib\onnxruntime.dll`
+    - `loaded_path=<none>`
+    - `negotiated_api_version=0`
+    - `error=LoadLibraryW failed: DLL 초기화 루틴을 실행할 수 없습니다.`
+  - `EffectMain` line is still absent in runtime log search.
+- Checked `Plugin Loading.log` (`25.0`, `LastWrite=2026-03-03 19:59:17.408`):
+  - `Loading ...\MediaCore\ZSoda.aex`
+  - `No loaders recognized this plugin, so the plugin is set to Ignore.`
+  - `Loading ...\MediaCore\ZSodaLoaderProbe.aex`
+  - `The plugin is marked as Ignore, so it will not be loaded.`
+  - `Loading ...\Effects\ZSoda.aex`
+  - `The plugin is marked as Ignore, so it will not be loaded.`
+- PluginCache (`HKCU\Software\Adobe\After Effects\25.0\PluginCache\en_US`) now confirms:
+  - `ZSoda.aex_00f48907-5c13-bfaa-3f5b-d4f4b7658605 | Ignore=1`
+  - `ZSoda.aex_74697f7d-6eaa-731e-5ba9-290933586ec3 | Ignore=1`
+  - `ZSodaLoaderProbe.aex_74697f7d-6eaa-731e-5ba9-290933586ec3 | Ignore=1`
+
+#### Updated implication
+1. Loader-level ignore state is now confirmed for both main plugin and probe in current cache, so probe A/B isolation is currently blocked by cache policy state.
+2. Runtime log still indicates ORT initialization failure independently; both tracks (AE loader ignore + ORT init failure) need to be treated as concurrent blockers.
+
 ### Session update (2026-03-03 20:10, WSL structural hardening for #2)
 - Implemented loader diagnostics + fallback chain in `OrtDynamicLoader`:
   - `LoadLibrary` attempts now run in order:
