@@ -684,3 +684,20 @@ artifacts/diagnostics/ae_loader_diag_YYYYMMDD_HHMMSS/
 3. 우선순위 제안:
    - (a) ORT 1114 원인(종속 DLL/초기화 루틴 실패) 추적,
    - (b) Ignore 재생성 트리거(캐시/스캔 순서) 추적을 별도 실험으로 분리.
+
+### Session update (2026-03-03 21:35, WSL follow-up fix for native blockers)
+- `main`에 네이티브에서 임시 우회하던 2개 항목을 정식 반영함:
+  1) `tools/build_aex.ps1`
+     - `SwitchParameter` 직접 `[int]` 캐스팅 제거
+     - `LoaderOnlyMain.IsPresent` / `enableOrtApiEffective`를 명시 `0/1` 값으로 변환해 CMake 인자 전달
+  2) `plugin/ae/AePluginEntry.cpp`
+     - `EffectMainImpl`의 `LogEngineStatusOnce()` 호출을 `zsoda::ae::LogEngineStatusOnce()`로 정규화
+- WSL 로컬 CI(`tools/run_local_ci.sh`) 재통과.
+
+#### Next native verification checklist (after D87)
+1. 최신 `main` pull 후 클린 빌드:
+   - `tools\build_aex.ps1 ... -Clean -Config Release -CopyToMediaCore`
+2. 동일 명령에서 이전 2개 오류 재발 여부 확인:
+   - `SwitchParameter -> Int32` 캐스팅 오류
+   - `C3861 LogEngineStatusOnce` 컴파일 오류
+3. 빌드가 통과하면 AE 적용 재현 후 `%TEMP%\ZSoda_AE_Runtime.log`의 ORT 1114 지속 여부만 별도 수집.

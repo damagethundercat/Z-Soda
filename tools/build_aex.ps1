@@ -468,6 +468,8 @@ if ($DisableOrtApi) {
 if ($EnableOrtApi) {
   $enableOrtApiEffective = $true
 }
+$loaderOnlyMainInt = if ($LoaderOnlyMain.IsPresent) { 1 } else { 0 }
+$enableOrtApiInt = if ($enableOrtApiEffective) { 1 } else { 0 }
 
 if (-not $enableOrtApiEffective) {
   Write-Host "ORT mode: structural-safe (ZSODA_WITH_ONNX_RUNTIME_API=OFF)"
@@ -497,9 +499,9 @@ $configureArgs = @(
   "-G", $Generator,
   "-DZSODA_BUILD_TESTS=OFF",
   "-DZSODA_WITH_AE_SDK=ON",
-  "-DZSODA_AE_LOADER_ONLY_MODE=$([int]$LoaderOnlyMain)",
+  "-DZSODA_AE_LOADER_ONLY_MODE=$loaderOnlyMainInt",
   "-DZSODA_WITH_ONNX_RUNTIME=ON",
-  "-DZSODA_WITH_ONNX_RUNTIME_API=$([int]$enableOrtApiEffective)",
+  "-DZSODA_WITH_ONNX_RUNTIME_API=$enableOrtApiInt",
   "-DZSODA_MSVC_RUNTIME_LIBRARY=$MsvcRuntime",
   "-DZSODA_ONNXRUNTIME_DIRECT_LINK_MODE=$OrtDirectLinkMode",
   "-DAE_SDK_INCLUDE_DIR=$aeSdkIncludeDirAbs",
