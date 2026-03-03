@@ -189,3 +189,29 @@ if ($p) {
 ### Notes
 - Local build/output folders (`build-win*`, `dist/`, `Microsoft/`) are intentionally not committed.
 - Artifact commit is for handoff convenience only; production packaging strategy can be revised later.
+
+### Session update (2026-03-03 16:16, local Windows retest)
+- Synced latest `main` to `73464a4` and rebuilt with `tools/build_aex.ps1`.
+- Build reached link stage and produced `build-win\plugin\Release\ZSoda.aex`, but script exited fail in `Assert-PiPLSignature`:
+  - `Missing token 'CodeWin64X86' in build-win\plugin\pipl\ZSodaPiPL.rc`
+- Verified PiPL artifacts:
+  - `build-win\plugin\pipl\ZSodaPiPL.rc` exists and contains encoded Win64 code token `"4668"` + `"EffectMain"` + outflags numeric value.
+  - `build-win\plugin\pipl\ZSodaPiPL.rr` contains literal tokens `CodeWin64X86`, `EffectMain`, `AE_Effect_Global_OutFlags`, `0x04008120`.
+- Because script aborted before `-CopyToMediaCore` final step, local run manually copied latest `ZSoda.aex` to `C:\Program Files\Adobe\Common\Plug-ins\7.0\MediaCore\ZSoda.aex`.
+
+#### Repro result after rebuild
+- User retest still shows the same AE init error (25::3).
+- `Plugin Loading.log` (`2026-03-03 16:16:05`) still shows:
+  - `Loading ...\MediaCore\ZSoda.aex`
+  - `Loading from disk...`
+  - `No loaders recognized this plugin, so the plugin is set to Ignore.`
+- `%TEMP%\ZSoda_AE_Runtime.log` is still not created (likely `EffectMain` not reached).
+- `HKCU\Software\Adobe\After Effects\25.0\PluginCache\en_US\ZSoda.aex_*` key is recreated with `Ignore=1` after AE launch even after manual deletion.
+
+#### Ask for next WSL pass
+1. Fix `tools/build_aex.ps1` PiPL signature check to validate the right artifact format (`.rr` literal tokens or `.rc` encoded token mapping) so build gating is accurate.
+2. Keep investigating why AE loader still rejects this binary despite `EffectMain` export + PiPL resource presence.
+3. Include exact evidence in next report:
+   - `Plugin Loading.log` snippet around ZSoda load lines
+   - current `PluginCache\...\ZSoda.aex_*` values (`Ignore`, `DateLow/DateHigh`)
+   - PiPL dump evidence from built `.aex` (`ZSodaPiPL.rc/.rr` and PE resource inspection).
