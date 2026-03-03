@@ -20,11 +20,18 @@
 #include "ae/AeParams.h"
 #include "core/RenderPipeline.h"
 #include "inference/InferenceEngine.h"
+#include "inference/ManagedInferenceEngine.h"
 
 namespace zsoda::ae {
 namespace {
 
 constexpr int kGrayStubChannels = 4;
+
+const char* SafeCStr(const char* value, const char* fallback = "<null>") {
+  return value != nullptr ? value : fallback;
+}
+
+void AppendDiagnosticsLine(const char* tag, const char* detail);
 
 std::optional<zsoda::core::PixelFormat> ParseHostPixelFormat(int pixel_format) {
   switch (pixel_format) {
@@ -43,6 +50,28 @@ std::shared_ptr<zsoda::inference::IInferenceEngine> GetEngine() {
   static std::shared_ptr<zsoda::inference::IInferenceEngine> engine =
       zsoda::inference::CreateDefaultEngine();
   return engine;
+}
+
+void LogEngineStatusOnce() {
+  static bool logged = false;
+  if (logged) {
+    return;
+  }
+  logged = true;
+
+  const auto engine = GetEngine();
+  if (engine == nullptr) {
+    AppendDiagnosticsLine("EngineStatus", "engine is null");
+    return;
+  }
+
+  std::string status = std::string("engine=") + SafeCStr(engine->Name(), "<null>");
+  const auto managed_engine =
+      std::dynamic_pointer_cast<zsoda::inference::ManagedInferenceEngine>(engine);
+  if (managed_engine != nullptr) {
+    status = managed_engine->BackendStatusString();
+  }
+  AppendDiagnosticsLine("EngineStatus", status.c_str());
 }
 
 std::shared_ptr<zsoda::core::RenderPipeline> GetPipeline() {
@@ -484,6 +513,8 @@ PF_Err EffectMainImpl(PF_Cmd cmd,
                       PF_ParamDef* params[],
                       PF_LayerDef* output,
                       void* extra) {
+  LogEngineStatusOnce();
+
   std::string error;
 
   zsoda::ae::AeDispatchContext dispatch;

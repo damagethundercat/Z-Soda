@@ -4,7 +4,7 @@
 
 ## 1. 전체 진행률
 - 전체 진행률: **99%** (`PLAN.md`의 `P1`~`P5` 기준, `P3/P4/P5`는 마무리 단계)
-- 마지막 업데이트: **2026-03-03** (Probe `25::16 version mismatch` 대응: 코드/PiPL 버전 상수 통일)
+- 마지막 업데이트: **2026-03-03** (실동작 단계 반영: ORT API 기본 활성화 + outflags2 동기화 + 엔진상태 로그 추가)
 - 갱신 원칙: **작업 단위 완료 시 즉시 업데이트**
 
 ## 2. 현재 작업 상태
@@ -113,3 +113,5 @@
 - [x] `D70` 로더 원인 분리용 최소 AEX 타깃 추가: AE SDK 최소 엔트리(`LoaderProbeEntry.cpp`) + 독립 PiPL(`ZSodaLoaderProbePiPL.r`) + CMake `zsoda_loader_probe_aex` 타깃 및 `build_aex.ps1 -BuildLoaderProbe` 옵션을 도입해 동일 환경에서 `ZSoda.aex` 대비 로더 인식 여부를 즉시 A/B 판별할 수 있도록 구성 (`plugin/ae/LoaderProbeEntry.cpp`, `plugin/ae/ZSodaLoaderProbePiPL.r`, `plugin/CMakeLists.txt`, `tools/build_aex.ps1`, `docs/build/LOCAL_AGENT_HANDOFF.md`)
 - [x] `D71` probe 빌드 복구: `LoaderProbeEntry.cpp`의 AE SDK 헤더 호환 오류(`PF_SPRINTF`의 `in_data` 의존, `PF_PixelPtr` 캐스팅 타입 불일치)를 수정해 `-BuildLoaderProbe` 경로가 다시 컴파일 가능하도록 조정하고, Adobe community 리서치 기반 다음 재현 체크포인트(`-Clean` 재생성/리소스 트리 정합성/probe 결과 분기)를 handoff에 반영 (`plugin/ae/LoaderProbeEntry.cpp`, `docs/build/LOCAL_AGENT_HANDOFF.md`)
 - [x] `D72` Probe 버전 경고 제거 준비: 네이티브 재현에서 보고된 `After Effects 25::16 version mismatch`(code 1.0 vs PiPL 0.2) 해소를 위해 코드(`my_version`)와 PiPL(`AE_Effect_Version`)을 공용 상수 `ZSODA_EFFECT_VERSION_HEX`로 통일하고, 본 플러그인/Probe 양쪽 모두 동일 버전 소스를 사용하도록 정리 (`plugin/ae/ZSodaVersion.h`, `plugin/ae/AeHostAdapter.cpp`, `plugin/ae/LoaderProbeEntry.cpp`, `plugin/ae/ZSodaPiPL.r`, `plugin/ae/ZSodaLoaderProbePiPL.r`, `docs/build/LOCAL_AGENT_HANDOFF.md`)
+- [x] `D73` 실추론 기본 경로 전환: Windows 빌드 스크립트 `build_aex.ps1`의 기본 동작을 ORT API ON으로 전환(`-DisableOrtApi`로만 OFF)해 기본 빌드가 실제 ONNX Runtime 실행 경로를 타도록 조정하고 README/핸드오프 문서에 운영 기준 반영 (`tools/build_aex.ps1`, `README.md`, `docs/build/LOCAL_AGENT_HANDOFF.md`, `models/README.md`)
+- [x] `D74` MFR 경고 대응 기반 정리: 코드/PiPL outflags를 공용 헤더(`ZSodaAeFlags.h`)로 통합해 `PF_OutFlag2_SUPPORTS_THREADED_RENDERING` 반영을 단일 소스로 맞추고, `EffectMain` 최초 진입 시 엔진 백엔드 상태를 `%TEMP%\\ZSoda_AE_Runtime.log`에 남겨 실추론/폴백 여부를 즉시 진단 가능하게 개선 (`plugin/ae/ZSodaAeFlags.h`, `plugin/ae/AeHostAdapter.cpp`, `plugin/ae/LoaderProbeEntry.cpp`, `plugin/ae/ZSodaPiPL.r`, `plugin/ae/ZSodaLoaderProbePiPL.r`, `plugin/ae/AePluginEntry.cpp`, `docs/build/LOCAL_AGENT_HANDOFF.md`)

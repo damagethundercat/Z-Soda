@@ -75,6 +75,7 @@ copy /Y "%ORT_DLL_DIR%\onnxruntime.dll" "C:\Program Files\Adobe\Common\Plug-ins\
 
 주의:
 - `C:\Program Files\Adobe\Common\Plug-ins\7.0\MediaCore` 쓰기 시 `Access is denied`가 나오면 **관리자 권한 PowerShell/CMD**로 재실행해야 한다.
+- `tools\build_aex.ps1`는 기본값으로 ORT API를 활성화한다. 구조 안전 모드가 필요할 때만 `-DisableOrtApi`를 사용한다.
 - 테스트/실행 중 `The requested API version [24] is not available ... [1, 17]`가 나오면 Adobe ORT 1.17.x와 plugin ORT 1.24.x 충돌 가능성이 높다. 임시 복사로 우회하지 말고 아래 `명시적 ORT 로딩 전략` 기준으로 점검한다.
 - CRT 버전 불일치 이슈를 줄이기 위해 기본 런타임은 정적 CRT(`/MT`)다. 강제로 `/MD`가 필요하지 않다면 `-MsvcRuntime` 기본값을 유지한다.
 
@@ -382,3 +383,15 @@ artifacts/diagnostics/ae_loader_diag_YYYYMMDD_HHMMSS/
 - Probe의 이펙트 컨트롤에서 펼칠 파라미터가 없는 것은 정상:
   - 현재 Probe는 로더 인식 분리 진단용 최소 엔트리이며 사용자 파라미터를 등록하지 않는다.
   - 목적은 UI 효과가 아니라 `로더 인식 여부`를 확인하는 것이다.
+
+### Session update (2026-03-03 19:00, functional runtime defaults)
+- `tools\build_aex.ps1` 기본 동작을 ORT API 활성화로 전환:
+  - 별도 플래그 없이도 `ZSODA_WITH_ONNX_RUNTIME_API=ON`으로 구성됨.
+  - 구조 안전 모드가 필요할 때만 `-DisableOrtApi` 사용.
+- MFR 경고 최소화를 위한 outflags 동기화:
+  - 코드(`AeHostAdapter`/`LoaderProbeEntry`)와 PiPL(`ZSodaPiPL.r`/`ZSodaLoaderProbePiPL.r`)에서
+    `ZSODA_AE_GLOBAL_OUTFLAGS`, `ZSODA_AE_GLOBAL_OUTFLAGS2` 공용 매크로 사용.
+  - `PF_OutFlag2_SUPPORTS_THREADED_RENDERING`가 SDK에서 정의되면 자동 반영.
+- 런타임 엔진 상태 로깅 추가:
+  - `EffectMain` 최초 진입 시 `%TEMP%\ZSoda_AE_Runtime.log`에 `EngineStatus` 기록.
+  - 예: `requested=..., active=..., engine=OnnxRuntimeBackend[...]` 또는 fallback reason.

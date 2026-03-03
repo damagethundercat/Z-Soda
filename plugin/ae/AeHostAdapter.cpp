@@ -1,4 +1,5 @@
 #include "ae/AeHostAdapter.h"
+#include "ae/ZSodaAeFlags.h"
 #include "ae/ZSodaVersion.h"
 
 #include <algorithm>
@@ -79,8 +80,8 @@ constexpr int kAeSdkNumParams = static_cast<int>(AeParamId::kVramBudgetMb) + 1;
 constexpr int kModelPopupChoices = 4;
 constexpr int kQualityPopupChoices = 3;
 constexpr int kOutputModePopupChoices = 2;
-constexpr std::uint32_t kAeGlobalOutFlags = 0x04008120U;
-constexpr std::uint32_t kAeGlobalOutFlags2 = 0x00000000U;
+constexpr std::uint32_t kAeGlobalOutFlags = ZSODA_AE_GLOBAL_OUTFLAGS;
+constexpr std::uint32_t kAeGlobalOutFlags2 = ZSODA_AE_GLOBAL_OUTFLAGS2;
 
 constexpr char kModelPopupLabels[] = "Depth Small|Depth Base|Depth Large|MiDaS DPT Large";
 constexpr char kQualityPopupLabels[] = "Draft|Balanced|Best";

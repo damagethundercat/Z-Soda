@@ -13,6 +13,8 @@ param(
 
   [switch]$EnableOrtApi,
 
+  [switch]$DisableOrtApi,
+
   [string]$OrtRuntimeDllPath,
 
   [switch]$RequireOrtRuntimeDll,
@@ -453,14 +455,26 @@ if ($Clean -and (Test-Path -LiteralPath $buildDirAbs)) {
 }
 New-Item -ItemType Directory -Path $buildDirAbs -Force | Out-Null
 
-if (-not $EnableOrtApi) {
+if ($EnableOrtApi -and $DisableOrtApi) {
+  throw "EnableOrtApi and DisableOrtApi cannot be used together."
+}
+
+$enableOrtApiEffective = $true
+if ($DisableOrtApi) {
+  $enableOrtApiEffective = $false
+}
+if ($EnableOrtApi) {
+  $enableOrtApiEffective = $true
+}
+
+if (-not $enableOrtApiEffective) {
   Write-Host "ORT mode: structural-safe (ZSODA_WITH_ONNX_RUNTIME_API=OFF)"
 }
-if ($EnableOrtApi -and $OrtDirectLinkMode -eq "OFF") {
+if ($enableOrtApiEffective -and $OrtDirectLinkMode -eq "OFF") {
   Write-Host "ORT mode: API enabled with structural dynamic-loader path (direct link OFF)."
 }
-if (-not $EnableOrtApi -and $OrtDirectLinkMode -eq "ON") {
-  Write-Warning "OrtDirectLinkMode=ON is ignored because EnableOrtApi is not set."
+if (-not $enableOrtApiEffective -and $OrtDirectLinkMode -eq "ON") {
+  Write-Warning "OrtDirectLinkMode=ON is ignored because ORT API is disabled."
 }
 
 if ($CopyToMediaCore) {
@@ -479,7 +493,7 @@ $configureArgs = @(
   "-DZSODA_BUILD_TESTS=OFF",
   "-DZSODA_WITH_AE_SDK=ON",
   "-DZSODA_WITH_ONNX_RUNTIME=ON",
-  "-DZSODA_WITH_ONNX_RUNTIME_API=$([int]$EnableOrtApi.IsPresent)",
+  "-DZSODA_WITH_ONNX_RUNTIME_API=$([int]$enableOrtApiEffective)",
   "-DZSODA_MSVC_RUNTIME_LIBRARY=$MsvcRuntime",
   "-DZSODA_ONNXRUNTIME_DIRECT_LINK_MODE=$OrtDirectLinkMode",
   "-DAE_SDK_INCLUDE_DIR=$aeSdkIncludeDirAbs",

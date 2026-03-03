@@ -30,5 +30,5 @@ depth-anything-v3-small|Depth Anything v3 Small|depth-anything-v3/depth_anything
 ```
 
 주의:
-- 현재 스캐폴드에서는 ONNX Runtime 실제 추론 연결 전 단계입니다.
-- 모델 파일이 없으면 안전하게 폴백 경로를 사용합니다.
+- ONNX Runtime API가 활성화된 빌드에서는 실제 추론 경로를 사용합니다.
+- 모델 파일이 없거나 ORT 세션 초기화가 실패하면 안전한 폴백 경로를 사용합니다.

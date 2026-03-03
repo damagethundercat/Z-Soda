@@ -52,8 +52,8 @@ export ZSODA_MODEL_MANIFEST=models/models.manifest
 
 Current runtime note:
 - The model/session management path is implemented.
-- Default build keeps scaffold mode (`ZSODA_WITH_ONNX_RUNTIME=ON`, `ZSODA_WITH_ONNX_RUNTIME_API` unset): ORT API is not used and safe fallback depth path is used on run.
-- Optional API mode (`ZSODA_WITH_ONNX_RUNTIME_API=ON`) enables real ONNX Runtime C++ session create/select/run (CPU-first path).
+- Windows `tools/build_aex.ps1` 기본값은 ORT API 활성화이며, ONNX Runtime C++ session create/select/run (CPU-first path)로 동작합니다.
+- ORT API를 비활성화하려면 `tools/build_aex.ps1 -DisableOrtApi`를 사용합니다.
 
 ## AE Packaging Status
 - Final-mile `.aex/.plugin` packaging path is documented in `docs/build/README.md`.

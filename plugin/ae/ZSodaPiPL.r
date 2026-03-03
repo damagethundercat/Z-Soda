@@ -1,5 +1,7 @@
 #include "AEConfig.h"
 #include "AE_EffectVers.h"
+#include "AE_Effect.h"
+#include "ZSodaAeFlags.h"
 #include "ZSodaVersion.h"
 
 #ifndef AE_OS_WIN
@@ -38,10 +40,10 @@ resource 'PiPL' (16000) {
       0
     },
     AE_Effect_Global_OutFlags {
-      0x04008120
+      ZSODA_AE_GLOBAL_OUTFLAGS
     },
     AE_Effect_Global_OutFlags_2 {
-      0x00000000
+      ZSODA_AE_GLOBAL_OUTFLAGS2
     },
     AE_Effect_Match_Name {
       "ZSoda Depth"

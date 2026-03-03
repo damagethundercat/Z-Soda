@@ -10,6 +10,7 @@
 #include "AE_EffectCB.h"
 #include "AE_EffectVers.h"
 #include "AE_Macros.h"
+#include "ae/ZSodaAeFlags.h"
 #include "ae/ZSodaVersion.h"
 
 #ifndef DllExport
@@ -40,8 +41,8 @@ PF_Err DoGlobalSetup(PF_OutData* out_data) {
   }
 
   out_data->my_version = static_cast<A_u_long>(ZSODA_EFFECT_VERSION_HEX);
-  out_data->out_flags = 0;
-  out_data->out_flags2 = 0;
+  out_data->out_flags = static_cast<A_long>(ZSODA_AE_GLOBAL_OUTFLAGS);
+  out_data->out_flags2 = static_cast<A_long>(ZSODA_AE_GLOBAL_OUTFLAGS2);
   return PF_Err_NONE;
 }
 
