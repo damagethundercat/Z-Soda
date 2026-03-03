@@ -624,3 +624,63 @@ artifacts/diagnostics/ae_loader_diag_YYYYMMDD_HHMMSS/
    - `%TEMP%\ZSoda_AE_Runtime.log`에서 `SEH exception code=0xC0000005` 빈도 감소 여부
    - ORT `code=1114` 지속 여부
 4. 필요 시 `collect_ae_loader_diagnostics.ps1`로 증거 패키지 재수집.
+
+### Session update (2026-03-03 21:05, recurring native build blockers after pull)
+- 최신 `main` pull(`1806d47`) 후 네이티브 클린 빌드에서 아래 2개가 반복적으로 실패함.
+
+1) `tools/build_aex.ps1` SwitchParameter 캐스팅 오류
+- 증상:
+  - `Cannot convert the "False" value of type "System.Management.Automation.SwitchParameter" to type "System.Int32".`
+- 위치:
+  - `-DZSODA_AE_LOADER_ONLY_MODE=$([int]$LoaderOnlyMain)`
+  - `-DZSODA_WITH_ONNX_RUNTIME_API=$([int]$enableOrtApiEffective)`
+- 네이티브 임시 우회:
+  - `LoaderOnlyMain.IsPresent` / `$enableOrtApiEffective`를 `0/1`로 명시 변환한 로컬 패치 적용 후 빌드 진행.
+
+2) `plugin/ae/AePluginEntry.cpp` 네임스페이스 누락 컴파일 오류
+- 증상:
+  - `error C3861: 'LogEngineStatusOnce': 식별자를 찾을 수 없습니다.`
+- 위치:
+  - `AePluginEntry.cpp` `EffectMainImpl(...)` 내부 호출부
+- 네이티브 임시 우회:
+  - `LogEngineStatusOnce();` -> `zsoda::ae::LogEngineStatusOnce();`
+
+- 위 2개를 로컬에서 임시 보정하면, 동일 명령(`tools\build_aex.ps1 ... -Clean -CopyToMediaCore`)은 성공하고 MediaCore 배치까지 완료됨.
+- 요청사항:
+  - WSL 쪽에서 위 두 항목을 본 브랜치에 정식 반영해, pull 직후 네이티브 재빌드가 무수정으로 통과되도록 정리 필요.
+
+### Session update (2026-03-03 21:20, `25::3` 재현 후 로그 재분석)
+- User 재현 결과:
+  - `25::3 (cannot be initialized)` 오류 재발.
+- 런타임 로그 확인:
+  - 파일: `%TEMP%\ZSoda_AE_Runtime.log`
+  - `LastWrite=2026-03-03 21:20:51.030`, `Length=99061`
+  - 최신 `EngineStatus`(21:20:10 / 21:20:51) 공통:
+    - `requested_path=C:\Program Files\Adobe\Common\Plug-ins\7.0\MediaCore\onnxruntime.dll`
+    - `attempted_load_path` 동일
+    - `loaded_path=<none>`
+    - `requested_api_version=24`, `negotiated_api_version=0`
+    - `LoadLibraryW failed: all attempts exhausted (...)`
+    - 3개 시도 모두 `code=1114`(DLL 초기화 루틴 실패)
+    - `auto_download=auto download queued`
+  - 최신 시점 명령 로그:
+    - `EffectMainCmd | cmd=1`, `cmd=4`, `cmd=3` 반복이 확인됨.
+  - 참고:
+    - `SEH exception code=0xC0000005` 폭주는 여전히 로그에 존재하지만 마지막 폭주 구간은 `20:30:07`대이며, `21:20` 구간은 ORT 초기화 실패 로그가 핵심.
+- Plugin Loading 로그 확인:
+  - 파일: `%APPDATA%\Adobe\After Effects\25.0\Plugin Loading.log`
+  - `LastWrite=2026-03-03 21:20:34.715`
+  - 최신 ZSoda 관련 라인은 여전히 과거 라인 번호 구간(`L407`, `L415`, `L3543`, `L7515`)에서
+    `Loading ... ZSoda*.aex` 직후 `The plugin is marked as Ignore` 형태로 남아 있음.
+- PluginCache 확인:
+  - `HKCU\Software\Adobe\After Effects\25.0\PluginCache\en_US`
+  - `ZSoda.aex_*` 2개 + `ZSodaLoaderProbe.aex_*` 1개 모두 `Ignore=1` 유지.
+
+#### Current read (for WSL next pass)
+1. 현재 재현의 직접 실패 신호는 ORT 축이 더 강함:
+   - `MediaCore\onnxruntime.dll`을 지정해도 `LoadLibraryW`가 동일하게 `1114`로 실패.
+2. 동시에 Ignore 캐시는 여전히 남아 있어 로더 축 노이즈가 공존함:
+   - 테스트 반복 시 PluginCache 정리 여부/시점을 고정해 재현 조건을 분리할 필요가 있음.
+3. 우선순위 제안:
+   - (a) ORT 1114 원인(종속 DLL/초기화 루틴 실패) 추적,
+   - (b) Ignore 재생성 트리거(캐시/스캔 순서) 추적을 별도 실험으로 분리.
