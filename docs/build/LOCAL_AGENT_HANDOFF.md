@@ -72,7 +72,14 @@ if exist "C:\Program Files\Adobe\Common\Plug-ins\7.0\MediaCore\ZSoda.aex" (echo 
 if exist "C:\Program Files\Adobe\Common\Plug-ins\7.0\MediaCore\onnxruntime.dll" (echo MEDIA_ORT_DLL: OK) else (echo MEDIA_ORT_DLL: MISSING)
 if exist "build-win\plugin\Release\ZSoda.pdb" (echo PDB: OK) else (echo PDB: MISSING)
 if exist "build-win\plugin\Release\ZSoda.map" (echo MAP: OK) else (echo MAP: MISSING)
+if exist "build-win\plugin\pipl\ZSodaPiPL.rc" (echo PIPL_RC: OK) else (echo PIPL_RC: MISSING)
 ```
+
+`No loaders recognized this plugin`가 나오면 우선 `build-win\plugin\pipl\ZSodaPiPL.rc`에 아래 토큰이 있는지 확인:
+- `CodeWin64X86`
+- `EffectMain`
+- `AE_Effect_Global_OutFlags`
+- `0x04008120`
 
 덤프 역추적 필수 산출물:
 - `build-win\plugin\Release\ZSoda.pdb`

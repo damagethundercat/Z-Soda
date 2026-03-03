@@ -17,11 +17,7 @@ resource 'PiPL' (16000) {
       "Z-Soda"
     },
 #ifdef AE_OS_WIN
-  #if defined(AE_PROC_INTELx64)
     CodeWin64X86 {"EffectMain"},
-  #elif defined(AE_PROC_ARM64)
-    CodeWinARM64 {"EffectMain"},
-  #endif
 #elif defined(AE_OS_MAC)
     CodeMacIntel64 {"EffectMain"},
     CodeMacARM64 {"EffectMain"},

@@ -139,6 +139,28 @@ function Print-ArtifactInfo {
   Write-Host "  sha256: $($hash.Hash.ToLowerInvariant())"
 }
 
+function Assert-PiPLSignature {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$PiPlRcPath
+  )
+
+  Assert-Path -Path $PiPlRcPath -PathType Leaf -Message "PiPL RC not found: $PiPlRcPath"
+  $content = Get-Content -LiteralPath $PiPlRcPath -Raw
+  $requiredTokens = @(
+    "CodeWin64X86",
+    "EffectMain",
+    "AE_Effect_Global_OutFlags",
+    "0x04008120"
+  )
+
+  foreach ($token in $requiredTokens) {
+    if ($content.IndexOf($token, [StringComparison]::OrdinalIgnoreCase) -lt 0) {
+      throw "PiPL RC signature validation failed. Missing token '$token' in $PiPlRcPath"
+    }
+  }
+}
+
 function Resolve-OrtRuntimeDll {
   param(
     [Parameter(Mandatory = $true)]
@@ -283,10 +305,19 @@ $map = Find-OptionalArtifact -Candidates @(
   (Join-Path $buildDirAbs ("plugin\{0}\ZSoda.map" -f $Config)),
   (Join-Path $buildDirAbs "plugin\ZSoda.map")
 )
+$piplRc = Find-OptionalArtifact -Candidates @(
+  (Join-Path $buildDirAbs "plugin\pipl\ZSodaPiPL.rc"),
+  (Join-Path $buildDirAbs "pipl\ZSodaPiPL.rc")
+)
+if ($null -eq $piplRc) {
+  throw "Generated PiPL RC file was not found. Build may produce a non-loadable .aex."
+}
+Assert-PiPLSignature -PiPlRcPath $piplRc
 
 Write-Host "==> Build Succeeded"
 Print-ArtifactInfo -Label "zsoda_plugin" -Path $pluginLib
 Print-ArtifactInfo -Label "zsoda_aex" -Path $aex
+Print-ArtifactInfo -Label "zsoda_pipl_rc" -Path $piplRc
 if ($pdb) {
   Print-ArtifactInfo -Label "zsoda_pdb" -Path $pdb
 } else {

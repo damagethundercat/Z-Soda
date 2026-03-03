@@ -4,7 +4,7 @@
 
 ## 1. 전체 진행률
 - 전체 진행률: **99%** (`PLAN.md`의 `P1`~`P5` 기준, `P3/P4/P5`는 마무리 단계)
-- 마지막 업데이트: **2026-03-03** (AE 초기화 실패(25::3) 완화: 비렌더 명령 실패를 non-fatal 처리 + EffectMain 진단 로그 강화)
+- 마지막 업데이트: **2026-03-03** (No loader recognized 대응: PiPL Windows 코드 엔트리 고정 + 빌드 시 PiPL 시그니처 검증 추가)
 - 갱신 원칙: **작업 단위 완료 시 즉시 업데이트**
 
 ## 2. 현재 작업 상태
@@ -103,3 +103,4 @@
 - [x] `D61` 빌드 런타임 제어 강화: CMake `CMP0091 NEW` + `ZSODA_MSVC_RUNTIME_LIBRARY`(기본 `/MT`) 옵션 추가, Windows 빌드 스크립트/핸드오프 문서 동기화 (`CMakeLists.txt`, `tools/build_aex.ps1`, `docs/build/README.md`, `docs/build/LOCAL_AGENT_HANDOFF.md`)
 - [x] `D62` Context7 기반 버전 검증: ONNX Runtime `OrtApiBase::GetApi()` 미지원 버전 시 `nullptr` 반환 규칙 및 CMake `MSVC_RUNTIME_LIBRARY` 적용 조건(CMP0091) 확인
 - [x] `D63` AE 초기화 복원력 강화: `EffectMain`에서 `BuildSdkDispatch/Dispatch` 실패 시 명령별 정책 적용(`RENDER`만 치명 반환, 나머지 명령은 `PF_Err_NONE`) 및 `%TEMP%\\ZSoda_AE_Runtime.log`에 상세 진단(`cmd/mapped/error`) 기록 (`plugin/ae/AePluginEntry.cpp`)
+- [x] `D64` 로더 인식 실패(Plugin Ignore) 구조 대응: PiPL 리소스의 Windows 코드 엔트리를 `CodeWin64X86 {"EffectMain"}`로 단순 고정하고, `build_aex.ps1`에 생성 PiPL RC 시그니처 검증(`CodeWin64X86/EffectMain/outflags`)을 강제해 비정상 `.aex` 배포를 차단 (`plugin/ae/ZSodaPiPL.r`, `plugin/CMakeLists.txt`, `tools/build_aex.ps1`, `docs/build/LOCAL_AGENT_HANDOFF.md`)
