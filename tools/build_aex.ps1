@@ -573,13 +573,17 @@ function Sync-ModelAssets {
     Write-Warning "models.manifest not found under $SourceRoot"
   }
 
-  $onnxFiles = @(Get-ChildItem -LiteralPath $SourceRoot -Recurse -File -Filter *.onnx -ErrorAction SilentlyContinue)
-  if ($onnxFiles.Count -eq 0) {
-    Write-Host "models_sync: no .onnx files found under $SourceRoot"
+  $modelFiles = @(Get-ChildItem -LiteralPath $SourceRoot -Recurse -File -ErrorAction SilentlyContinue |
+      Where-Object {
+        $ext = $_.Extension.ToLowerInvariant()
+        $ext -eq ".onnx" -or $ext -eq ".onnx_data"
+      })
+  if ($modelFiles.Count -eq 0) {
+    Write-Host "models_sync: no model files (.onnx/.onnx_data) found under $SourceRoot"
     return
   }
 
-  foreach ($file in $onnxFiles) {
+  foreach ($file in $modelFiles) {
     $relativePath = $file.FullName.Substring($SourceRoot.Length).TrimStart('\', '/')
     $targetPath = Join-Path $DestinationRoot $relativePath
     $targetDir = Split-Path -Path $targetPath -Parent

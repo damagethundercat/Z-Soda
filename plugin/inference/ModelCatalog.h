@@ -7,11 +7,23 @@
 
 namespace zsoda::inference {
 
+struct ModelAssetSpec {
+  std::string relative_path;
+  std::string download_url;
+};
+
+struct ResolvedModelAsset {
+  std::string relative_path;
+  std::string download_url;
+  std::string absolute_path;
+};
+
 struct ModelSpec {
   std::string id;
   std::string display_name;
   std::string relative_path;
   std::string download_url;
+  std::vector<ModelAssetSpec> auxiliary_assets;
   bool preferred_default = false;
 };
 
@@ -30,6 +42,9 @@ class ModelCatalog {
   [[nodiscard]] std::string DefaultModelId() const;
   [[nodiscard]] std::string ResolveModelPath(const std::string& model_root,
                                              const std::string& model_id) const;
+  [[nodiscard]] std::vector<ResolvedModelAsset> ResolveModelAssets(
+      const std::string& model_root,
+      const std::string& model_id) const;
   bool RegisterModel(ModelSpec spec, std::string* error, bool* updated = nullptr);
   bool LoadManifestFile(const std::string& manifest_path,
                         std::string* error,

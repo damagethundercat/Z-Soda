@@ -6,6 +6,7 @@ namespace zsoda::inference {
 
 struct ModelDownloadRequest {
   std::string model_id;
+  std::string asset_relative_path;
   std::string download_url;
   std::string destination_path;
 };

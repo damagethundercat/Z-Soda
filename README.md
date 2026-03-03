@@ -52,6 +52,7 @@ export ZSODA_MODEL_ROOT=/path/to/models
 Runtime default path note:
 - `ZSODA_MODEL_ROOT` 미설정 시 `.aex` 인접 `models/`를 우선 탐색하고, 없으면 상대 경로 `models/`를 사용합니다.
 - `ZSODA_ONNXRUNTIME_LIBRARY` 미설정 시 `.aex` 인접 `runtime/onnxruntime.dll` -> `.aex` 인접 `onnxruntime.dll` 순으로 탐색합니다.
+- DA3 계열 모델은 `model.onnx` 외에 `model.onnx_data` 자산이 함께 필요하며, 매니페스트 `auxiliary_assets` 열로 관리합니다.
 - 모델 파일이 없으면 기본값에서 백그라운드 다운로드를 자동 요청하고, 다운로드 전까지는 안전 폴백 렌더를 사용합니다.
 
 Optional runtime options:
@@ -59,6 +60,7 @@ Optional runtime options:
 export ZSODA_INFERENCE_BACKEND=cpu      # auto|cpu|cuda|directml|metal|coreml
 export ZSODA_MODEL_MANIFEST=models/models.manifest
 export ZSODA_AUTO_DOWNLOAD_MODELS=1     # 1:on(default), 0:off
+export HF_TOKEN=...                     # optional: Hugging Face 인증 토큰
 ```
 
 Current runtime note:

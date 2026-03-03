@@ -108,8 +108,11 @@ ModelDownloadRequestStatus RequestModelDownloadAsync(const ModelDownloadRequest&
   const auto worker = [request]() {
     const std::string key = request.destination_path;
     std::error_code ec;
-    std::filesystem::create_directories(std::filesystem::path(request.destination_path).parent_path(),
-                                        ec);
+    const std::filesystem::path destination_path(request.destination_path);
+    const std::filesystem::path parent_path = destination_path.parent_path();
+    if (!parent_path.empty()) {
+      std::filesystem::create_directories(parent_path, ec);
+    }
     if (!ec) {
       const HRESULT hr = ::URLDownloadToFileA(
           nullptr, request.download_url.c_str(), request.destination_path.c_str(), 0, nullptr);
@@ -118,16 +121,25 @@ ModelDownloadRequestStatus RequestModelDownloadAsync(const ModelDownloadRequest&
         std::error_code remove_ec;
         std::filesystem::remove(std::filesystem::path(request.destination_path), remove_ec);
       }
-      AppendDownloadLogLine("model_id=" + request.model_id + ", destination=" + request.destination_path +
-                            ", hr=0x" + [] (HRESULT value) {
+      std::string log_line = "model_id=" + request.model_id;
+      if (!request.asset_relative_path.empty()) {
+        log_line += ", asset=" + request.asset_relative_path;
+      }
+      log_line += ", destination=" + request.destination_path +
+                  ", hr=0x" + [] (HRESULT value) {
                               char buffer[16] = {};
                               std::snprintf(buffer, sizeof(buffer), "%08X", static_cast<unsigned>(value));
                               return std::string(buffer);
                             }(hr) +
-                            ", downloaded=" + (downloaded ? "true" : "false"));
+                  ", downloaded=" + (downloaded ? "true" : "false");
+      AppendDownloadLogLine(log_line);
     } else {
-      AppendDownloadLogLine("model_id=" + request.model_id + ", destination=" + request.destination_path +
-                            ", create_directories_failed=true");
+      std::string log_line = "model_id=" + request.model_id;
+      if (!request.asset_relative_path.empty()) {
+        log_line += ", asset=" + request.asset_relative_path;
+      }
+      log_line += ", destination=" + request.destination_path + ", create_directories_failed=true";
+      AppendDownloadLogLine(log_line);
     }
 
     zsoda::core::CompatLockGuard lock(DownloadMutex());
@@ -143,7 +155,11 @@ ModelDownloadRequestStatus RequestModelDownloadAsync(const ModelDownloadRequest&
     return ModelDownloadRequestStatus::kFailed;
   }
 
-  SetDetail(detail, "auto download queued");
+  if (!request.asset_relative_path.empty()) {
+    SetDetail(detail, "auto download queued: " + request.asset_relative_path);
+  } else {
+    SetDetail(detail, "auto download queued");
+  }
   return ModelDownloadRequestStatus::kQueued;
 #endif
 }

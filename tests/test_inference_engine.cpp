@@ -269,7 +269,7 @@ void TestManifestLoadingAndDefaults() {
   const auto manifest = temp_dir.path() / zsoda::inference::ModelCatalog::DefaultManifestFilename();
   WriteTextFile(
       manifest,
-      "# id|display_name|relative_path|download_url|preferred_default\n"
+      "# id|display_name|relative_path|download_url|preferred_default|auxiliary_assets\n"
       "custom-depth-v1|Custom Depth v1|custom/custom_depth_v1.onnx|https://example.com/custom_depth_v1.onnx|true\n"
       "depth-anything-v3-small|Depth Anything v3 Small (Manifest)|depth-anything-v3/small_override.onnx|https://example.com/small_override.onnx|false\n");
 
@@ -293,6 +293,29 @@ void TestManifestLoadValidation() {
   zsoda::inference::ManifestLoadResult result;
   assert(!catalog.LoadManifestFile(manifest.string(), &error, &result));
   assert(!error.empty());
+}
+
+void TestManifestAuxiliaryAssetsParsing() {
+  TempDir temp_dir;
+  const auto manifest = temp_dir.path() / "custom.manifest";
+  WriteTextFile(
+      manifest,
+      "# id|display_name|relative_path|download_url|preferred_default|auxiliary_assets\n"
+      "aux-depth-v1|Aux Depth v1|aux/model.onnx|https://example.com/model.onnx|true|aux/model.onnx_data::https://example.com/model.onnx_data\n");
+
+  zsoda::inference::ModelCatalog catalog;
+  std::string error;
+  zsoda::inference::ManifestLoadResult result;
+  assert(catalog.LoadManifestFile(manifest.string(), &error, &result));
+  assert(error.empty());
+  assert(result.added == 1);
+
+  const auto assets = catalog.ResolveModelAssets(temp_dir.path().string(), "aux-depth-v1");
+  assert(assets.size() == 2);
+  assert(assets[0].relative_path == "aux/model.onnx");
+  assert(assets[1].relative_path == "aux/model.onnx_data");
+  assert(Contains(assets[0].absolute_path, "aux/model.onnx"));
+  assert(Contains(assets[1].absolute_path, "aux/model.onnx_data"));
 }
 
 void TestManifestModelSelectionRunPath() {
@@ -326,13 +349,13 @@ void TestMissingModelFileDiagnostics() {
   const auto manifest = temp_dir.path() / zsoda::inference::ModelCatalog::DefaultManifestFilename();
   WriteTextFile(
       manifest,
-      "# id|display_name|relative_path|download_url|preferred_default\n"
-      "missing-depth-v1|Missing Depth v1|missing/missing_depth_v1.onnx|https://example.com/missing_depth_v1.onnx|true\n");
+      "# id|display_name|relative_path|download_url|preferred_default|auxiliary_assets\n"
+      "missing-depth-v1|Missing Depth v1|missing/missing_depth_v1.onnx|https://example.com/missing_depth_v1.onnx|true|missing/missing_depth_v1.onnx_data::https://example.com/missing_depth_v1.onnx_data\n");
 
   zsoda::inference::ManagedInferenceEngine engine(temp_dir.path().string());
   std::string error;
   assert(engine.Initialize("missing-depth-v1", &error));
-  assert(Contains(error, "model file not found:"));
+  assert(Contains(error, "model asset file not found:"));
 #if defined(ZSODA_WITH_ONNX_RUNTIME)
   const auto status = engine.BackendStatus();
   assert(Contains(status.engine_name, "DummyDepthEngine"));
@@ -353,7 +376,7 @@ void TestMissingModelFileDiagnostics() {
   zsoda::core::FrameBuffer output;
   assert(engine.Run(request, &output, &error));
   assert(!output.empty());
-  assert(error == "selected model file is not installed; using fallback depth path");
+  assert(error == "selected model assets are not fully installed; using fallback depth path");
 }
 
 #if defined(ZSODA_WITH_ONNX_RUNTIME)
@@ -456,6 +479,7 @@ void RunInferenceEngineTests() {
   TestBackendStatusDiagnostics();
   TestManifestLoadingAndDefaults();
   TestManifestLoadValidation();
+  TestManifestAuxiliaryAssetsParsing();
   TestManifestModelSelectionRunPath();
   TestMissingModelFileDiagnostics();
 #if defined(ZSODA_WITH_ONNX_RUNTIME)

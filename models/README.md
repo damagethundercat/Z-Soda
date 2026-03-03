@@ -15,8 +15,11 @@
 
 예상 파일 경로:
 - `models/depth-anything-v3/depth_anything_v3_small.onnx`
+- `models/depth-anything-v3/depth_anything_v3_small.onnx_data`
 - `models/depth-anything-v3/depth_anything_v3_base.onnx`
+- `models/depth-anything-v3/depth_anything_v3_base.onnx_data`
 - `models/depth-anything-v3/depth_anything_v3_large.onnx`
+- `models/depth-anything-v3/depth_anything_v3_large.onnx_data`
 - `models/midas/dpt_large_384.onnx`
 
 다운로드 스크립트:
@@ -31,8 +34,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\download_model.ps1 -
 
 매니페스트 포맷 (`|` 구분 텍스트, 주석은 `#`):
 ```txt
-# id|display_name|relative_path|download_url|preferred_default
-depth-anything-v3-small|Depth Anything v3 Small|depth-anything-v3/depth_anything_v3_small.onnx|https://...|true
+# id|display_name|relative_path|download_url|preferred_default|auxiliary_assets
+# auxiliary_assets 형식: relative_path::download_url;relative_path::download_url
+depth-anything-v3-small|Depth Anything v3 Small|depth-anything-v3/depth_anything_v3_small.onnx|https://.../model.onnx|true|depth-anything-v3/depth_anything_v3_small.onnx_data::https://.../model.onnx_data
 ```
 
 주의:
@@ -40,3 +44,4 @@ depth-anything-v3-small|Depth Anything v3 Small|depth-anything-v3/depth_anything
 - 모델 파일이 없거나 ORT 세션 초기화가 실패하면 안전한 폴백 경로를 사용합니다.
 - 기본값으로(`ZSODA_AUTO_DOWNLOAD_MODELS=1`) 모델 파일이 없으면 백그라운드 다운로드를 1회 요청합니다(Windows 런타임 다운로드 경로).
 - 자동 다운로드를 끄려면 `ZSODA_AUTO_DOWNLOAD_MODELS=0`을 설정하세요.
+- Hugging Face 접근이 필요한 환경에서는 `HF_TOKEN`(또는 `HUGGINGFACE_TOKEN`, `HUGGING_FACE_HUB_TOKEN`)을 설정하면 다운로드 스크립트가 인증 헤더를 사용합니다.

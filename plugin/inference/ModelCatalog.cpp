@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <unordered_set>
 #include <utility>
 
 namespace zsoda::inference {
@@ -68,6 +69,67 @@ std::vector<std::string> SplitManifestColumns(std::string_view line) {
   return columns;
 }
 
+bool ParseAuxiliaryAssets(std::string_view input,
+                          int line_number,
+                          std::vector<ModelAssetSpec>* out_assets,
+                          std::string* error) {
+  if (out_assets == nullptr) {
+    if (error) {
+      *error = "internal error: auxiliary asset output pointer is null";
+    }
+    return false;
+  }
+  out_assets->clear();
+
+  const std::string trimmed = TrimCopy(input);
+  if (trimmed.empty()) {
+    return true;
+  }
+
+  const std::string_view text(trimmed);
+  std::size_t start = 0;
+  int entry_index = 0;
+  while (start <= text.size()) {
+    const std::size_t delimiter = text.find(';', start);
+    const std::size_t length =
+        (delimiter == std::string_view::npos) ? (text.size() - start) : (delimiter - start);
+    const std::string token = TrimCopy(text.substr(start, length));
+    if (!token.empty()) {
+      ++entry_index;
+      const std::size_t separator = token.find("::");
+      if (separator == std::string::npos) {
+        if (error) {
+          std::ostringstream oss;
+          oss << "invalid auxiliary_assets entry at line " << line_number << " (entry "
+              << entry_index << "): expected '<relative_path>::<download_url>'";
+          *error = oss.str();
+        }
+        return false;
+      }
+
+      ModelAssetSpec asset;
+      asset.relative_path = TrimCopy(std::string_view(token).substr(0, separator));
+      asset.download_url = TrimCopy(std::string_view(token).substr(separator + 2));
+      if (asset.relative_path.empty() || asset.download_url.empty()) {
+        if (error) {
+          std::ostringstream oss;
+          oss << "invalid auxiliary_assets entry at line " << line_number << " (entry "
+              << entry_index << "): relative_path/download_url cannot be empty";
+          *error = oss.str();
+        }
+        return false;
+      }
+      out_assets->push_back(std::move(asset));
+    }
+
+    if (delimiter == std::string_view::npos) {
+      break;
+    }
+    start = delimiter + 1;
+  }
+  return true;
+}
+
 bool ValidateSpec(const ModelSpec& spec, std::string* error) {
   if (spec.id.empty()) {
     if (error) {
@@ -87,6 +149,29 @@ bool ValidateSpec(const ModelSpec& spec, std::string* error) {
     }
     return false;
   }
+  if (spec.download_url.empty()) {
+    if (error) {
+      *error = "model download_url cannot be empty: " + spec.id;
+    }
+    return false;
+  }
+
+  std::unordered_set<std::string> unique_asset_paths;
+  unique_asset_paths.insert(spec.relative_path);
+  for (const auto& asset : spec.auxiliary_assets) {
+    if (asset.relative_path.empty() || asset.download_url.empty()) {
+      if (error) {
+        *error = "model auxiliary asset is incomplete: " + spec.id;
+      }
+      return false;
+    }
+    if (!unique_asset_paths.insert(asset.relative_path).second) {
+      if (error) {
+        *error = "model auxiliary asset relative_path is duplicated: " + asset.relative_path;
+      }
+      return false;
+    }
+  }
   return true;
 }
 
@@ -97,21 +182,27 @@ ModelCatalog::ModelCatalog() {
       "depth-anything-v3-small",
       "Depth Anything v3 Small",
       "depth-anything-v3/depth_anything_v3_small.onnx",
-      "https://huggingface.co/depth-anything/Depth-Anything-V3/resolve/main/depth_anything_v3_small.onnx",
+      "https://huggingface.co/onnx-community/depth-anything-v3-small/resolve/main/onnx/model.onnx",
+      {{"depth-anything-v3/depth_anything_v3_small.onnx_data",
+        "https://huggingface.co/onnx-community/depth-anything-v3-small/resolve/main/onnx/model.onnx_data"}},
       true,
   });
   models_.push_back({
       "depth-anything-v3-base",
       "Depth Anything v3 Base",
       "depth-anything-v3/depth_anything_v3_base.onnx",
-      "https://huggingface.co/depth-anything/Depth-Anything-V3/resolve/main/depth_anything_v3_base.onnx",
+      "https://huggingface.co/onnx-community/depth-anything-v3-base/resolve/main/onnx/model.onnx",
+      {{"depth-anything-v3/depth_anything_v3_base.onnx_data",
+        "https://huggingface.co/onnx-community/depth-anything-v3-base/resolve/main/onnx/model.onnx_data"}},
       false,
   });
   models_.push_back({
       "depth-anything-v3-large",
       "Depth Anything v3 Large",
       "depth-anything-v3/depth_anything_v3_large.onnx",
-      "https://huggingface.co/depth-anything/Depth-Anything-V3/resolve/main/depth_anything_v3_large.onnx",
+      "https://huggingface.co/onnx-community/depth-anything-v3-large/resolve/main/onnx/model.onnx",
+      {{"depth-anything-v3/depth_anything_v3_large.onnx_data",
+        "https://huggingface.co/onnx-community/depth-anything-v3-large/resolve/main/onnx/model.onnx_data"}},
       false,
   });
   models_.push_back({
@@ -119,6 +210,7 @@ ModelCatalog::ModelCatalog() {
       "MiDaS DPT Large",
       "midas/dpt_large_384.onnx",
       "https://github.com/isl-org/MiDaS/releases/download/v3_1/dpt_large_384.onnx",
+      {},
       false,
   });
 }
@@ -158,11 +250,41 @@ std::string ModelCatalog::ResolveModelPath(const std::string& model_root,
   return (std::filesystem::path(model_root) / model->relative_path).string();
 }
 
+std::vector<ResolvedModelAsset> ModelCatalog::ResolveModelAssets(
+    const std::string& model_root,
+    const std::string& model_id) const {
+  std::vector<ResolvedModelAsset> assets;
+  const auto* model = FindById(model_id);
+  if (model == nullptr) {
+    return assets;
+  }
+
+  assets.reserve(1U + model->auxiliary_assets.size());
+  const auto root = std::filesystem::path(model_root);
+  assets.push_back({
+      model->relative_path,
+      model->download_url,
+      (root / model->relative_path).string(),
+  });
+  for (const auto& asset : model->auxiliary_assets) {
+    assets.push_back({
+        asset.relative_path,
+        asset.download_url,
+        (root / asset.relative_path).string(),
+    });
+  }
+  return assets;
+}
+
 bool ModelCatalog::RegisterModel(ModelSpec spec, std::string* error, bool* updated) {
   spec.id = TrimCopy(spec.id);
   spec.display_name = TrimCopy(spec.display_name);
   spec.relative_path = TrimCopy(spec.relative_path);
   spec.download_url = TrimCopy(spec.download_url);
+  for (auto& asset : spec.auxiliary_assets) {
+    asset.relative_path = TrimCopy(asset.relative_path);
+    asset.download_url = TrimCopy(asset.download_url);
+  }
   if (!ValidateSpec(spec, error)) {
     return false;
   }
@@ -220,11 +342,11 @@ bool ModelCatalog::LoadManifestFile(const std::string& manifest_path,
     }
 
     const auto columns = SplitManifestColumns(stripped);
-    if (columns.size() < 4 || columns.size() > 5) {
+    if (columns.size() < 4 || columns.size() > 6) {
       if (error) {
         std::ostringstream oss;
         oss << "invalid manifest line " << line_number
-            << ": expected 4 or 5 pipe-separated columns";
+            << ": expected 4 to 6 pipe-separated columns";
         *error = oss.str();
       }
       return false;
@@ -236,13 +358,22 @@ bool ModelCatalog::LoadManifestFile(const std::string& manifest_path,
     spec.relative_path = columns[2];
     spec.download_url = columns[3];
 
-    if (columns.size() == 5 && !columns[4].empty()) {
+    if (columns.size() >= 5 && !columns[4].empty()) {
       if (!ParseBool(columns[4], &spec.preferred_default)) {
         if (error) {
           std::ostringstream oss;
           oss << "invalid preferred_default value at line " << line_number
               << ": " << columns[4];
           *error = oss.str();
+        }
+        return false;
+      }
+    }
+    if (columns.size() == 6 && !columns[5].empty()) {
+      std::string parse_error;
+      if (!ParseAuxiliaryAssets(columns[5], line_number, &spec.auxiliary_assets, &parse_error)) {
+        if (error) {
+          *error = parse_error;
         }
         return false;
       }

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <sstream>
 #include <utility>
 
 #include "inference/ModelAutoDownloader.h"
@@ -15,6 +16,37 @@ namespace {
 
 const char* SafeCStr(const char* value, const char* fallback = "<null>") {
   return value != nullptr ? value : fallback;
+}
+
+bool IsModelAssetPresent(const ResolvedModelAsset& asset) {
+  if (asset.absolute_path.empty()) {
+    return false;
+  }
+  std::error_code ec;
+  return std::filesystem::is_regular_file(std::filesystem::path(asset.absolute_path), ec) && !ec;
+}
+
+bool AreModelAssetsPresent(const std::vector<ResolvedModelAsset>& assets) {
+  if (assets.empty()) {
+    return false;
+  }
+  for (const auto& asset : assets) {
+    if (!IsModelAssetPresent(asset)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+std::vector<std::string> CollectMissingModelAssetPaths(
+    const std::vector<ResolvedModelAsset>& assets) {
+  std::vector<std::string> missing_paths;
+  for (const auto& asset : assets) {
+    if (!IsModelAssetPresent(asset)) {
+      missing_paths.push_back(asset.absolute_path);
+    }
+  }
+  return missing_paths;
 }
 
 }  // namespace
@@ -43,8 +75,12 @@ bool ManagedInferenceEngine::SelectModel(const std::string& model_id, std::strin
     return false;
   }
   if (model_id == active_model_id_) {
-    if (!active_model_path_.empty()) {
-      model_file_exists_ = std::filesystem::exists(active_model_path_);
+    model_file_exists_ = AreModelAssetsPresent(active_model_assets_);
+    if (!model_file_exists_) {
+      const auto* model = catalog_.FindById(active_model_id_);
+      if (model != nullptr) {
+        MaybeQueueModelDownloadLocked(*model, active_model_assets_);
+      }
     }
     TryPromoteActiveModelToOnnxLocked();
     return true;
@@ -128,7 +164,7 @@ bool ManagedInferenceEngine::Run(const InferenceRequest& request,
   }
 
   if (!model_file_exists_ && error != nullptr) {
-    *error = "selected model file is not installed; using fallback depth path";
+    *error = "selected model assets are not fully installed; using fallback depth path";
   } else if (error != nullptr) {
     error->clear();
   }
@@ -236,8 +272,19 @@ bool ManagedInferenceEngine::SelectModelLocked(const std::string& model_id, std:
     return false;
   }
 
-  const std::string model_path = catalog_.ResolveModelPath(model_root_, model_id);
-  const bool exists = std::filesystem::exists(model_path);
+  std::vector<ResolvedModelAsset> model_assets =
+      catalog_.ResolveModelAssets(model_root_, model_id);
+  const std::string model_path = model_assets.empty()
+                                     ? catalog_.ResolveModelPath(model_root_, model_id)
+                                     : model_assets.front().absolute_path;
+  if (model_assets.empty() && !model_path.empty()) {
+    model_assets.push_back({
+        model->relative_path,
+        model->download_url,
+        model_path,
+    });
+  }
+  const bool exists = AreModelAssetsPresent(model_assets);
   std::string init_error;
   if (!fallback_engine_.Initialize(model_id, &init_error)) {
     if (error) {
@@ -271,16 +318,27 @@ bool ManagedInferenceEngine::SelectModelLocked(const std::string& model_id, std:
 
   active_model_id_ = model_id;
   active_model_path_ = model_path;
+  active_model_assets_ = std::move(model_assets);
   model_file_exists_ = exists;
   if (!exists) {
-    MaybeQueueModelDownloadLocked(*model, model_path);
+    MaybeQueueModelDownloadLocked(*model, active_model_assets_);
   }
   TryPromoteActiveModelToOnnxLocked();
   if (error) {
     if (exists) {
       error->clear();
     } else {
-      *error = "model file not found: " + model_path;
+      const auto missing_assets = CollectMissingModelAssetPaths(active_model_assets_);
+      if (!missing_assets.empty()) {
+        std::ostringstream oss;
+        oss << "model asset file not found: " << missing_assets.front();
+        if (missing_assets.size() > 1U) {
+          oss << " (+" << (missing_assets.size() - 1U) << " more)";
+        }
+        *error = oss.str();
+      } else {
+        *error = "model asset file not found: " + model_path;
+      }
     }
   }
   return true;
@@ -313,27 +371,68 @@ void ManagedInferenceEngine::TryPromoteActiveModelToOnnxLocked() {
 #endif
 }
 
-void ManagedInferenceEngine::MaybeQueueModelDownloadLocked(const ModelSpec& model,
-                                                           const std::string& model_path) {
+void ManagedInferenceEngine::MaybeQueueModelDownloadLocked(
+    const ModelSpec& model,
+    const std::vector<ResolvedModelAsset>& assets) {
   if (!options_.auto_download_missing_models) {
     return;
   }
 
-  std::string download_detail;
-  const auto status = RequestModelDownloadAsync(
-      {.model_id = model.id, .download_url = model.download_url, .destination_path = model_path},
-      &download_detail);
-  if (status == ModelDownloadRequestStatus::kQueued) {
-    if (fallback_reason_.empty()) {
-      fallback_reason_ = "selected model file is not installed; background download queued";
-    } else {
-      fallback_reason_ += " | auto_download=" + download_detail;
+  std::size_t queued_count = 0;
+  std::size_t failed_count = 0;
+  std::string last_failure_detail;
+  for (const auto& asset : assets) {
+    if (IsModelAssetPresent(asset)) {
+      continue;
     }
-  } else if (status == ModelDownloadRequestStatus::kFailed && !download_detail.empty()) {
+
+    std::string download_detail;
+    const auto status = RequestModelDownloadAsync(
+        {
+            .model_id = model.id,
+            .asset_relative_path = asset.relative_path,
+            .download_url = asset.download_url,
+            .destination_path = asset.absolute_path,
+        },
+        &download_detail);
+    if (status == ModelDownloadRequestStatus::kQueued) {
+      ++queued_count;
+      continue;
+    }
+    if (status == ModelDownloadRequestStatus::kFailed) {
+      ++failed_count;
+      if (!download_detail.empty()) {
+        last_failure_detail = download_detail;
+      }
+      continue;
+    }
+  }
+
+  if (queued_count > 0) {
+    std::ostringstream oss;
+    oss << "selected model assets are not fully installed; background download queued (queued="
+        << queued_count;
+    if (failed_count > 0) {
+      oss << ", failed=" << failed_count;
+    }
+    oss << ")";
     if (fallback_reason_.empty()) {
-      fallback_reason_ = download_detail;
+      fallback_reason_ = oss.str();
     } else {
-      fallback_reason_ += " | auto_download=" + download_detail;
+      fallback_reason_ += " | auto_download=" + oss.str();
+    }
+    return;
+  }
+
+  if (failed_count > 0) {
+    std::string failure_message = "auto download failed for missing model assets";
+    if (!last_failure_detail.empty()) {
+      failure_message += ": " + last_failure_detail;
+    }
+    if (fallback_reason_.empty()) {
+      fallback_reason_ = failure_message;
+    } else {
+      fallback_reason_ += " | auto_download=" + failure_message;
     }
   }
 }

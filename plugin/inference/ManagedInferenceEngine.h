@@ -49,7 +49,8 @@ class ManagedInferenceEngine final : public IInferenceEngine {
   void LoadManifest();
   bool SelectModelLocked(const std::string& model_id, std::string* error);
   void TryPromoteActiveModelToOnnxLocked();
-  void MaybeQueueModelDownloadLocked(const ModelSpec& model, const std::string& model_path);
+  void MaybeQueueModelDownloadLocked(const ModelSpec& model,
+                                     const std::vector<ResolvedModelAsset>& assets);
   float ModelBias() const;
 
   std::string model_root_;
@@ -58,6 +59,7 @@ class ManagedInferenceEngine final : public IInferenceEngine {
   mutable zsoda::core::CompatMutex mutex_;
   std::string active_model_id_;
   std::string active_model_path_;
+  std::vector<ResolvedModelAsset> active_model_assets_;
   bool model_file_exists_ = false;
   RuntimeBackend active_backend_ = RuntimeBackend::kCpu;
   bool using_fallback_engine_ = true;
