@@ -1,5 +1,6 @@
 #include "AEConfig.h"
 #include "AE_EffectVers.h"
+#include "ZSodaVersion.h"
 
 #ifndef AE_OS_WIN
   #include <AE_General.r>
@@ -31,7 +32,7 @@ resource 'PiPL' (16001) {
       PF_PLUG_IN_SUBVERS
     },
     AE_Effect_Version {
-      65537 /* 1.0.1 */
+      ZSODA_EFFECT_VERSION_HEX
     },
     AE_Effect_Info_Flags {
       0

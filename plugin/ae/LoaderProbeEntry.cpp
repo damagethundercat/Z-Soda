@@ -10,6 +10,7 @@
 #include "AE_EffectCB.h"
 #include "AE_EffectVers.h"
 #include "AE_Macros.h"
+#include "ae/ZSodaVersion.h"
 
 #ifndef DllExport
 #if defined(_WIN32)
@@ -38,7 +39,7 @@ PF_Err DoGlobalSetup(PF_OutData* out_data) {
     return PF_Err_INTERNAL_STRUCT_DAMAGED;
   }
 
-  out_data->my_version = PF_VERSION(1, 0, 0, 0, 0);
+  out_data->my_version = static_cast<A_u_long>(ZSODA_EFFECT_VERSION_HEX);
   out_data->out_flags = 0;
   out_data->out_flags2 = 0;
   return PF_Err_NONE;

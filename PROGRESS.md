@@ -4,7 +4,7 @@
 
 ## 1. 전체 진행률
 - 전체 진행률: **99%** (`PLAN.md`의 `P1`~`P5` 기준, `P3/P4/P5`는 마무리 단계)
-- 마지막 업데이트: **2026-03-03** (AE 로더 분리진단용 `ZSodaLoaderProbe.aex` 타깃/빌드 옵션 추가)
+- 마지막 업데이트: **2026-03-03** (Probe `25::16 version mismatch` 대응: 코드/PiPL 버전 상수 통일)
 - 갱신 원칙: **작업 단위 완료 시 즉시 업데이트**
 
 ## 2. 현재 작업 상태
@@ -112,3 +112,4 @@
 - [x] `D70` 최신 pull 후 재빌드/재현 상태 handoff 갱신: `21678b1` 기준 일반 빌드(`-CopyToMediaCore`)는 성공하지만 AE 로더 거부(`No loaders recognized ... Ignore`)는 지속되며, probe 경로(`-BuildLoaderProbe`)는 `plugin/ae/LoaderProbeEntry.cpp` 컴파일 오류(`in_data` undeclared, `PF_PixelPtr` cast 오류)로 실패함을 handoff 문서에 명시하고 WSL 다음 액션(Probe 빌드 복구 + 로더 분리 재검증)을 추가 (`docs/build/LOCAL_AGENT_HANDOFF.md`)
 - [x] `D70` 로더 원인 분리용 최소 AEX 타깃 추가: AE SDK 최소 엔트리(`LoaderProbeEntry.cpp`) + 독립 PiPL(`ZSodaLoaderProbePiPL.r`) + CMake `zsoda_loader_probe_aex` 타깃 및 `build_aex.ps1 -BuildLoaderProbe` 옵션을 도입해 동일 환경에서 `ZSoda.aex` 대비 로더 인식 여부를 즉시 A/B 판별할 수 있도록 구성 (`plugin/ae/LoaderProbeEntry.cpp`, `plugin/ae/ZSodaLoaderProbePiPL.r`, `plugin/CMakeLists.txt`, `tools/build_aex.ps1`, `docs/build/LOCAL_AGENT_HANDOFF.md`)
 - [x] `D71` probe 빌드 복구: `LoaderProbeEntry.cpp`의 AE SDK 헤더 호환 오류(`PF_SPRINTF`의 `in_data` 의존, `PF_PixelPtr` 캐스팅 타입 불일치)를 수정해 `-BuildLoaderProbe` 경로가 다시 컴파일 가능하도록 조정하고, Adobe community 리서치 기반 다음 재현 체크포인트(`-Clean` 재생성/리소스 트리 정합성/probe 결과 분기)를 handoff에 반영 (`plugin/ae/LoaderProbeEntry.cpp`, `docs/build/LOCAL_AGENT_HANDOFF.md`)
+- [x] `D72` Probe 버전 경고 제거 준비: 네이티브 재현에서 보고된 `After Effects 25::16 version mismatch`(code 1.0 vs PiPL 0.2) 해소를 위해 코드(`my_version`)와 PiPL(`AE_Effect_Version`)을 공용 상수 `ZSODA_EFFECT_VERSION_HEX`로 통일하고, 본 플러그인/Probe 양쪽 모두 동일 버전 소스를 사용하도록 정리 (`plugin/ae/ZSodaVersion.h`, `plugin/ae/AeHostAdapter.cpp`, `plugin/ae/LoaderProbeEntry.cpp`, `plugin/ae/ZSodaPiPL.r`, `plugin/ae/ZSodaLoaderProbePiPL.r`, `docs/build/LOCAL_AGENT_HANDOFF.md`)

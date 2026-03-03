@@ -369,3 +369,16 @@ artifacts/diagnostics/ae_loader_diag_YYYYMMDD_HHMMSS/
   1. PiPL/entrypoint 불일치나 stale resource가 있으면 `No loaders recognized`가 발생할 수 있으므로, probe/본 플러그인 모두 `-Clean`으로 완전 재생성 후 비교 권장.
   2. 리소스 트리 구조(PiPL -> 16000 -> locale 1033)와 export `EffectMain` 정합성 재확인 필요.
   3. probe까지 동일 오류면 구현 문제가 아니라 AE 로더 정책/호스트 환경 축 우선으로 판단.
+
+### Session update (2026-03-03 18:35, version mismatch fix)
+- 네이티브 보고된 Probe 경고 `25::16 version mismatch` 대응:
+  - 코드(`my_version`)와 PiPL(`AE_Effect_Version`)을 공용 상수 `ZSODA_EFFECT_VERSION_HEX`로 통일.
+  - 적용 파일:
+    - `plugin/ae/ZSodaVersion.h`
+    - `plugin/ae/AeHostAdapter.cpp`
+    - `plugin/ae/LoaderProbeEntry.cpp`
+    - `plugin/ae/ZSodaPiPL.r`
+    - `plugin/ae/ZSodaLoaderProbePiPL.r`
+- Probe의 이펙트 컨트롤에서 펼칠 파라미터가 없는 것은 정상:
+  - 현재 Probe는 로더 인식 분리 진단용 최소 엔트리이며 사용자 파라미터를 등록하지 않는다.
+  - 목적은 UI 효과가 아니라 `로더 인식 여부`를 확인하는 것이다.

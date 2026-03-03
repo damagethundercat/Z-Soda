@@ -1,4 +1,5 @@
 #include "ae/AeHostAdapter.h"
+#include "ae/ZSodaVersion.h"
 
 #include <algorithm>
 #include <cmath>
@@ -558,7 +559,7 @@ bool WireGlobalSetupPayload(const AeSdkEntryPayload& payload,
                             std::string* error) {
   if (payload.out_data != nullptr) {
 #if defined(PF_VERSION) && defined(PF_Stage_DEVELOP)
-    payload.out_data->my_version = PF_VERSION(0, 2, 0, PF_Stage_DEVELOP, 0);
+    payload.out_data->my_version = static_cast<A_u_long>(ZSODA_EFFECT_VERSION_HEX);
 #endif
     payload.out_data->out_flags = static_cast<A_long>(kAeGlobalOutFlags);
     payload.out_data->out_flags2 = static_cast<A_long>(kAeGlobalOutFlags2);
