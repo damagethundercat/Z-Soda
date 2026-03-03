@@ -33,6 +33,8 @@ param(
 
   [switch]$CopyToMediaCore,
 
+  [switch]$BuildLoaderProbe,
+
   [string]$MediaCoreDir
 )
 
@@ -173,19 +175,20 @@ function Contains-AsciiTokenInBinary {
 function Assert-RrSignature {
   param(
     [Parameter(Mandatory = $true)]
-    [string]$PiPlRrPath
+    [string]$PiPlRrPath,
+
+    [string[]]$RequiredTokens = @(
+      "CodeWin64X86",
+      "EffectMain",
+      "AE_Effect_Global_OutFlags",
+      "0x04008120"
+    )
   )
 
   Assert-Path -Path $PiPlRrPath -PathType Leaf -Message "PiPL RR not found: $PiPlRrPath"
   $content = Get-Content -LiteralPath $PiPlRrPath -Raw
-  $requiredTokens = @(
-    "CodeWin64X86",
-    "EffectMain",
-    "AE_Effect_Global_OutFlags",
-    "0x04008120"
-  )
 
-  foreach ($token in $requiredTokens) {
+  foreach ($token in $RequiredTokens) {
     if ($content.IndexOf($token, [StringComparison]::OrdinalIgnoreCase) -lt 0) {
       throw "PiPL RR signature validation failed. Missing token '$token' in $PiPlRrPath"
     }
@@ -497,6 +500,11 @@ Invoke-CMake -Arguments @("--build", $buildDirAbs, "--config", $Config, "--targe
 Write-Host "==> Building target: zsoda_aex"
 Invoke-CMake -Arguments @("--build", $buildDirAbs, "--config", $Config, "--target", "zsoda_aex") -FailureMessage "Build failed for target zsoda_aex"
 
+if ($BuildLoaderProbe) {
+  Write-Host "==> Building target: zsoda_loader_probe_aex"
+  Invoke-CMake -Arguments @("--build", $buildDirAbs, "--config", $Config, "--target", "zsoda_loader_probe_aex") -FailureMessage "Build failed for target zsoda_loader_probe_aex"
+}
+
 $pluginLib = Find-Artifact -Name "zsoda_plugin.lib" -Candidates @(
   (Join-Path $buildDirAbs ("plugin\{0}\zsoda_plugin.lib" -f $Config)),
   (Join-Path $buildDirAbs ("plugin\{0}\libzsoda_plugin.lib" -f $Config)),
@@ -519,13 +527,53 @@ $piplRr = Find-GeneratedPiPlArtifact -BuildDir $buildDirAbs -FileName "ZSodaPiPL
 $piplRc = Find-OptionalGeneratedPiPlArtifact -BuildDir $buildDirAbs -FileName "ZSodaPiPL.rc"
 $piplRrc = Find-OptionalGeneratedPiPlArtifact -BuildDir $buildDirAbs -FileName "ZSodaPiPL.rrc"
 
+$loaderProbeAex = $null
+$loaderProbePdb = $null
+$loaderProbeMap = $null
+$loaderProbePiPlRr = $null
+$loaderProbePiPlRc = $null
+$loaderProbePiPlRrc = $null
+$loaderProbeSummaryPath = $null
+if ($BuildLoaderProbe) {
+  $loaderProbeAex = Find-Artifact -Name "ZSodaLoaderProbe.aex" -Candidates @(
+    (Join-Path $buildDirAbs ("plugin\{0}\ZSodaLoaderProbe.aex" -f $Config)),
+    (Join-Path $buildDirAbs "plugin\ZSodaLoaderProbe.aex")
+  )
+  $loaderProbePdb = Find-OptionalArtifact -Candidates @(
+    (Join-Path $buildDirAbs ("plugin\{0}\ZSodaLoaderProbe.pdb" -f $Config)),
+    (Join-Path $buildDirAbs "plugin\ZSodaLoaderProbe.pdb")
+  )
+  $loaderProbeMap = Find-OptionalArtifact -Candidates @(
+    (Join-Path $buildDirAbs ("plugin\{0}\ZSodaLoaderProbe.map" -f $Config)),
+    (Join-Path $buildDirAbs "plugin\ZSodaLoaderProbe.map")
+  )
+  $loaderProbePiPlRr = Find-GeneratedPiPlArtifact -BuildDir $buildDirAbs -FileName "ZSodaLoaderProbePiPL.rr"
+  $loaderProbePiPlRc = Find-OptionalGeneratedPiPlArtifact -BuildDir $buildDirAbs -FileName "ZSodaLoaderProbePiPL.rc"
+  $loaderProbePiPlRrc = Find-OptionalGeneratedPiPlArtifact -BuildDir $buildDirAbs -FileName "ZSodaLoaderProbePiPL.rrc"
+}
+
 Assert-RrSignature -PiPlRrPath $piplRr
 Assert-AexLoaderSignature -AexPath $aex -Platform $Platform
+if ($BuildLoaderProbe) {
+  Assert-RrSignature -PiPlRrPath $loaderProbePiPlRr -RequiredTokens @(
+    "CodeWin64X86",
+    "EffectMain",
+    "AE_Effect_Match_Name",
+    "ZSoda Loader Probe"
+  )
+  Assert-AexLoaderSignature -AexPath $loaderProbeAex -Platform $Platform
+}
 
 $aexDir = Split-Path -Path $aex -Parent
 $loaderSummaryPath = Join-Path $aexDir "ZSoda.loader_check.txt"
 $summaryLines = Build-LoaderCheckSummary -AexPath $aex -PiPlRrPath $piplRr -PiPlRcPath $piplRc -PiPlRrcPath $piplRrc
 Write-LoaderCheckSummary -SummaryPath $loaderSummaryPath -Lines $summaryLines
+if ($BuildLoaderProbe) {
+  $loaderProbeAexDir = Split-Path -Path $loaderProbeAex -Parent
+  $loaderProbeSummaryPath = Join-Path $loaderProbeAexDir "ZSodaLoaderProbe.loader_check.txt"
+  $loaderProbeSummaryLines = Build-LoaderCheckSummary -AexPath $loaderProbeAex -PiPlRrPath $loaderProbePiPlRr -PiPlRcPath $loaderProbePiPlRc -PiPlRrcPath $loaderProbePiPlRrc
+  Write-LoaderCheckSummary -SummaryPath $loaderProbeSummaryPath -Lines $loaderProbeSummaryLines
+}
 
 Write-Host "==> Build Succeeded"
 Print-ArtifactInfo -Label "zsoda_plugin" -Path $pluginLib
@@ -550,6 +598,29 @@ if ($map) {
 } else {
   Write-Warning "ZSoda.map not found; RVA->function mapping may be limited."
 }
+if ($BuildLoaderProbe) {
+  Print-ArtifactInfo -Label "loader_probe_aex" -Path $loaderProbeAex
+  Print-ArtifactInfo -Label "loader_probe_pipl_rr" -Path $loaderProbePiPlRr
+  if ($loaderProbePiPlRc) {
+    Print-ArtifactInfo -Label "loader_probe_pipl_rc" -Path $loaderProbePiPlRc
+  }
+  if ($loaderProbePiPlRrc) {
+    Print-ArtifactInfo -Label "loader_probe_pipl_rrc" -Path $loaderProbePiPlRrc
+  }
+  if ($loaderProbeSummaryPath) {
+    Print-ArtifactInfo -Label "loader_probe_loader_check" -Path $loaderProbeSummaryPath
+  }
+  if ($loaderProbePdb) {
+    Print-ArtifactInfo -Label "loader_probe_pdb" -Path $loaderProbePdb
+  } else {
+    Write-Warning "ZSodaLoaderProbe.pdb not found."
+  }
+  if ($loaderProbeMap) {
+    Print-ArtifactInfo -Label "loader_probe_map" -Path $loaderProbeMap
+  } else {
+    Write-Warning "ZSodaLoaderProbe.map not found."
+  }
+}
 
 $stagedOrtRuntimePath = $null
 if ($ortRuntimeDllAbs) {
@@ -561,12 +632,21 @@ if ($ortRuntimeDllAbs) {
 }
 
 Print-LoaderEvidence -AexPath $aex
+if ($BuildLoaderProbe) {
+  Print-LoaderEvidence -AexPath $loaderProbeAex
+}
 
 if ($CopyToMediaCore) {
   $mediaCoreOutput = Join-Path $MediaCoreDir "ZSoda.aex"
   Copy-Item -LiteralPath $aex -Destination $mediaCoreOutput -Force
   $mediaCoreOutputAbs = Resolve-AbsolutePath -Path $mediaCoreOutput
   Print-ArtifactInfo -Label "mediacore_copy" -Path $mediaCoreOutputAbs
+  if ($BuildLoaderProbe) {
+    $mediaCoreProbeOutput = Join-Path $MediaCoreDir "ZSodaLoaderProbe.aex"
+    Copy-Item -LiteralPath $loaderProbeAex -Destination $mediaCoreProbeOutput -Force
+    $mediaCoreProbeOutputAbs = Resolve-AbsolutePath -Path $mediaCoreProbeOutput
+    Print-ArtifactInfo -Label "mediacore_loader_probe_copy" -Path $mediaCoreProbeOutputAbs
+  }
 
   if ($ortRuntimeDllAbs) {
     $mediaCoreDllOutput = Join-Path $MediaCoreDir "onnxruntime.dll"

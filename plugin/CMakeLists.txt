@@ -137,6 +137,50 @@ if(ZSODA_WITH_AE_SDK)
     target_sources(zsoda_aex PRIVATE "${ZSODA_PIPL_RC}")
 
     list(APPEND ZSODA_PLUGIN_TARGETS zsoda_aex)
+
+    set(ZSODA_LOADER_PROBE_SOURCES
+      ae/LoaderProbeEntry.cpp
+    )
+    add_library(zsoda_loader_probe_aex MODULE ${ZSODA_LOADER_PROBE_SOURCES})
+    set_target_properties(zsoda_loader_probe_aex PROPERTIES OUTPUT_NAME "ZSodaLoaderProbe" PREFIX "" SUFFIX ".aex")
+    if(MSVC)
+      target_compile_options(zsoda_loader_probe_aex PRIVATE /Zi)
+      target_link_options(
+        zsoda_loader_probe_aex
+        PRIVATE
+          /DEBUG:FULL
+          /MAP:$<TARGET_FILE_DIR:zsoda_loader_probe_aex>/ZSodaLoaderProbe.map
+      )
+    endif()
+
+    set(ZSODA_LOADER_PROBE_PIPL_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/ae/ZSodaLoaderProbePiPL.r")
+    if(NOT EXISTS "${ZSODA_LOADER_PROBE_PIPL_SOURCE}")
+      message(FATAL_ERROR "Missing loader probe PiPL source file: ${ZSODA_LOADER_PROBE_PIPL_SOURCE}")
+    endif()
+
+    set(ZSODA_LOADER_PROBE_PIPL_RR "${ZSODA_PIPL_BUILD_DIR}/ZSodaLoaderProbePiPL.rr")
+    set(ZSODA_LOADER_PROBE_PIPL_RRC "${ZSODA_PIPL_BUILD_DIR}/ZSodaLoaderProbePiPL.rrc")
+    set(ZSODA_LOADER_PROBE_PIPL_RC "${ZSODA_PIPL_BUILD_DIR}/ZSodaLoaderProbePiPL.rc")
+
+    add_custom_command(
+      OUTPUT "${ZSODA_LOADER_PROBE_PIPL_RC}"
+      COMMAND "${CMAKE_CXX_COMPILER}" /nologo /P /EP /D AE_OS_WIN=1 /D MSWindows /D AE_PROC_INTELx64=1 /I "${AE_SDK_INCLUDE_DIR}" /Fi${ZSODA_LOADER_PROBE_PIPL_RR} "${ZSODA_LOADER_PROBE_PIPL_SOURCE}"
+      COMMAND "${AE_PIPL_TOOL}" "${ZSODA_LOADER_PROBE_PIPL_RR}" "${ZSODA_LOADER_PROBE_PIPL_RRC}"
+      COMMAND "${CMAKE_CXX_COMPILER}" /nologo /P /EP /D AE_OS_WIN=1 /D MSWindows /D AE_PROC_INTELx64=1 /Fi${ZSODA_LOADER_PROBE_PIPL_RC} "${ZSODA_LOADER_PROBE_PIPL_RRC}"
+      DEPENDS "${ZSODA_LOADER_PROBE_PIPL_SOURCE}"
+      VERBATIM
+      COMMENT "Generating ZSoda Loader Probe PiPL resource"
+    )
+    set_source_files_properties("${ZSODA_LOADER_PROBE_PIPL_RC}" PROPERTIES GENERATED TRUE)
+    target_sources(zsoda_loader_probe_aex PRIVATE "${ZSODA_LOADER_PROBE_PIPL_RC}")
+
+    target_include_directories(zsoda_loader_probe_aex
+      PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${AE_SDK_INCLUDE_DIR}
+    )
+    target_compile_definitions(zsoda_loader_probe_aex PRIVATE ZSODA_WITH_AE_SDK=1)
+    target_compile_features(zsoda_loader_probe_aex PRIVATE cxx_std_20)
   elseif(APPLE)
     add_library(zsoda_plugin_bundle MODULE ${ZSODA_PLUGIN_SOURCES})
     set_target_properties(

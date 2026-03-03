@@ -55,6 +55,19 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build_aex.ps1 ^
   -CopyToMediaCore
 ```
 
+로더 분리 진단용(최소 probe 플러그인 동시 빌드):
+```cmd
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build_aex.ps1 ^
+  -AeSdkIncludeDir "%AE_HEADERS%" ^
+  -OrtIncludeDir "%ORT_INCLUDE%" ^
+  -OrtLibrary "%ORT_LIB%" ^
+  -MsvcRuntime "MultiThreaded$<$<CONFIG:Debug>:Debug>" ^
+  -BuildDir "build-win" ^
+  -Config Release ^
+  -BuildLoaderProbe ^
+  -CopyToMediaCore
+```
+
 ORT DLL 복사:
 ```cmd
 copy /Y "%ORT_DLL_DIR%\onnxruntime.dll" "C:\Program Files\Adobe\Common\Plug-ins\7.0\MediaCore\onnxruntime.dll"
@@ -74,6 +87,8 @@ if exist "build-win\plugin\Release\ZSoda.pdb" (echo PDB: OK) else (echo PDB: MIS
 if exist "build-win\plugin\Release\ZSoda.map" (echo MAP: OK) else (echo MAP: MISSING)
 if exist "build-win\plugin\pipl\ZSodaPiPL.rr" (echo PIPL_RR: OK) else (echo PIPL_RR: MISSING)
 if exist "build-win\plugin\Release\ZSoda.loader_check.txt" (echo LOADER_CHECK: OK) else (echo LOADER_CHECK: MISSING)
+if exist "build-win\plugin\Release\ZSodaLoaderProbe.aex" (echo PROBE_AEX: OK) else (echo PROBE_AEX: MISSING)
+if exist "build-win\plugin\Release\ZSodaLoaderProbe.loader_check.txt" (echo PROBE_LOADER_CHECK: OK) else (echo PROBE_LOADER_CHECK: MISSING)
 ```
 
 `No loaders recognized this plugin`가 나오면 우선 `build-win\plugin\pipl\ZSodaPiPL.rr`에 아래 토큰이 있는지 확인:
@@ -85,6 +100,9 @@ if exist "build-win\plugin\Release\ZSoda.loader_check.txt" (echo LOADER_CHECK: O
 그리고 `build-win\plugin\Release\ZSoda.loader_check.txt`가 생성되었는지 확인한다.
 - 이 파일은 빌드 스크립트가 수행한 최종 로더 게이트 결과(필수 export/section 점검 대상)를 요약한다.
 - 추가 증적은 빌드 콘솔의 `loader_export:` / `loader_header:` 줄(`dumpbin` 기반)을 사용한다.
+- `-BuildLoaderProbe`를 사용했다면 `ZSodaLoaderProbe.aex`도 동일 방식으로 검사된다.
+  - `ZSodaLoaderProbe.aex`만 AE에서 로드되면: 현재 본 플러그인(`ZSoda.aex`) 내부 구현/의존성 이슈 가능성 우세
+  - 둘 다 `No loaders recognized`면: AE 로더 정책/캐시/설치 경로/호스트 환경 축 우선 점검
 
 덤프 역추적 필수 산출물:
 - `build-win\plugin\Release\ZSoda.pdb`
