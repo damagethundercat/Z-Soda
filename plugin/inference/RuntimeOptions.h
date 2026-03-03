@@ -13,6 +13,7 @@ enum class RuntimeBackend {
   kDirectML,
   kMetal,
   kCoreML,
+  kRemote,
 };
 
 struct RuntimeOptions {
@@ -22,6 +23,10 @@ struct RuntimeOptions {
   std::string onnxruntime_library_dir;
   int onnxruntime_api_version = 0;
   bool auto_download_missing_models = true;
+  bool remote_inference_enabled = false;
+  std::string remote_endpoint;
+  std::string remote_api_key;
+  int remote_timeout_ms = 0;
 };
 
 [[nodiscard]] inline const char* RuntimeBackendName(RuntimeBackend backend) {
@@ -38,6 +43,8 @@ struct RuntimeOptions {
       return "metal";
     case RuntimeBackend::kCoreML:
       return "coreml";
+    case RuntimeBackend::kRemote:
+      return "remote";
   }
   return "auto";
 }
@@ -66,6 +73,9 @@ struct RuntimeOptions {
   }
   if (normalized == "coreml") {
     return RuntimeBackend::kCoreML;
+  }
+  if (normalized == "remote") {
+    return RuntimeBackend::kRemote;
   }
   return RuntimeBackend::kAuto;
 }

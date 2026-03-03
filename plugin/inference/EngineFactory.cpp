@@ -57,6 +57,14 @@ std::string ReadEnvOrEmpty(const char* name) {
   return value;
 }
 
+std::string ReadEnvWithFallback(const char* primary, const char* fallback) {
+  std::string value = ReadEnvOrEmpty(primary);
+  if (!value.empty()) {
+    return value;
+  }
+  return ReadEnvOrEmpty(fallback);
+}
+
 }  // namespace
 
 std::shared_ptr<IInferenceEngine> CreateDefaultEngine() {
@@ -72,8 +80,25 @@ std::shared_ptr<IInferenceEngine> CreateDefaultEngine() {
 
   RuntimeOptions options;
   const std::string env_backend = ReadEnvOrEmpty("ZSODA_INFERENCE_BACKEND");
+  const bool has_explicit_backend = !env_backend.empty();
   if (!env_backend.empty()) {
     options.preferred_backend = ParseRuntimeBackend(env_backend);
+  }
+
+  options.remote_endpoint =
+      ReadEnvWithFallback("ZSODA_REMOTE_INFERENCE_ENDPOINT", "ZSODA_REMOTE_INFERENCE_URL");
+  options.remote_api_key = ReadEnvWithFallback("ZSODA_REMOTE_INFERENCE_API_KEY", "ZSODA_REMOTE_API_KEY");
+  options.remote_inference_enabled =
+      ParseBoolEnvOrDefault(std::getenv("ZSODA_REMOTE_INFERENCE_ENABLED"), false);
+  options.remote_timeout_ms =
+      ParsePositiveIntEnvOrDefault(std::getenv("ZSODA_REMOTE_INFERENCE_TIMEOUT_MS"), 0);
+
+  if (options.preferred_backend == RuntimeBackend::kRemote) {
+    options.remote_inference_enabled = true;
+  } else if (!has_explicit_backend &&
+             (options.remote_inference_enabled || !options.remote_endpoint.empty())) {
+    options.preferred_backend = RuntimeBackend::kRemote;
+    options.remote_inference_enabled = true;
   }
 
   if (!runtime_paths.model_manifest_path.empty()) {

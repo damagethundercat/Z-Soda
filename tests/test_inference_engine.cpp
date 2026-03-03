@@ -2,17 +2,20 @@
 #include <cassert>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "core/Frame.h"
 #include "inference/ModelAutoDownloader.h"
 #include "inference/ManagedInferenceEngine.h"
 #include "inference/ModelCatalog.h"
+#include "inference/RemoteInferenceBackend.h"
 #if defined(ZSODA_WITH_ONNX_RUNTIME)
 #include "inference/OnnxRuntimeBackend.h"
 #endif
@@ -111,6 +114,55 @@ bool HasOrtRunOrExecutionDiagnostic(std::string_view message) {
          HasOrtLoadOrVersionMismatchDiagnostic(message);
 }
 
+bool SetEnvironmentValue(const std::string& name, const std::string& value) {
+#if defined(_WIN32)
+  return _putenv_s(name.c_str(), value.c_str()) == 0;
+#else
+  return setenv(name.c_str(), value.c_str(), 1) == 0;
+#endif
+}
+
+bool UnsetEnvironmentValue(const std::string& name) {
+#if defined(_WIN32)
+  return _putenv_s(name.c_str(), "") == 0;
+#else
+  return unsetenv(name.c_str()) == 0;
+#endif
+}
+
+class ScopedEnvironmentOverride {
+ public:
+  ScopedEnvironmentOverride(std::string key, std::string value) : key_(std::move(key)) {
+    const char* existing = std::getenv(key_.c_str());
+    if (existing != nullptr) {
+      had_existing_value_ = true;
+      existing_value_ = existing;
+    }
+    assert(SetEnvironmentValue(key_, value));
+  }
+
+  ~ScopedEnvironmentOverride() {
+    if (had_existing_value_) {
+      assert(SetEnvironmentValue(key_, existing_value_));
+    } else {
+      assert(UnsetEnvironmentValue(key_));
+    }
+  }
+
+ private:
+  std::string key_;
+  bool had_existing_value_ = false;
+  std::string existing_value_;
+};
+
+std::string FailingRemoteCommandTemplate() {
+#if defined(_WIN32)
+  return "cmd /c \"exit /b 17\"";
+#else
+  return "sh -c \"exit 17\"";
+#endif
+}
+
 zsoda::core::FrameBuffer MakeSource() {
   zsoda::core::FrameDesc desc;
   desc.width = 4;
@@ -159,6 +211,8 @@ void TestRuntimeBackendOptions() {
          zsoda::inference::RuntimeBackend::kDirectML);
   assert(zsoda::inference::ParseRuntimeBackend("core_ml") ==
          zsoda::inference::RuntimeBackend::kCoreML);
+  assert(zsoda::inference::ParseRuntimeBackend("remote") ==
+         zsoda::inference::RuntimeBackend::kRemote);
   assert(zsoda::inference::ParseRuntimeBackend("unknown-backend") ==
          zsoda::inference::RuntimeBackend::kAuto);
 
@@ -187,6 +241,95 @@ void TestRuntimeBackendOptions() {
   assert(engine.UsingFallbackEngine());
   assert(engine.ActiveBackend() == zsoda::inference::RuntimeBackend::kCpu);
 #endif
+}
+
+void TestRemoteBackendCommandValidation() {
+  zsoda::inference::RuntimeOptions options;
+  options.preferred_backend = zsoda::inference::RuntimeBackend::kRemote;
+
+  ScopedEnvironmentOverride clear_remote_command("ZSODA_REMOTE_INFERENCE_COMMAND", "");
+  ScopedEnvironmentOverride clear_legacy_remote_command("ZSODA_REMOTE_BACKEND_COMMAND", "");
+
+  std::string error;
+  auto unconfigured_backend = zsoda::inference::CreateRemoteInferenceBackendWithCommand(
+      options, {.command_template = ""}, &error);
+  assert(unconfigured_backend == nullptr);
+  assert(Contains(error, "remote inference command is not configured"));
+
+  error.clear();
+  auto failing_backend = zsoda::inference::CreateRemoteInferenceBackendWithCommand(
+      options, {.command_template = FailingRemoteCommandTemplate()}, &error);
+  assert(failing_backend != nullptr);
+  assert(error.empty());
+  assert(failing_backend->ActiveBackend() == zsoda::inference::RuntimeBackend::kRemote);
+  assert(Contains(failing_backend->Name(), "RemoteInferenceBackend"));
+
+  error.clear();
+  assert(failing_backend->SelectModel("remote-test-model", "remote-test-model.onnx", &error));
+  assert(error.empty());
+
+  const auto source = MakeSource();
+  zsoda::inference::InferenceRequest request;
+  request.source = &source;
+  request.quality = 1;
+
+  zsoda::core::FrameBuffer output;
+  error.clear();
+  assert(!failing_backend->Run(request, &output, &error));
+  assert(ContainsAny(error,
+                     {
+                         "remote command failed",
+                         "failed to invoke remote command",
+                     }));
+}
+
+void TestRemoteBackendSafeFallbackWithManagedEngine() {
+  TempDir temp_dir;
+  const auto manifest = temp_dir.path() / zsoda::inference::ModelCatalog::DefaultManifestFilename();
+  WriteTextFile(
+      manifest,
+      "# id|display_name|relative_path|download_url|preferred_default\n"
+      "remote-safe-v1|Remote Safe v1|remote/remote_safe_v1.onnx|https://example.com/remote_safe_v1.onnx|true\n");
+  const auto model_path = temp_dir.path() / "remote/remote_safe_v1.onnx";
+  WriteTextFile(model_path, "dummy");
+
+  ScopedEnvironmentOverride force_remote_command("ZSODA_REMOTE_INFERENCE_COMMAND",
+                                                 FailingRemoteCommandTemplate());
+  ScopedEnvironmentOverride clear_legacy_remote_command("ZSODA_REMOTE_BACKEND_COMMAND", "");
+
+  zsoda::inference::RuntimeOptions options;
+  options.preferred_backend = zsoda::inference::RuntimeBackend::kRemote;
+  options.remote_inference_enabled = true;
+  zsoda::inference::ManagedInferenceEngine engine(temp_dir.path().string(), options);
+
+  assert(engine.RequestedBackend() == zsoda::inference::RuntimeBackend::kRemote);
+  const auto initial_status = engine.BackendStatus();
+  assert(initial_status.requested_backend == zsoda::inference::RuntimeBackend::kRemote);
+  assert(initial_status.active_backend == zsoda::inference::RuntimeBackend::kRemote);
+  assert(!initial_status.using_fallback_engine);
+  assert(Contains(engine.BackendStatusString(), "requested=remote"));
+
+  std::string error;
+  assert(engine.Initialize("remote-safe-v1", &error));
+  assert(error.empty());
+
+  const auto source = MakeSource();
+  zsoda::inference::InferenceRequest request;
+  request.source = &source;
+  request.quality = 1;
+
+  zsoda::core::FrameBuffer output;
+  assert(engine.Run(request, &output, &error));
+  assert(error.empty());
+  assert(!output.empty());
+
+  const auto after = engine.BackendStatus();
+  assert(after.requested_backend == zsoda::inference::RuntimeBackend::kRemote);
+  assert(after.active_backend == zsoda::inference::RuntimeBackend::kRemote);
+  assert(after.last_run_used_fallback);
+  assert(!after.fallback_reason.empty());
+  assert(Contains(after.fallback_reason, "remote command failed"));
+  assert(Contains(engine.BackendStatusString(), "last_run_fallback=true"));
 }
 
 void TestRunRequiresSelectedModel() {
@@ -475,6 +618,8 @@ void RunInferenceEngineTests() {
   TestModelList();
   TestModelSelection();
   TestRuntimeBackendOptions();
+  TestRemoteBackendCommandValidation();
+  TestRemoteBackendSafeFallbackWithManagedEngine();
   TestRunRequiresSelectedModel();
   TestBackendStatusDiagnostics();
   TestManifestLoadingAndDefaults();

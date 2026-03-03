@@ -4,7 +4,7 @@
 
 ## 1. 전체 진행률
 - 전체 진행률: **99%** (`PLAN.md`의 `P1`~`P5` 기준, `P3/P4/P5`는 마무리 단계)
-- 마지막 업데이트: **2026-03-03** (`D100`: DA3 ONNX 다중 자산(`.onnx`+`.onnx_data`) 매니페스트/다운로드/런타임 자동복구 경로 통합)
+- 마지막 업데이트: **2026-03-03** (`D105`: remote backend 실제 라우팅 연결 + 워커 파일-인자 프로토콜 호환 보강)
 - 갱신 원칙: **작업 단위 완료 시 즉시 업데이트**
 
 ## 2. 현재 작업 상태
@@ -143,3 +143,7 @@
 - [x] `D99` Native network constraint confirmed: both `tools/download_model.ps1 -ModelId depth-anything-v3-small` (HuggingFace) and `-ModelId midas-dpt-large` (GitHub) failed in this environment (`Invalid username or password` / `connection closed unexpectedly`). Model auto-fetch cannot be relied on until authenticated/proxy-safe artifact delivery is provided.
 - [x] `D100` DA3 ONNX 자산 스키마/기본 URL 전환: `ModelCatalog`/`models.manifest`를 `onnx-community/depth-anything-v3-{small,base,large}` 기준으로 갱신하고, 매니페스트 6열(`auxiliary_assets`)을 도입해 `.onnx_data` 동반 자산을 모델별 필수 항목으로 선언. 기본 카탈로그/매니페스트/문서를 동일 스키마로 동기화 (`plugin/inference/ModelCatalog.*`, `models/models.manifest`, `models/README.md`, `README.md`).
 - [x] `D101` DA3 실로딩 복구 경로 보강: 런타임에서 `모델 필수 자산 전체 존재 여부`를 검사하도록 `ManagedInferenceEngine`을 확장하고, 누락 시 자산별 백그라운드 다운로드 큐잉/진단을 수행하도록 개선. 다운로드 스크립트(`sh/ps1`)를 다중 자산 다운로드 + HF 토큰 헤더 지원으로 확장하고, Windows 배치 스크립트의 모델 동기화 범위를 `.onnx_data`까지 포함하도록 수정. 관련 단위 테스트 확장 후 `tools/run_local_ci.sh` 재통과 확인 (`plugin/inference/ManagedInferenceEngine.*`, `plugin/inference/ModelAutoDownloader.*`, `tools/download_model.sh`, `tools/download_model.ps1`, `tools/build_aex.ps1`, `tests/test_inference_engine.cpp`).
+- [x] `D102` 원격 추론 백엔드 코어 1차 구현: `RemoteInferenceBackend`를 추가해 구성된 외부 명령을 실행하고, 요청 payload(JSON) 파일 전달 + 응답 depth-map(JSON) 파싱 + 출력 정규화/리사이즈를 수행하도록 구현. 실패 경로(명령 미설정/실행 실패/응답 형식 오류/치수 불일치)에서 명확한 에러 문자열을 반환해 기존 fallback 체인이 동작하도록 정리하고, 플러그인 빌드 소스 및 공용 백엔드 팩토리 선언을 연결 (`plugin/inference/RemoteInferenceBackend.h`, `plugin/inference/RemoteInferenceBackend.cpp`, `plugin/inference/OnnxRuntimeBackend.h`, `plugin/CMakeLists.txt`).
+- [x] `D103` Agent D 테스트/CI 문서 동기화: 원격 백엔드 옵션 선택(`remote`)과 안전 폴백 동작을 검증하는 단위 테스트를 추가하고(미설정/실행 실패 경로 포함), 로컬 CI `g++` 소스 목록과 README fallback 빌드 예시를 `RemoteInferenceBackend.cpp` 포함 형태로 정렬. 또한 README에 원격 추론 MVP 환경변수/실패 시 fallback 동작을 명시해 Python worker 미실행 환경에서도 검증 경로가 유지되도록 정리 (`tests/test_inference_engine.cpp`, `tools/run_local_ci.sh`, `README.md`, `PROGRESS.md`).
+- [x] `D104` remote backend 실제 엔진 라우팅 연결: `ManagedInferenceEngine`이 `preferred_backend=remote` 또는 `ZSODA_REMOTE_INFERENCE_ENABLED=1`일 때 `CreateRemoteInferenceBackend`를 우선 선택하도록 통합하고, backend 상태/run/select 경로를 ONNX 전용 매크로 의존 없이 공통 인터페이스(`IOnnxRuntimeBackend`)로 동작하도록 조정. 또한 remote 모드에서는 로컬 모델 자산 강제 검사를 비활성화해 외부 워커 중심 운용 시 불필요한 `model asset missing` 경고를 줄임 (`plugin/inference/ManagedInferenceEngine.*`).
+- [x] `D105` 워커 프로토콜 호환 보강 + 문서 반영: Python MVP 워커를 `stdin/stdout` + `file-arg(request,response)` 양쪽 모드로 확장해 현재 `RemoteInferenceBackend`의 파일 기반 호출 템플릿과 즉시 호환되도록 정리하고, 원격 MVP 문서/README 예시 명령을 실제 템플릿(`python3 tools/remote_inference_worker.py {request} {response}`) 기준으로 동기화. 로컬 CI(`tools/run_local_ci.sh`) 재통과로 회귀 없음 확인 (`tools/remote_inference_worker.py`, `docs/build/REMOTE_INFERENCE_MVP.md`, `README.md`, `tools/run_local_ci.sh`).

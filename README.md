@@ -14,6 +14,7 @@ Depth Scanner-style After Effects plugin scaffold.
 - AE smoke test guide: `docs/build/AE_SMOKE_TEST.md`
 - ORT runtime deploy note: `docs/build/ORT_RUNTIME_DEPLOY.md`
 - ORT runtime isolation plan: `docs/build/ORT_RUNTIME_ISOLATION_PLAN.md`
+- Remote inference MVP protocol: `docs/build/REMOTE_INFERENCE_MVP.md`
 - Windows `.aex` build helper script: `tools/build_aex.ps1`
 
 ## Current Layout
@@ -57,11 +58,22 @@ Runtime default path note:
 
 Optional runtime options:
 ```bash
-export ZSODA_INFERENCE_BACKEND=cpu      # auto|cpu|cuda|directml|metal|coreml
+export ZSODA_INFERENCE_BACKEND=cpu      # auto|cpu|cuda|directml|metal|coreml|remote
 export ZSODA_MODEL_MANIFEST=models/models.manifest
 export ZSODA_AUTO_DOWNLOAD_MODELS=1     # 1:on(default), 0:off
 export HF_TOKEN=...                     # optional: Hugging Face 인증 토큰
 ```
+
+Remote inference MVP options:
+```bash
+export ZSODA_REMOTE_INFERENCE_ENABLED=1
+export ZSODA_REMOTE_INFERENCE_COMMAND='python3 tools/remote_inference_worker.py {request} {response}'
+export ZSODA_REMOTE_INFERENCE_TIMEOUT_MS=30000
+```
+
+Remote inference fallback note:
+- 원격 명령 미설정/실행 실패/응답 파싱 실패 시 플러그인은 즉시 안전 fallback depth 경로(DummyDepthEngine)로 전환합니다.
+- 테스트/로컬 CI는 Python worker가 없어도 실패-복원 경로를 검증하도록 구성되어 있습니다.
 
 Current runtime note:
 - The model/session management path is implemented.
@@ -117,7 +129,8 @@ g++ -std=c++20 -Iplugin \
   plugin/core/BufferPool.cpp plugin/core/Cache.cpp plugin/core/DepthOps.cpp \
   plugin/core/RenderPipeline.cpp plugin/core/Tiler.cpp \
   plugin/inference/DummyInferenceEngine.cpp plugin/inference/EngineFactory.cpp plugin/inference/ModelAutoDownloader.cpp \
-  plugin/inference/ManagedInferenceEngine.cpp plugin/inference/ModelCatalog.cpp plugin/inference/RuntimePathResolver.cpp \
+  plugin/inference/ManagedInferenceEngine.cpp plugin/inference/ModelCatalog.cpp plugin/inference/RemoteInferenceBackend.cpp \
+  plugin/inference/RuntimePathResolver.cpp \
   tests/test_ae_params.cpp tests/test_ae_router.cpp tests/test_cache.cpp \
   tests/test_depth_ops.cpp tests/test_inference_engine.cpp \
   tests/test_render_pipeline.cpp tests/test_runtime_path_resolver.cpp tests/test_tiler.cpp \
@@ -132,7 +145,8 @@ g++ -std=c++20 -Iplugin \
   plugin/core/BufferPool.cpp plugin/core/Cache.cpp plugin/core/DepthOps.cpp \
   plugin/core/RenderPipeline.cpp plugin/core/Tiler.cpp \
   plugin/inference/DummyInferenceEngine.cpp plugin/inference/EngineFactory.cpp plugin/inference/ModelAutoDownloader.cpp \
-  plugin/inference/ManagedInferenceEngine.cpp plugin/inference/ModelCatalog.cpp plugin/inference/RuntimePathResolver.cpp \
+  plugin/inference/ManagedInferenceEngine.cpp plugin/inference/ModelCatalog.cpp plugin/inference/RemoteInferenceBackend.cpp \
+  plugin/inference/RuntimePathResolver.cpp \
   tests/perf_harness.cpp \
   -o /tmp/zsoda_perf_harness
 /tmp/zsoda_perf_harness --mode benchmark --quiet
@@ -146,7 +160,8 @@ g++ -std=c++20 -DZSODA_WITH_ONNX_RUNTIME=1 -Iplugin \
   plugin/core/BufferPool.cpp plugin/core/Cache.cpp plugin/core/DepthOps.cpp \
   plugin/core/RenderPipeline.cpp plugin/core/Tiler.cpp \
   plugin/inference/DummyInferenceEngine.cpp plugin/inference/EngineFactory.cpp plugin/inference/ModelAutoDownloader.cpp \
-  plugin/inference/ManagedInferenceEngine.cpp plugin/inference/ModelCatalog.cpp plugin/inference/RuntimePathResolver.cpp \
+  plugin/inference/ManagedInferenceEngine.cpp plugin/inference/ModelCatalog.cpp plugin/inference/RemoteInferenceBackend.cpp \
+  plugin/inference/RuntimePathResolver.cpp \
   plugin/inference/OnnxRuntimeBackend.cpp \
   tests/test_ae_params.cpp tests/test_ae_router.cpp tests/test_cache.cpp \
   tests/test_depth_ops.cpp tests/test_inference_engine.cpp \

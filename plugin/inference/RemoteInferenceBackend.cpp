@@ -1,0 +1,1178 @@
+#include "inference/RemoteInferenceBackend.h"
+
+#include <algorithm>
+#include <atomic>
+#include <cctype>
+#include <cerrno>
+#include <chrono>
+#include <cmath>
+#include <cstdint>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <limits>
+#include <sstream>
+#include <string>
+#include <string_view>
+#include <system_error>
+#include <utility>
+#include <vector>
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
+
+namespace zsoda::inference {
+namespace {
+
+constexpr char kRemoteCommandEnv[] = "ZSODA_REMOTE_INFERENCE_COMMAND";
+constexpr char kRemoteCommandEnvLegacy[] = "ZSODA_REMOTE_BACKEND_COMMAND";
+constexpr char kRequestSchema[] = "zsoda.remote_depth.v1";
+
+std::atomic<std::uint64_t> g_temp_file_counter{0U};
+
+std::string ReadEnvOrEmpty(const char* name) {
+  const char* value = std::getenv(name);
+  if (value == nullptr || value[0] == '\0') {
+    return {};
+  }
+  return value;
+}
+
+std::string ResolveCommandTemplate(const RemoteBackendCommandConfig& command_config) {
+  if (!command_config.command_template.empty()) {
+    return command_config.command_template;
+  }
+  const std::string configured = ReadEnvOrEmpty(kRemoteCommandEnv);
+  if (!configured.empty()) {
+    return configured;
+  }
+  return ReadEnvOrEmpty(kRemoteCommandEnvLegacy);
+}
+
+std::string BuildBackendName(RuntimeBackend backend) {
+  std::string name = "RemoteInferenceBackend[";
+  name.append(RuntimeBackendName(backend));
+  name.push_back(']');
+  return name;
+}
+
+bool ValidateRequest(const InferenceRequest& request,
+                     zsoda::core::FrameBuffer* out_depth,
+                     std::string* error) {
+  if (request.source == nullptr || out_depth == nullptr) {
+    if (error != nullptr) {
+      *error = "invalid inference request: source and output buffers are required";
+    }
+    return false;
+  }
+  if (request.source->empty()) {
+    if (error != nullptr) {
+      *error = "invalid inference request: source frame is empty";
+    }
+    return false;
+  }
+  const auto& source_desc = request.source->desc();
+  if (source_desc.width <= 0 || source_desc.height <= 0 || source_desc.channels <= 0) {
+    if (error != nullptr) {
+      *error = "invalid inference request: source frame descriptor is invalid";
+    }
+    return false;
+  }
+  if (request.quality <= 0) {
+    if (error != nullptr) {
+      *error = "invalid inference request: quality must be greater than zero";
+    }
+    return false;
+  }
+  return true;
+}
+
+float SanitizeFinite(float value) {
+  return std::isfinite(value) ? value : 0.0F;
+}
+
+std::string EscapeJsonString(std::string_view value) {
+  std::string escaped;
+  escaped.reserve(value.size() + 8U);
+  for (const char ch : value) {
+    switch (ch) {
+      case '\\':
+        escaped.append("\\\\");
+        break;
+      case '"':
+        escaped.append("\\\"");
+        break;
+      case '\b':
+        escaped.append("\\b");
+        break;
+      case '\f':
+        escaped.append("\\f");
+        break;
+      case '\n':
+        escaped.append("\\n");
+        break;
+      case '\r':
+        escaped.append("\\r");
+        break;
+      case '\t':
+        escaped.append("\\t");
+        break;
+      default:
+        if (static_cast<unsigned char>(ch) < 0x20U) {
+          escaped.push_back(' ');
+        } else {
+          escaped.push_back(ch);
+        }
+        break;
+    }
+  }
+  return escaped;
+}
+
+bool SerializeRequestPayload(const InferenceRequest& request,
+                             std::string_view model_id,
+                             std::string_view model_path,
+                             std::string* out_payload,
+                             std::string* error) {
+  if (out_payload == nullptr) {
+    if (error != nullptr) {
+      *error = "internal error: request payload output is null";
+    }
+    return false;
+  }
+  if (request.source == nullptr || request.source->empty()) {
+    if (error != nullptr) {
+      *error = "internal error: source frame is unavailable";
+    }
+    return false;
+  }
+
+  const auto& source = *request.source;
+  const auto& source_desc = source.desc();
+  std::ostringstream payload;
+  payload.precision(9);
+  payload << "{";
+  payload << "\"schema\":\"" << kRequestSchema << "\",";
+  payload << "\"model_id\":\"" << EscapeJsonString(model_id) << "\",";
+  payload << "\"model_path\":\"" << EscapeJsonString(model_path) << "\",";
+  payload << "\"quality\":" << request.quality << ",";
+  payload << "\"source\":{";
+  payload << "\"width\":" << source_desc.width << ",";
+  payload << "\"height\":" << source_desc.height << ",";
+  payload << "\"channels\":" << source_desc.channels << ",";
+  payload << "\"format\":\"gray32f\",";
+  payload << "\"data\":[";
+  for (std::size_t index = 0; index < source.size(); ++index) {
+    if (index != 0U) {
+      payload << ",";
+    }
+    payload << SanitizeFinite(source.data()[index]);
+  }
+  payload << "]";
+  payload << "}";
+  payload << "}";
+
+  *out_payload = payload.str();
+  if (error != nullptr) {
+    error->clear();
+  }
+  return true;
+}
+
+std::uint64_t ProcessIdentifier() {
+#if defined(_WIN32)
+  return static_cast<std::uint64_t>(::GetCurrentProcessId());
+#else
+  return static_cast<std::uint64_t>(::getpid());
+#endif
+}
+
+bool MakeUniqueTempFilePath(std::string_view prefix,
+                            std::string_view extension,
+                            std::filesystem::path* out_path,
+                            std::string* error) {
+  if (out_path == nullptr) {
+    if (error != nullptr) {
+      *error = "internal error: temp file output path is null";
+    }
+    return false;
+  }
+
+  std::error_code temp_error;
+  const std::filesystem::path temp_root = std::filesystem::temp_directory_path(temp_error);
+  if (temp_error) {
+    if (error != nullptr) {
+      *error = "failed to resolve temp directory (" + temp_error.message() + ")";
+    }
+    return false;
+  }
+
+  for (int attempt = 0; attempt < 16; ++attempt) {
+    const auto time_seed = std::chrono::duration_cast<std::chrono::microseconds>(
+                               std::chrono::steady_clock::now().time_since_epoch())
+                               .count();
+    const std::uint64_t sequence = g_temp_file_counter.fetch_add(1U) + 1U;
+    std::ostringstream filename;
+    filename << prefix << "-" << ProcessIdentifier() << "-" << time_seed << "-" << sequence
+             << extension;
+    const std::filesystem::path candidate = temp_root / filename.str();
+    std::error_code exists_error;
+    if (!std::filesystem::exists(candidate, exists_error)) {
+      if (exists_error) {
+        if (error != nullptr) {
+          *error = "failed to test temp file path: " + candidate.string() + " (" +
+                   exists_error.message() + ")";
+        }
+        return false;
+      }
+      *out_path = candidate;
+      if (error != nullptr) {
+        error->clear();
+      }
+      return true;
+    }
+  }
+
+  if (error != nullptr) {
+    *error = "failed to allocate a unique temp file path after retries";
+  }
+  return false;
+}
+
+bool WriteTextFile(const std::filesystem::path& path, std::string_view payload, std::string* error) {
+  std::ofstream stream(path, std::ios::binary | std::ios::trunc);
+  if (!stream.is_open()) {
+    if (error != nullptr) {
+      *error = "failed to open file for writing: " + path.string();
+    }
+    return false;
+  }
+  stream.write(payload.data(), static_cast<std::streamsize>(payload.size()));
+  if (!stream.good()) {
+    if (error != nullptr) {
+      *error = "failed to write request payload: " + path.string();
+    }
+    return false;
+  }
+  if (error != nullptr) {
+    error->clear();
+  }
+  return true;
+}
+
+bool ReadTextFile(const std::filesystem::path& path, std::string* payload, std::string* error) {
+  if (payload == nullptr) {
+    if (error != nullptr) {
+      *error = "internal error: response payload output is null";
+    }
+    return false;
+  }
+  std::ifstream stream(path, std::ios::binary);
+  if (!stream.is_open()) {
+    if (error != nullptr) {
+      *error = "failed to open response payload: " + path.string();
+    }
+    return false;
+  }
+  std::ostringstream buffer;
+  buffer << stream.rdbuf();
+  if (!stream.good() && !stream.eof()) {
+    if (error != nullptr) {
+      *error = "failed while reading response payload: " + path.string();
+    }
+    return false;
+  }
+  *payload = buffer.str();
+  if (error != nullptr) {
+    error->clear();
+  }
+  return true;
+}
+
+struct ScopedTempFile {
+  explicit ScopedTempFile(std::filesystem::path path) : path_(std::move(path)) {}
+  ~ScopedTempFile() {
+    std::error_code cleanup_error;
+    std::filesystem::remove(path_, cleanup_error);
+  }
+
+  const std::filesystem::path& path() const { return path_; }
+
+ private:
+  std::filesystem::path path_;
+};
+
+std::string QuoteShellArgument(std::string_view argument) {
+  std::string quoted;
+  quoted.reserve(argument.size() + 4U);
+  quoted.push_back('"');
+  for (const char ch : argument) {
+    if (ch == '"') {
+      quoted.append("\\\"");
+    } else {
+      quoted.push_back(ch);
+    }
+  }
+  quoted.push_back('"');
+  return quoted;
+}
+
+bool ReplaceToken(std::string* text, std::string_view token, std::string_view replacement) {
+  if (text == nullptr || token.empty()) {
+    return false;
+  }
+  bool replaced = false;
+  std::size_t cursor = 0U;
+  while (true) {
+    const std::size_t pos = text->find(token, cursor);
+    if (pos == std::string::npos) {
+      break;
+    }
+    text->replace(pos, token.size(), replacement.data(), replacement.size());
+    cursor = pos + replacement.size();
+    replaced = true;
+  }
+  return replaced;
+}
+
+bool BuildCommandLine(const std::string& command_template,
+                      const std::filesystem::path& request_path,
+                      const std::filesystem::path& response_path,
+                      std::string* out_command,
+                      std::string* error) {
+  if (out_command == nullptr) {
+    if (error != nullptr) {
+      *error = "internal error: command output is null";
+    }
+    return false;
+  }
+  if (command_template.empty()) {
+    if (error != nullptr) {
+      *error = "remote command is empty";
+    }
+    return false;
+  }
+
+  const std::string request_arg = QuoteShellArgument(request_path.string());
+  const std::string response_arg = QuoteShellArgument(response_path.string());
+  std::string command = command_template;
+  const bool replaced_request = ReplaceToken(&command, "{request}", request_arg);
+  const bool replaced_response = ReplaceToken(&command, "{response}", response_arg);
+  if (!replaced_request) {
+    command.push_back(' ');
+    command.append(request_arg);
+  }
+  if (!replaced_response) {
+    command.push_back(' ');
+    command.append(response_arg);
+  }
+
+  *out_command = std::move(command);
+  if (error != nullptr) {
+    error->clear();
+  }
+  return true;
+}
+
+int NormalizeProcessExitCode(int raw_exit_code) {
+#if defined(_WIN32)
+  return raw_exit_code;
+#else
+  if (raw_exit_code == -1) {
+    return -1;
+  }
+  if (WIFEXITED(raw_exit_code)) {
+    return WEXITSTATUS(raw_exit_code);
+  }
+  if (WIFSIGNALED(raw_exit_code)) {
+    return 128 + WTERMSIG(raw_exit_code);
+  }
+  return raw_exit_code;
+#endif
+}
+
+bool IsJsonWhitespace(char ch) {
+  return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r';
+}
+
+void SkipJsonWhitespace(std::string_view text, std::size_t* cursor) {
+  if (cursor == nullptr) {
+    return;
+  }
+  while (*cursor < text.size() && IsJsonWhitespace(text[*cursor])) {
+    ++(*cursor);
+  }
+}
+
+bool FindMatchingDelimiter(std::string_view text,
+                           std::size_t open_pos,
+                           char open_char,
+                           char close_char,
+                           std::size_t* close_pos) {
+  if (close_pos == nullptr || open_pos >= text.size() || text[open_pos] != open_char) {
+    return false;
+  }
+
+  int depth = 0;
+  bool in_string = false;
+  bool escaped = false;
+  for (std::size_t index = open_pos; index < text.size(); ++index) {
+    const char ch = text[index];
+    if (in_string) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (ch == '\\') {
+        escaped = true;
+        continue;
+      }
+      if (ch == '"') {
+        in_string = false;
+      }
+      continue;
+    }
+
+    if (ch == '"') {
+      in_string = true;
+      continue;
+    }
+    if (ch == open_char) {
+      ++depth;
+      continue;
+    }
+    if (ch == close_char) {
+      --depth;
+      if (depth == 0) {
+        *close_pos = index;
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+bool FindJsonKeyValueOffset(std::string_view text,
+                            std::string_view key,
+                            std::size_t* out_value_offset) {
+  if (out_value_offset == nullptr) {
+    return false;
+  }
+  std::string quoted_key;
+  quoted_key.reserve(key.size() + 2U);
+  quoted_key.push_back('"');
+  quoted_key.append(key);
+  quoted_key.push_back('"');
+
+  std::size_t search_from = 0U;
+  while (true) {
+    const std::size_t key_pos = text.find(quoted_key, search_from);
+    if (key_pos == std::string::npos) {
+      return false;
+    }
+    const std::size_t colon_pos = text.find(':', key_pos + quoted_key.size());
+    if (colon_pos == std::string::npos) {
+      return false;
+    }
+    std::size_t value_offset = colon_pos + 1U;
+    SkipJsonWhitespace(text, &value_offset);
+    if (value_offset >= text.size()) {
+      return false;
+    }
+    *out_value_offset = value_offset;
+    return true;
+  }
+}
+
+bool ParseBoolAtOffset(std::string_view text, std::size_t offset, bool* out_value) {
+  if (out_value == nullptr) {
+    return false;
+  }
+  std::size_t cursor = offset;
+  SkipJsonWhitespace(text, &cursor);
+  if (cursor + 4U <= text.size() && text.substr(cursor, 4U) == "true") {
+    *out_value = true;
+    return true;
+  }
+  if (cursor + 5U <= text.size() && text.substr(cursor, 5U) == "false") {
+    *out_value = false;
+    return true;
+  }
+  return false;
+}
+
+bool ParseIntAtOffset(std::string_view text,
+                      std::size_t offset,
+                      int* out_value,
+                      std::string* error) {
+  if (out_value == nullptr) {
+    if (error != nullptr) {
+      *error = "internal error: integer parse output is null";
+    }
+    return false;
+  }
+  std::size_t cursor = offset;
+  SkipJsonWhitespace(text, &cursor);
+  if (cursor >= text.size()) {
+    if (error != nullptr) {
+      *error = "failed to parse integer value: unexpected end of payload";
+    }
+    return false;
+  }
+
+  const std::size_t start = cursor;
+  if (text[cursor] == '-' || text[cursor] == '+') {
+    ++cursor;
+  }
+  const std::size_t digits_start = cursor;
+  while (cursor < text.size() && std::isdigit(static_cast<unsigned char>(text[cursor])) != 0) {
+    ++cursor;
+  }
+  if (digits_start == cursor) {
+    if (error != nullptr) {
+      *error = "failed to parse integer value";
+    }
+    return false;
+  }
+
+  const std::string token(text.substr(start, cursor - start));
+  errno = 0;
+  char* end = nullptr;
+  const long parsed = std::strtol(token.c_str(), &end, 10);
+  if (errno != 0 || end == token.c_str() || (end != nullptr && *end != '\0') ||
+      parsed < std::numeric_limits<int>::min() || parsed > std::numeric_limits<int>::max()) {
+    if (error != nullptr) {
+      *error = "failed to parse integer value: " + token;
+    }
+    return false;
+  }
+
+  *out_value = static_cast<int>(parsed);
+  if (error != nullptr) {
+    error->clear();
+  }
+  return true;
+}
+
+bool ParseStringAtOffset(std::string_view text,
+                         std::size_t offset,
+                         std::string* out_value,
+                         std::string* error) {
+  if (out_value == nullptr) {
+    if (error != nullptr) {
+      *error = "internal error: string parse output is null";
+    }
+    return false;
+  }
+  std::size_t cursor = offset;
+  SkipJsonWhitespace(text, &cursor);
+  if (cursor >= text.size() || text[cursor] != '"') {
+    if (error != nullptr) {
+      *error = "failed to parse string value";
+    }
+    return false;
+  }
+
+  ++cursor;
+  out_value->clear();
+  bool escaped = false;
+  while (cursor < text.size()) {
+    const char ch = text[cursor++];
+    if (escaped) {
+      switch (ch) {
+        case '\\':
+        case '"':
+        case '/':
+          out_value->push_back(ch);
+          break;
+        case 'b':
+          out_value->push_back('\b');
+          break;
+        case 'f':
+          out_value->push_back('\f');
+          break;
+        case 'n':
+          out_value->push_back('\n');
+          break;
+        case 'r':
+          out_value->push_back('\r');
+          break;
+        case 't':
+          out_value->push_back('\t');
+          break;
+        case 'u': {
+          if (cursor + 4U > text.size()) {
+            if (error != nullptr) {
+              *error = "failed to parse unicode escape in response";
+            }
+            return false;
+          }
+          cursor += 4U;
+          out_value->push_back('?');
+          break;
+        }
+        default:
+          out_value->push_back(ch);
+          break;
+      }
+      escaped = false;
+      continue;
+    }
+    if (ch == '\\') {
+      escaped = true;
+      continue;
+    }
+    if (ch == '"') {
+      if (error != nullptr) {
+        error->clear();
+      }
+      return true;
+    }
+    out_value->push_back(ch);
+  }
+
+  if (error != nullptr) {
+    *error = "failed to parse string value: unterminated quote";
+  }
+  return false;
+}
+
+bool ParseFloatArrayAtOffset(std::string_view text,
+                             std::size_t offset,
+                             std::vector<float>* out_values,
+                             std::string* error) {
+  if (out_values == nullptr) {
+    if (error != nullptr) {
+      *error = "internal error: float array output is null";
+    }
+    return false;
+  }
+  std::size_t cursor = offset;
+  SkipJsonWhitespace(text, &cursor);
+  if (cursor >= text.size() || text[cursor] != '[') {
+    if (error != nullptr) {
+      *error = "failed to parse float array: expected '['";
+    }
+    return false;
+  }
+
+  std::size_t array_end = 0U;
+  if (!FindMatchingDelimiter(text, cursor, '[', ']', &array_end)) {
+    if (error != nullptr) {
+      *error = "failed to parse float array: unmatched bracket";
+    }
+    return false;
+  }
+
+  out_values->clear();
+  std::size_t item_cursor = cursor + 1U;
+  while (item_cursor < array_end) {
+    while (item_cursor < array_end &&
+           (IsJsonWhitespace(text[item_cursor]) || text[item_cursor] == ',')) {
+      ++item_cursor;
+    }
+    if (item_cursor >= array_end) {
+      break;
+    }
+
+    std::size_t token_end = item_cursor;
+    while (token_end < array_end && text[token_end] != ',' &&
+           !IsJsonWhitespace(text[token_end])) {
+      ++token_end;
+    }
+    const std::string token(text.substr(item_cursor, token_end - item_cursor));
+    if (token.empty()) {
+      if (error != nullptr) {
+        *error = "failed to parse float array: empty token";
+      }
+      return false;
+    }
+
+    errno = 0;
+    char* parse_end = nullptr;
+    const float parsed = std::strtof(token.c_str(), &parse_end);
+    if (errno != 0 || parse_end == token.c_str() || (parse_end != nullptr && *parse_end != '\0')) {
+      if (error != nullptr) {
+        *error = "failed to parse float value in array: " + token;
+      }
+      return false;
+    }
+    out_values->push_back(SanitizeFinite(parsed));
+    item_cursor = token_end;
+  }
+
+  if (error != nullptr) {
+    error->clear();
+  }
+  return true;
+}
+
+struct ParsedDepthResponse {
+  int width = 0;
+  int height = 0;
+  std::vector<float> values;
+};
+
+bool ParseDepthObject(std::string_view object,
+                      ParsedDepthResponse* response,
+                      std::string* error) {
+  if (response == nullptr) {
+    if (error != nullptr) {
+      *error = "internal error: depth response output is null";
+    }
+    return false;
+  }
+
+  std::size_t width_offset = 0U;
+  std::size_t height_offset = 0U;
+  if (!FindJsonKeyValueOffset(object, "width", &width_offset) ||
+      !FindJsonKeyValueOffset(object, "height", &height_offset)) {
+    if (error != nullptr) {
+      *error = "remote response is missing depth width/height";
+    }
+    return false;
+  }
+  if (!ParseIntAtOffset(object, width_offset, &response->width, error)) {
+    return false;
+  }
+  if (!ParseIntAtOffset(object, height_offset, &response->height, error)) {
+    return false;
+  }
+
+  std::size_t data_offset = 0U;
+  if (!FindJsonKeyValueOffset(object, "data", &data_offset)) {
+    if (!FindJsonKeyValueOffset(object, "values", &data_offset)) {
+      if (error != nullptr) {
+        *error = "remote response is missing depth data array";
+      }
+      return false;
+    }
+  }
+  if (!ParseFloatArrayAtOffset(object, data_offset, &response->values, error)) {
+    return false;
+  }
+
+  if (response->width <= 0 || response->height <= 0) {
+    if (error != nullptr) {
+      *error = "remote response depth dimensions are invalid";
+    }
+    return false;
+  }
+  const std::size_t expected =
+      static_cast<std::size_t>(response->width) * static_cast<std::size_t>(response->height);
+  if (response->values.size() != expected) {
+    if (error != nullptr) {
+      *error = "remote response depth payload size mismatch (expected=" +
+               std::to_string(expected) + ", actual=" +
+               std::to_string(response->values.size()) + ")";
+    }
+    return false;
+  }
+  return true;
+}
+
+bool ParseDepthResponsePayload(const std::string& payload,
+                               ParsedDepthResponse* response,
+                               std::string* error) {
+  if (response == nullptr) {
+    if (error != nullptr) {
+      *error = "internal error: parsed response output is null";
+    }
+    return false;
+  }
+  if (payload.empty()) {
+    if (error != nullptr) {
+      *error = "remote response payload is empty";
+    }
+    return false;
+  }
+
+  std::size_t ok_offset = 0U;
+  if (FindJsonKeyValueOffset(payload, "ok", &ok_offset)) {
+    bool ok = true;
+    if (!ParseBoolAtOffset(payload, ok_offset, &ok)) {
+      if (error != nullptr) {
+        *error = "remote response contains invalid 'ok' field";
+      }
+      return false;
+    }
+    if (!ok) {
+      std::string remote_error;
+      std::size_t error_offset = 0U;
+      if (FindJsonKeyValueOffset(payload, "error", &error_offset)) {
+        std::string parse_error;
+        if (ParseStringAtOffset(payload, error_offset, &remote_error, &parse_error) &&
+            !remote_error.empty()) {
+          if (error != nullptr) {
+            *error = "remote backend returned error: " + remote_error;
+          }
+          return false;
+        }
+      }
+      if (error != nullptr) {
+        *error = "remote backend returned error";
+      }
+      return false;
+    }
+  }
+
+  std::size_t depth_offset = 0U;
+  if (!FindJsonKeyValueOffset(payload, "depth", &depth_offset)) {
+    if (error != nullptr) {
+      *error = "remote response is missing 'depth' field";
+    }
+    return false;
+  }
+  if (depth_offset >= payload.size()) {
+    if (error != nullptr) {
+      *error = "remote response depth field is malformed";
+    }
+    return false;
+  }
+
+  if (payload[depth_offset] == '{') {
+    std::size_t depth_end = 0U;
+    if (!FindMatchingDelimiter(payload, depth_offset, '{', '}', &depth_end)) {
+      if (error != nullptr) {
+        *error = "remote response depth object is malformed";
+      }
+      return false;
+    }
+    return ParseDepthObject(
+        std::string_view(payload).substr(depth_offset, depth_end - depth_offset + 1U),
+        response,
+        error);
+  }
+
+  if (payload[depth_offset] == '[') {
+    std::size_t width_offset = 0U;
+    std::size_t height_offset = 0U;
+    if (!FindJsonKeyValueOffset(payload, "width", &width_offset) ||
+        !FindJsonKeyValueOffset(payload, "height", &height_offset)) {
+      if (error != nullptr) {
+        *error = "remote response depth array requires top-level width/height";
+      }
+      return false;
+    }
+    if (!ParseIntAtOffset(payload, width_offset, &response->width, error)) {
+      return false;
+    }
+    if (!ParseIntAtOffset(payload, height_offset, &response->height, error)) {
+      return false;
+    }
+    if (!ParseFloatArrayAtOffset(payload, depth_offset, &response->values, error)) {
+      return false;
+    }
+    const std::size_t expected =
+        static_cast<std::size_t>(response->width) * static_cast<std::size_t>(response->height);
+    if (response->values.size() != expected) {
+      if (error != nullptr) {
+        *error = "remote response depth payload size mismatch (expected=" +
+                 std::to_string(expected) + ", actual=" +
+                 std::to_string(response->values.size()) + ")";
+      }
+      return false;
+    }
+    return true;
+  }
+
+  if (error != nullptr) {
+    *error = "remote response depth field must be an object or array";
+  }
+  return false;
+}
+
+bool WriteNormalizedDepthToOutput(const ParsedDepthResponse& response,
+                                  const zsoda::core::FrameDesc& source_desc,
+                                  zsoda::core::FrameBuffer* out_depth,
+                                  std::string* error) {
+  if (out_depth == nullptr) {
+    if (error != nullptr) {
+      *error = "internal error: output depth buffer is null";
+    }
+    return false;
+  }
+  if (source_desc.width <= 0 || source_desc.height <= 0) {
+    if (error != nullptr) {
+      *error = "invalid source descriptor for depth output";
+    }
+    return false;
+  }
+  if (response.width <= 0 || response.height <= 0 || response.values.empty()) {
+    if (error != nullptr) {
+      *error = "remote response depth buffer is empty";
+    }
+    return false;
+  }
+
+  float min_depth = std::numeric_limits<float>::infinity();
+  float max_depth = -std::numeric_limits<float>::infinity();
+  for (const float value : response.values) {
+    min_depth = std::min(min_depth, value);
+    max_depth = std::max(max_depth, value);
+  }
+  if (!std::isfinite(min_depth) || !std::isfinite(max_depth)) {
+    if (error != nullptr) {
+      *error = "remote response depth buffer contains non-finite values";
+    }
+    return false;
+  }
+  const float depth_range = max_depth - min_depth;
+
+  zsoda::core::FrameDesc output_desc = source_desc;
+  output_desc.channels = 1;
+  output_desc.format = zsoda::core::PixelFormat::kGray32F;
+  out_depth->Resize(output_desc);
+
+  const auto sample_depth = [&](int x, int y) -> float {
+    const std::size_t index =
+        static_cast<std::size_t>(y) * static_cast<std::size_t>(response.width) + x;
+    return response.values[index];
+  };
+
+  for (int y = 0; y < output_desc.height; ++y) {
+    const float src_y = (static_cast<float>(y) + 0.5F) *
+                            (static_cast<float>(response.height) /
+                             static_cast<float>(output_desc.height)) -
+                        0.5F;
+    for (int x = 0; x < output_desc.width; ++x) {
+      const float src_x = (static_cast<float>(x) + 0.5F) *
+                              (static_cast<float>(response.width) /
+                               static_cast<float>(output_desc.width)) -
+                          0.5F;
+
+      const float clamped_x =
+          std::clamp(src_x, 0.0F, static_cast<float>(std::max(0, response.width - 1)));
+      const float clamped_y =
+          std::clamp(src_y, 0.0F, static_cast<float>(std::max(0, response.height - 1)));
+      const int x0 = static_cast<int>(clamped_x);
+      const int y0 = static_cast<int>(clamped_y);
+      const int x1 = std::min(x0 + 1, response.width - 1);
+      const int y1 = std::min(y0 + 1, response.height - 1);
+      const float tx = clamped_x - static_cast<float>(x0);
+      const float ty = clamped_y - static_cast<float>(y0);
+
+      const float p00 = sample_depth(x0, y0);
+      const float p01 = sample_depth(x1, y0);
+      const float p10 = sample_depth(x0, y1);
+      const float p11 = sample_depth(x1, y1);
+      const float top = p00 + (p01 - p00) * tx;
+      const float bottom = p10 + (p11 - p10) * tx;
+      const float sampled_depth = top + (bottom - top) * ty;
+      float normalized = 0.0F;
+      if (depth_range > std::numeric_limits<float>::epsilon()) {
+        normalized = (sampled_depth - min_depth) / depth_range;
+      } else {
+        normalized = sampled_depth;
+      }
+      out_depth->at(x, y, 0) = std::clamp(normalized, 0.0F, 1.0F);
+    }
+  }
+
+  if (error != nullptr) {
+    error->clear();
+  }
+  return true;
+}
+
+}  // namespace
+
+RemoteInferenceBackend::RemoteInferenceBackend(RuntimeOptions options,
+                                               RemoteBackendCommandConfig command_config)
+    : options_(std::move(options)), command_config_(std::move(command_config)) {
+  active_backend_ = options_.preferred_backend == RuntimeBackend::kAuto
+                        ? RuntimeBackend::kCpu
+                        : options_.preferred_backend;
+  backend_name_ = BuildBackendName(active_backend_);
+}
+
+const char* RemoteInferenceBackend::Name() const {
+  return backend_name_.empty() ? "RemoteInferenceBackend" : backend_name_.c_str();
+}
+
+bool RemoteInferenceBackend::Initialize(std::string* error) {
+  zsoda::core::CompatLockGuard lock(mutex_);
+  if (initialized_) {
+    if (error != nullptr) {
+      error->clear();
+    }
+    return true;
+  }
+
+  command_config_.command_template = ResolveCommandTemplate(command_config_);
+  if (command_config_.command_template.empty()) {
+    if (error != nullptr) {
+      *error = "remote inference command is not configured "
+               "(set ZSODA_REMOTE_INFERENCE_COMMAND)";
+    }
+    return false;
+  }
+
+  initialized_ = true;
+  if (error != nullptr) {
+    error->clear();
+  }
+  return true;
+}
+
+bool RemoteInferenceBackend::SelectModel(const std::string& model_id,
+                                         const std::string& model_path,
+                                         std::string* error) {
+  zsoda::core::CompatLockGuard lock(mutex_);
+  if (!initialized_) {
+    if (error != nullptr) {
+      *error = "remote backend is not initialized";
+    }
+    return false;
+  }
+  if (model_id.empty()) {
+    if (error != nullptr) {
+      *error = "remote backend model id cannot be empty";
+    }
+    return false;
+  }
+
+  active_model_id_ = model_id;
+  active_model_path_ = model_path;
+  if (error != nullptr) {
+    error->clear();
+  }
+  return true;
+}
+
+bool RemoteInferenceBackend::Run(const InferenceRequest& request,
+                                 zsoda::core::FrameBuffer* out_depth,
+                                 std::string* error) const {
+  std::string command_template;
+  std::string model_id;
+  std::string model_path;
+  std::string backend_name;
+  {
+    zsoda::core::CompatLockGuard lock(mutex_);
+    if (!initialized_) {
+      if (error != nullptr) {
+        *error = "remote backend is not initialized";
+      }
+      return false;
+    }
+    command_template = command_config_.command_template;
+    model_id = active_model_id_;
+    model_path = active_model_path_;
+    backend_name = backend_name_;
+  }
+
+  if (model_id.empty()) {
+    if (error != nullptr) {
+      *error = "remote backend has no active model";
+    }
+    return false;
+  }
+  if (command_template.empty()) {
+    if (error != nullptr) {
+      *error = "remote backend command is empty";
+    }
+    return false;
+  }
+  if (!ValidateRequest(request, out_depth, error)) {
+    return false;
+  }
+
+  std::string request_payload;
+  if (!SerializeRequestPayload(request, model_id, model_path, &request_payload, error)) {
+    return false;
+  }
+
+  std::filesystem::path request_path;
+  if (!MakeUniqueTempFilePath("zsoda-remote-request", ".json", &request_path, error)) {
+    return false;
+  }
+  std::filesystem::path response_path;
+  if (!MakeUniqueTempFilePath("zsoda-remote-response", ".json", &response_path, error)) {
+    return false;
+  }
+  ScopedTempFile request_file(request_path);
+  ScopedTempFile response_file(response_path);
+
+  if (!WriteTextFile(request_file.path(), request_payload, error)) {
+    return false;
+  }
+  std::error_code remove_error;
+  std::filesystem::remove(response_file.path(), remove_error);
+
+  std::string command_line;
+  if (!BuildCommandLine(
+          command_template, request_file.path(), response_file.path(), &command_line, error)) {
+    return false;
+  }
+
+  const int raw_exit_code = std::system(command_line.c_str());
+  if (raw_exit_code == -1) {
+    if (error != nullptr) {
+      *error = backend_name + ": failed to invoke remote command";
+    }
+    return false;
+  }
+  const int exit_code = NormalizeProcessExitCode(raw_exit_code);
+  if (exit_code != 0) {
+    if (error != nullptr) {
+      *error = backend_name + ": remote command failed (exit_code=" +
+               std::to_string(exit_code) + ")";
+    }
+    return false;
+  }
+
+  std::string response_payload;
+  if (!ReadTextFile(response_file.path(), &response_payload, error)) {
+    return false;
+  }
+
+  ParsedDepthResponse parsed_response;
+  if (!ParseDepthResponsePayload(response_payload, &parsed_response, error)) {
+    return false;
+  }
+  if (!WriteNormalizedDepthToOutput(parsed_response, request.source->desc(), out_depth, error)) {
+    return false;
+  }
+
+  if (error != nullptr) {
+    error->clear();
+  }
+  return true;
+}
+
+RuntimeBackend RemoteInferenceBackend::ActiveBackend() const {
+  zsoda::core::CompatLockGuard lock(mutex_);
+  return active_backend_;
+}
+
+std::unique_ptr<IOnnxRuntimeBackend> CreateRemoteInferenceBackendWithCommand(
+    const RuntimeOptions& options,
+    RemoteBackendCommandConfig command_config,
+    std::string* error) {
+  auto backend = std::make_unique<RemoteInferenceBackend>(options, std::move(command_config));
+  std::string initialize_error;
+  if (!backend->Initialize(&initialize_error)) {
+    if (error != nullptr) {
+      *error = initialize_error;
+    }
+    return nullptr;
+  }
+  if (error != nullptr) {
+    error->clear();
+  }
+  return backend;
+}
+
+std::unique_ptr<IOnnxRuntimeBackend> CreateRemoteInferenceBackend(const RuntimeOptions& options,
+                                                                  std::string* error) {
+  return CreateRemoteInferenceBackendWithCommand(options, {}, error);
+}
+
+}  // namespace zsoda::inference

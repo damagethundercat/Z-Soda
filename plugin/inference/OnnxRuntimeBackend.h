@@ -25,5 +25,7 @@ class IOnnxRuntimeBackend {
 
 std::unique_ptr<IOnnxRuntimeBackend> CreateOnnxRuntimeBackend(const RuntimeOptions& options,
                                                               std::string* error);
+std::unique_ptr<IOnnxRuntimeBackend> CreateRemoteInferenceBackend(const RuntimeOptions& options,
+                                                                  std::string* error);
 
 }  // namespace zsoda::inference

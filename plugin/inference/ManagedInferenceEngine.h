@@ -8,10 +8,8 @@
 #include "inference/DummyInferenceEngine.h"
 #include "inference/InferenceEngine.h"
 #include "inference/ModelCatalog.h"
-#include "inference/RuntimeOptions.h"
-#if defined(ZSODA_WITH_ONNX_RUNTIME)
 #include "inference/OnnxRuntimeBackend.h"
-#endif
+#include "inference/RuntimeOptions.h"
 
 namespace zsoda::inference {
 
@@ -66,9 +64,7 @@ class ManagedInferenceEngine final : public IInferenceEngine {
   mutable bool last_run_used_fallback_ = true;
   mutable std::string fallback_reason_;
   DummyInferenceEngine fallback_engine_;
-#if defined(ZSODA_WITH_ONNX_RUNTIME)
   std::unique_ptr<IOnnxRuntimeBackend> onnx_backend_;
-#endif
 };
 
 }  // namespace zsoda::inference
