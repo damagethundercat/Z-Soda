@@ -38,3 +38,5 @@ depth-anything-v3-small|Depth Anything v3 Small|depth-anything-v3/depth_anything
 주의:
 - ONNX Runtime API가 활성화된 빌드에서는 실제 추론 경로를 사용합니다.
 - 모델 파일이 없거나 ORT 세션 초기화가 실패하면 안전한 폴백 경로를 사용합니다.
+- 기본값으로(`ZSODA_AUTO_DOWNLOAD_MODELS=1`) 모델 파일이 없으면 백그라운드 다운로드를 1회 요청합니다(Windows 런타임 다운로드 경로).
+- 자동 다운로드를 끄려면 `ZSODA_AUTO_DOWNLOAD_MODELS=0`을 설정하세요.

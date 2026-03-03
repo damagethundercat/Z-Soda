@@ -1,6 +1,7 @@
 #include "inference/InferenceEngine.h"
 
 #include <cerrno>
+#include <cctype>
 #include <cstdlib>
 #include <limits>
 #include <memory>
@@ -26,6 +27,26 @@ int ParsePositiveIntEnvOrDefault(const char* value, int default_value) {
     return default_value;
   }
   return static_cast<int>(parsed);
+}
+
+bool ParseBoolEnvOrDefault(const char* value, bool default_value) {
+  if (value == nullptr || value[0] == '\0') {
+    return default_value;
+  }
+  std::string normalized;
+  for (const char ch : std::string(value)) {
+    if (ch == '-' || ch == '_' || ch == ' ' || ch == '\t') {
+      continue;
+    }
+    normalized.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
+  }
+  if (normalized == "1" || normalized == "true" || normalized == "yes" || normalized == "on") {
+    return true;
+  }
+  if (normalized == "0" || normalized == "false" || normalized == "no" || normalized == "off") {
+    return false;
+  }
+  return default_value;
 }
 
 std::string ReadEnvOrEmpty(const char* name) {
@@ -65,6 +86,8 @@ std::shared_ptr<IInferenceEngine> CreateDefaultEngine() {
 
   const char* env_ort_api = std::getenv("ZSODA_ONNXRUNTIME_API_VERSION");
   options.onnxruntime_api_version = ParsePositiveIntEnvOrDefault(env_ort_api, 0);
+  const char* env_auto_download = std::getenv("ZSODA_AUTO_DOWNLOAD_MODELS");
+  options.auto_download_missing_models = ParseBoolEnvOrDefault(env_auto_download, true);
 
   (void)module_dir_error;
   auto engine = std::make_shared<ManagedInferenceEngine>(model_root, options);

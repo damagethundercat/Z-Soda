@@ -48,6 +48,8 @@ class ManagedInferenceEngine final : public IInferenceEngine {
   void ConfigureBackend();
   void LoadManifest();
   bool SelectModelLocked(const std::string& model_id, std::string* error);
+  void TryPromoteActiveModelToOnnxLocked();
+  void MaybeQueueModelDownloadLocked(const ModelSpec& model, const std::string& model_path);
   float ModelBias() const;
 
   std::string model_root_;

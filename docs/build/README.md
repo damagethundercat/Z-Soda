@@ -46,6 +46,7 @@ This document records the packaging path from CMake build output to After Effect
   - Windows: Visual Studio 2022 (MSVC v143, x64)
   - macOS: Xcode (AppleClang)
 - Optional model package root for runtime testing: `ZSODA_MODEL_ROOT`
+- Optional model auto-download toggle: `ZSODA_AUTO_DOWNLOAD_MODELS` (`1` default, `0` disables background request)
 
 ## 명시적 ORT 로딩 전략 (DLL 충돌 방지)
 

@@ -25,6 +25,7 @@ set(ZSODA_PLUGIN_SOURCES
   inference/DummyInferenceEngine.cpp
   inference/EngineFactory.cpp
   inference/ManagedInferenceEngine.cpp
+  inference/ModelAutoDownloader.cpp
   inference/ModelCatalog.cpp
   inference/RuntimePathResolver.cpp
 )
@@ -239,4 +240,8 @@ foreach(target_name IN LISTS ZSODA_PLUGIN_TARGETS)
   )
 
   target_compile_features(${target_name} PUBLIC cxx_std_20)
+
+  if(WIN32)
+    target_link_libraries(${target_name} PRIVATE urlmon)
+  endif()
 endforeach()

@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "core/Frame.h"
+#include "inference/ModelAutoDownloader.h"
 #include "inference/ManagedInferenceEngine.h"
 #include "inference/ModelCatalog.h"
 #if defined(ZSODA_WITH_ONNX_RUNTIME)
@@ -422,6 +423,29 @@ void TestOnnxBackendValidationScaffold() {
 }
 #endif
 
+void TestModelAutoDownloaderValidation() {
+  std::string detail;
+  const auto empty_id_status = zsoda::inference::RequestModelDownloadAsync(
+      {.model_id = "", .download_url = "https://example.com/model.onnx", .destination_path = "x"},
+      &detail);
+  assert(empty_id_status == zsoda::inference::ModelDownloadRequestStatus::kSkipped);
+  assert(Contains(detail, "model id is empty"));
+
+  detail.clear();
+  const auto empty_url_status = zsoda::inference::RequestModelDownloadAsync(
+      {.model_id = "depth-anything-v3-small", .download_url = "", .destination_path = "x"},
+      &detail);
+  assert(empty_url_status == zsoda::inference::ModelDownloadRequestStatus::kSkipped);
+  assert(Contains(detail, "download url is empty"));
+
+  detail.clear();
+  const auto empty_path_status = zsoda::inference::RequestModelDownloadAsync(
+      {.model_id = "depth-anything-v3-small", .download_url = "https://example.com/model.onnx", .destination_path = ""},
+      &detail);
+  assert(empty_path_status == zsoda::inference::ModelDownloadRequestStatus::kSkipped);
+  assert(Contains(detail, "destination path is empty"));
+}
+
 }  // namespace
 
 void RunInferenceEngineTests() {
@@ -437,4 +461,5 @@ void RunInferenceEngineTests() {
 #if defined(ZSODA_WITH_ONNX_RUNTIME)
   TestOnnxBackendValidationScaffold();
 #endif
+  TestModelAutoDownloaderValidation();
 }

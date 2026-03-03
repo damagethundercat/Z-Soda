@@ -4,6 +4,8 @@
 #include <filesystem>
 #include <utility>
 
+#include "inference/ModelAutoDownloader.h"
+
 #if defined(ZSODA_WITH_ONNX_RUNTIME)
 #include "inference/OnnxRuntimeBackend.h"
 #endif
@@ -41,6 +43,10 @@ bool ManagedInferenceEngine::SelectModel(const std::string& model_id, std::strin
     return false;
   }
   if (model_id == active_model_id_) {
+    if (!active_model_path_.empty()) {
+      model_file_exists_ = std::filesystem::exists(active_model_path_);
+    }
+    TryPromoteActiveModelToOnnxLocked();
     return true;
   }
   return SelectModelLocked(model_id, error);
@@ -266,6 +272,10 @@ bool ManagedInferenceEngine::SelectModelLocked(const std::string& model_id, std:
   active_model_id_ = model_id;
   active_model_path_ = model_path;
   model_file_exists_ = exists;
+  if (!exists) {
+    MaybeQueueModelDownloadLocked(*model, model_path);
+  }
+  TryPromoteActiveModelToOnnxLocked();
   if (error) {
     if (exists) {
       error->clear();
@@ -274,6 +284,58 @@ bool ManagedInferenceEngine::SelectModelLocked(const std::string& model_id, std:
     }
   }
   return true;
+}
+
+void ManagedInferenceEngine::TryPromoteActiveModelToOnnxLocked() {
+#if defined(ZSODA_WITH_ONNX_RUNTIME)
+  if (onnx_backend_ == nullptr || active_model_id_.empty() || active_model_path_.empty()) {
+    return;
+  }
+  if (!model_file_exists_) {
+    return;
+  }
+  if (!using_fallback_engine_) {
+    return;
+  }
+
+  std::string backend_error;
+  if (onnx_backend_->SelectModel(active_model_id_, active_model_path_, &backend_error)) {
+    using_fallback_engine_ = false;
+    last_run_used_fallback_ = false;
+    fallback_reason_.clear();
+    active_backend_ = onnx_backend_->ActiveBackend();
+    return;
+  }
+
+  if (!backend_error.empty()) {
+    fallback_reason_ = backend_error;
+  }
+#endif
+}
+
+void ManagedInferenceEngine::MaybeQueueModelDownloadLocked(const ModelSpec& model,
+                                                           const std::string& model_path) {
+  if (!options_.auto_download_missing_models) {
+    return;
+  }
+
+  std::string download_detail;
+  const auto status = RequestModelDownloadAsync(
+      {.model_id = model.id, .download_url = model.download_url, .destination_path = model_path},
+      &download_detail);
+  if (status == ModelDownloadRequestStatus::kQueued) {
+    if (fallback_reason_.empty()) {
+      fallback_reason_ = "selected model file is not installed; background download queued";
+    } else {
+      fallback_reason_ += " | auto_download=" + download_detail;
+    }
+  } else if (status == ModelDownloadRequestStatus::kFailed && !download_detail.empty()) {
+    if (fallback_reason_.empty()) {
+      fallback_reason_ = download_detail;
+    } else {
+      fallback_reason_ += " | auto_download=" + download_detail;
+    }
+  }
 }
 
 float ManagedInferenceEngine::ModelBias() const {

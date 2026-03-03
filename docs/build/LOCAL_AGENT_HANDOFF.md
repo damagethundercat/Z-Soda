@@ -49,6 +49,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\download_model.ps1 -
 배치 후 런타임 기본 탐색 규칙:
 - `ZSODA_MODEL_ROOT` 미설정 시: `ZSoda.aex` 인접 `models\` 우선 -> 없으면 상대 `models\`
 - `ZSODA_ONNXRUNTIME_LIBRARY` 미설정 시: `ZSoda.aex` 인접 `runtime\onnxruntime.dll` 우선 -> 인접 `onnxruntime.dll`
+- 모델 파일 누락 시 기본값에서 자동 다운로드 요청(`ZSODA_AUTO_DOWNLOAD_MODELS=1`)이 백그라운드로 1회 큐잉됨
 
 ## 4) 빌드 및 배치
 

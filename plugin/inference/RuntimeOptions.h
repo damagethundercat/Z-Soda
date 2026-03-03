@@ -20,6 +20,7 @@ struct RuntimeOptions {
   std::string model_manifest_path;
   std::string onnxruntime_library_path;
   int onnxruntime_api_version = 0;
+  bool auto_download_missing_models = true;
 };
 
 [[nodiscard]] inline const char* RuntimeBackendName(RuntimeBackend backend) {

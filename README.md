@@ -52,11 +52,13 @@ export ZSODA_MODEL_ROOT=/path/to/models
 Runtime default path note:
 - `ZSODA_MODEL_ROOT` 미설정 시 `.aex` 인접 `models/`를 우선 탐색하고, 없으면 상대 경로 `models/`를 사용합니다.
 - `ZSODA_ONNXRUNTIME_LIBRARY` 미설정 시 `.aex` 인접 `runtime/onnxruntime.dll` -> `.aex` 인접 `onnxruntime.dll` 순으로 탐색합니다.
+- 모델 파일이 없으면 기본값에서 백그라운드 다운로드를 자동 요청하고, 다운로드 전까지는 안전 폴백 렌더를 사용합니다.
 
 Optional runtime options:
 ```bash
 export ZSODA_INFERENCE_BACKEND=cpu      # auto|cpu|cuda|directml|metal|coreml
 export ZSODA_MODEL_MANIFEST=models/models.manifest
+export ZSODA_AUTO_DOWNLOAD_MODELS=1     # 1:on(default), 0:off
 ```
 
 Current runtime note:
@@ -112,7 +114,7 @@ g++ -std=c++20 -Iplugin \
   plugin/ae/AeHostAdapter.cpp plugin/ae/AeCommandRouter.cpp plugin/ae/AeParams.cpp plugin/ae/AePluginEntry.cpp \
   plugin/core/BufferPool.cpp plugin/core/Cache.cpp plugin/core/DepthOps.cpp \
   plugin/core/RenderPipeline.cpp plugin/core/Tiler.cpp \
-  plugin/inference/DummyInferenceEngine.cpp plugin/inference/EngineFactory.cpp \
+  plugin/inference/DummyInferenceEngine.cpp plugin/inference/EngineFactory.cpp plugin/inference/ModelAutoDownloader.cpp \
   plugin/inference/ManagedInferenceEngine.cpp plugin/inference/ModelCatalog.cpp plugin/inference/RuntimePathResolver.cpp \
   tests/test_ae_params.cpp tests/test_ae_router.cpp tests/test_cache.cpp \
   tests/test_depth_ops.cpp tests/test_inference_engine.cpp \
@@ -127,7 +129,7 @@ g++ -std=c++20 -Iplugin \
   plugin/ae/AeHostAdapter.cpp plugin/ae/AeCommandRouter.cpp plugin/ae/AeParams.cpp plugin/ae/AePluginEntry.cpp \
   plugin/core/BufferPool.cpp plugin/core/Cache.cpp plugin/core/DepthOps.cpp \
   plugin/core/RenderPipeline.cpp plugin/core/Tiler.cpp \
-  plugin/inference/DummyInferenceEngine.cpp plugin/inference/EngineFactory.cpp \
+  plugin/inference/DummyInferenceEngine.cpp plugin/inference/EngineFactory.cpp plugin/inference/ModelAutoDownloader.cpp \
   plugin/inference/ManagedInferenceEngine.cpp plugin/inference/ModelCatalog.cpp plugin/inference/RuntimePathResolver.cpp \
   tests/perf_harness.cpp \
   -o /tmp/zsoda_perf_harness
@@ -141,7 +143,7 @@ g++ -std=c++20 -DZSODA_WITH_ONNX_RUNTIME=1 -Iplugin \
   plugin/ae/AeHostAdapter.cpp plugin/ae/AeCommandRouter.cpp plugin/ae/AeParams.cpp plugin/ae/AePluginEntry.cpp \
   plugin/core/BufferPool.cpp plugin/core/Cache.cpp plugin/core/DepthOps.cpp \
   plugin/core/RenderPipeline.cpp plugin/core/Tiler.cpp \
-  plugin/inference/DummyInferenceEngine.cpp plugin/inference/EngineFactory.cpp \
+  plugin/inference/DummyInferenceEngine.cpp plugin/inference/EngineFactory.cpp plugin/inference/ModelAutoDownloader.cpp \
   plugin/inference/ManagedInferenceEngine.cpp plugin/inference/ModelCatalog.cpp plugin/inference/RuntimePathResolver.cpp \
   plugin/inference/OnnxRuntimeBackend.cpp \
   tests/test_ae_params.cpp tests/test_ae_router.cpp tests/test_cache.cpp \
