@@ -358,3 +358,14 @@ artifacts/diagnostics/ae_loader_diag_YYYYMMDD_HHMMSS/
 3. Run AE load test with probe and compare outcomes:
    - if probe loads but ZSoda fails: issue likely inside ZSoda implementation/deps.
    - if probe also fails with same loader message: issue likely PiPL/loader contract or host-side policy.
+
+### Session update (2026-03-03 18:20, WSL follow-up)
+- `LoaderProbeEntry.cpp` compile blockers fixed:
+  - `PF_SPRINTF` 제거 후 `std::snprintf` 사용(`in_data` undeclared 오류 제거)
+  - `PF_PixelPtr` -> byte pointer 변환을 `reinterpret_cast`로 변경(`C2440`/파생 오류 제거)
+- 다음 네이티브 재검증은 아래 명령으로 진행:
+  - `tools\build_aex.ps1 ... -BuildLoaderProbe -CopyToMediaCore`
+- 외부 리서치(Adobe community) 기반 체크포인트 반영:
+  1. PiPL/entrypoint 불일치나 stale resource가 있으면 `No loaders recognized`가 발생할 수 있으므로, probe/본 플러그인 모두 `-Clean`으로 완전 재생성 후 비교 권장.
+  2. 리소스 트리 구조(PiPL -> 16000 -> locale 1033)와 export `EffectMain` 정합성 재확인 필요.
+  3. probe까지 동일 오류면 구현 문제가 아니라 AE 로더 정책/호스트 환경 축 우선으로 판단.

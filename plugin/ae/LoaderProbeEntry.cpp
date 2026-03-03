@@ -1,5 +1,6 @@
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 
 #if defined(ZSODA_WITH_AE_SDK) && ZSODA_WITH_AE_SDK
@@ -24,10 +25,11 @@ PF_Err DoAbout(PF_OutData* out_data) {
   if (out_data == nullptr) {
     return PF_Err_INTERNAL_STRUCT_DAMAGED;
   }
-  PF_SPRINTF(out_data->return_msg,
-             "ZSoda Loader Probe v%d.%d",
-             1,
-             0);
+  std::snprintf(out_data->return_msg,
+                sizeof(out_data->return_msg),
+                "ZSoda Loader Probe v%d.%d",
+                1,
+                0);
   return PF_Err_NONE;
 }
 
@@ -67,8 +69,8 @@ PF_Err DoRender(PF_ParamDef* params[], PF_LayerDef* output) {
     return PF_Err_NONE;
   }
 
-  auto* dst = static_cast<std::uint8_t*>(output->data);
-  const auto* src = static_cast<const std::uint8_t*>(input->data);
+  auto* dst = reinterpret_cast<std::uint8_t*>(output->data);
+  const auto* src = reinterpret_cast<const std::uint8_t*>(input->data);
   for (A_long y = 0; y < rows; ++y) {
     std::memcpy(dst, src, static_cast<std::size_t>(bytes_to_copy));
     dst += output->rowbytes;
