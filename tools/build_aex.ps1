@@ -139,14 +139,45 @@ function Print-ArtifactInfo {
   Write-Host "  sha256: $($hash.Hash.ToLowerInvariant())"
 }
 
-function Assert-PiPLSignature {
+function Contains-AsciiTokenInBinary {
   param(
     [Parameter(Mandatory = $true)]
-    [string]$PiPlRcPath
+    [string]$Path,
+
+    [Parameter(Mandatory = $true)]
+    [string]$Token
   )
 
-  Assert-Path -Path $PiPlRcPath -PathType Leaf -Message "PiPL RC not found: $PiPlRcPath"
-  $content = Get-Content -LiteralPath $PiPlRcPath -Raw
+  Assert-Path -Path $Path -PathType Leaf -Message "Binary not found: $Path"
+  $bytes = [System.IO.File]::ReadAllBytes($Path)
+  $tokenBytes = [System.Text.Encoding]::ASCII.GetBytes($Token)
+  if ($tokenBytes.Length -eq 0 -or $bytes.Length -lt $tokenBytes.Length) {
+    return $false
+  }
+
+  for ($i = 0; $i -le $bytes.Length - $tokenBytes.Length; $i++) {
+    $matched = $true
+    for ($j = 0; $j -lt $tokenBytes.Length; $j++) {
+      if ($bytes[$i + $j] -ne $tokenBytes[$j]) {
+        $matched = $false
+        break
+      }
+    }
+    if ($matched) {
+      return $true
+    }
+  }
+  return $false
+}
+
+function Assert-RrSignature {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$PiPlRrPath
+  )
+
+  Assert-Path -Path $PiPlRrPath -PathType Leaf -Message "PiPL RR not found: $PiPlRrPath"
+  $content = Get-Content -LiteralPath $PiPlRrPath -Raw
   $requiredTokens = @(
     "CodeWin64X86",
     "EffectMain",
@@ -156,7 +187,186 @@ function Assert-PiPLSignature {
 
   foreach ($token in $requiredTokens) {
     if ($content.IndexOf($token, [StringComparison]::OrdinalIgnoreCase) -lt 0) {
-      throw "PiPL RC signature validation failed. Missing token '$token' in $PiPlRcPath"
+      throw "PiPL RR signature validation failed. Missing token '$token' in $PiPlRrPath"
+    }
+  }
+}
+
+function Assert-AexLoaderSignature {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$AexPath,
+
+    [Parameter(Mandatory = $true)]
+    [ValidateSet("Win32", "x64", "ARM64")]
+    [string]$Platform
+  )
+
+  Assert-Path -Path $AexPath -PathType Leaf -Message "AEX not found: $AexPath"
+
+  $dumpbin = Get-Command dumpbin.exe -ErrorAction SilentlyContinue
+  if ($null -eq $dumpbin) {
+    $dumpbin = Get-Command dumpbin -ErrorAction SilentlyContinue
+  }
+
+  if ($null -ne $dumpbin) {
+    $exportsText = (& $dumpbin.Source /exports $AexPath 2>&1 | Out-String)
+    if ($LASTEXITCODE -ne 0) {
+      throw "dumpbin /exports failed for $AexPath"
+    }
+    if ($exportsText -notmatch '(?i)\bEffectMain\b') {
+      throw "Loader signature check failed: EffectMain export not found in $AexPath"
+    }
+
+    $headersText = (& $dumpbin.Source /headers $AexPath 2>&1 | Out-String)
+    if ($LASTEXITCODE -ne 0) {
+      throw "dumpbin /headers failed for $AexPath"
+    }
+    if ($headersText -notmatch '(?i)\.rsrc') {
+      throw "Loader signature check failed: .rsrc section not found in $AexPath"
+    }
+
+    switch ($Platform.ToLowerInvariant()) {
+      "x64" {
+        if ($headersText -notmatch '(?i)8664 machine|machine \(x64\)') {
+          throw "Loader signature check failed: expected x64 machine in PE headers"
+        }
+      }
+      "arm64" {
+        if ($headersText -notmatch '(?i)aa64 machine|machine \(arm64\)') {
+          throw "Loader signature check failed: expected ARM64 machine in PE headers"
+        }
+      }
+      "win32" {
+        if ($headersText -notmatch '(?i)14C machine|machine \(x86\)') {
+          throw "Loader signature check failed: expected x86 machine in PE headers"
+        }
+      }
+    }
+
+    $resourceText = (& $dumpbin.Source /rawdata:.rsrc $AexPath 2>&1 | Out-String)
+    if ($LASTEXITCODE -eq 0) {
+      if ($resourceText -notmatch '(?i)PiPL|ZSoda Depth|Z-Soda|EffectMain') {
+        Write-Warning "PiPL hint tokens were not found in dumpbin .rsrc output. Verify PiPL resource manually."
+      }
+    } else {
+      Write-Warning "dumpbin /rawdata:.rsrc failed; skipped PiPL hint scan."
+    }
+    return
+  }
+
+  Write-Warning "dumpbin is not available; using binary token fallback checks."
+  if (-not (Contains-AsciiTokenInBinary -Path $AexPath -Token "EffectMain")) {
+    throw "Loader signature check failed: EffectMain token not found in binary fallback scan"
+  }
+  if (-not (Contains-AsciiTokenInBinary -Path $AexPath -Token "PiPL") -and
+      -not (Contains-AsciiTokenInBinary -Path $AexPath -Token "ZSoda Depth")) {
+    Write-Warning "PiPL/MatchName tokens were not found in binary fallback scan."
+  }
+}
+
+function Find-GeneratedPiPlArtifact {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$BuildDir,
+
+    [Parameter(Mandatory = $true)]
+    [string]$FileName
+  )
+
+  return Find-Artifact -Name $FileName -Candidates @(
+    (Join-Path $BuildDir ("plugin\pipl\{0}" -f $FileName)),
+    (Join-Path $BuildDir ("pipl\{0}" -f $FileName))
+  )
+}
+
+function Find-OptionalGeneratedPiPlArtifact {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$BuildDir,
+
+    [Parameter(Mandatory = $true)]
+    [string]$FileName
+  )
+
+  return Find-OptionalArtifact -Candidates @(
+    (Join-Path $BuildDir ("plugin\pipl\{0}" -f $FileName)),
+    (Join-Path $BuildDir ("pipl\{0}" -f $FileName))
+  )
+}
+
+function Write-LoaderCheckSummary {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$SummaryPath,
+
+    [Parameter(Mandatory = $true)]
+    [string[]]$Lines
+  )
+
+  try {
+    Set-Content -LiteralPath $SummaryPath -Value ($Lines -join [Environment]::NewLine) -Encoding UTF8
+    Write-Host "loader_check_summary: $SummaryPath"
+  } catch {
+    Write-Warning "Failed to write loader check summary: $SummaryPath"
+  }
+}
+
+function Build-LoaderCheckSummary {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$AexPath,
+
+    [Parameter(Mandatory = $true)]
+    [string]$PiPlRrPath,
+
+    [string]$PiPlRcPath,
+
+    [string]$PiPlRrcPath
+  )
+
+  $lines = @()
+  $lines += "timestamp: $(Get-Date -Format o)"
+  $lines += "aex: $AexPath"
+  $lines += "pipl_rr: $PiPlRrPath"
+  if (-not [string]::IsNullOrWhiteSpace($PiPlRcPath)) {
+    $lines += "pipl_rc: $PiPlRcPath"
+  }
+  if (-not [string]::IsNullOrWhiteSpace($PiPlRrcPath)) {
+    $lines += "pipl_rrc: $PiPlRrcPath"
+  }
+  $lines += "checks:"
+  $lines += "  - pipl_rr literal tokens: CodeWin64X86/EffectMain/AE_Effect_Global_OutFlags/0x04008120"
+  $lines += "  - aex export: EffectMain"
+  $lines += "  - aex section: .rsrc"
+  return $lines
+}
+
+function Print-LoaderEvidence {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$AexPath
+  )
+
+  $dumpbin = Get-Command dumpbin.exe -ErrorAction SilentlyContinue
+  if ($null -eq $dumpbin) {
+    $dumpbin = Get-Command dumpbin -ErrorAction SilentlyContinue
+  }
+  if ($null -eq $dumpbin) {
+    Write-Warning "dumpbin is unavailable; skipped detailed loader evidence output."
+    return
+  }
+
+  $exportMatch = (& $dumpbin.Source /exports $AexPath 2>&1 | Select-String -Pattern "EffectMain")
+  if ($LASTEXITCODE -eq 0 -and $null -ne $exportMatch) {
+    $first = $exportMatch | Select-Object -First 1
+    Write-Host "loader_export: $($first.Line.Trim())"
+  }
+
+  $headerMatch = (& $dumpbin.Source /headers $AexPath 2>&1 | Select-String -Pattern "machine|\.rsrc")
+  if ($LASTEXITCODE -eq 0 -and $null -ne $headerMatch) {
+    foreach ($line in $headerMatch) {
+      Write-Host "loader_header: $($line.Line.Trim())"
     }
   }
 }
@@ -305,19 +515,31 @@ $map = Find-OptionalArtifact -Candidates @(
   (Join-Path $buildDirAbs ("plugin\{0}\ZSoda.map" -f $Config)),
   (Join-Path $buildDirAbs "plugin\ZSoda.map")
 )
-$piplRc = Find-OptionalArtifact -Candidates @(
-  (Join-Path $buildDirAbs "plugin\pipl\ZSodaPiPL.rc"),
-  (Join-Path $buildDirAbs "pipl\ZSodaPiPL.rc")
-)
-if ($null -eq $piplRc) {
-  throw "Generated PiPL RC file was not found. Build may produce a non-loadable .aex."
-}
-Assert-PiPLSignature -PiPlRcPath $piplRc
+$piplRr = Find-GeneratedPiPlArtifact -BuildDir $buildDirAbs -FileName "ZSodaPiPL.rr"
+$piplRc = Find-OptionalGeneratedPiPlArtifact -BuildDir $buildDirAbs -FileName "ZSodaPiPL.rc"
+$piplRrc = Find-OptionalGeneratedPiPlArtifact -BuildDir $buildDirAbs -FileName "ZSodaPiPL.rrc"
+
+Assert-RrSignature -PiPlRrPath $piplRr
+Assert-AexLoaderSignature -AexPath $aex -Platform $Platform
+
+$aexDir = Split-Path -Path $aex -Parent
+$loaderSummaryPath = Join-Path $aexDir "ZSoda.loader_check.txt"
+$summaryLines = Build-LoaderCheckSummary -AexPath $aex -PiPlRrPath $piplRr -PiPlRcPath $piplRc -PiPlRrcPath $piplRrc
+Write-LoaderCheckSummary -SummaryPath $loaderSummaryPath -Lines $summaryLines
 
 Write-Host "==> Build Succeeded"
 Print-ArtifactInfo -Label "zsoda_plugin" -Path $pluginLib
 Print-ArtifactInfo -Label "zsoda_aex" -Path $aex
-Print-ArtifactInfo -Label "zsoda_pipl_rc" -Path $piplRc
+Print-ArtifactInfo -Label "zsoda_pipl_rr" -Path $piplRr
+if ($piplRc) {
+  Print-ArtifactInfo -Label "zsoda_pipl_rc" -Path $piplRc
+} else {
+  Write-Warning "ZSodaPiPL.rc not found; RR-based validation was used."
+}
+if ($piplRrc) {
+  Print-ArtifactInfo -Label "zsoda_pipl_rrc" -Path $piplRrc
+}
+Print-ArtifactInfo -Label "zsoda_loader_check" -Path $loaderSummaryPath
 if ($pdb) {
   Print-ArtifactInfo -Label "zsoda_pdb" -Path $pdb
 } else {
@@ -331,13 +553,14 @@ if ($map) {
 
 $stagedOrtRuntimePath = $null
 if ($ortRuntimeDllAbs) {
-  $aexDir = Split-Path -Path $aex -Parent
   $stagedOrtRuntimePath = Join-Path $aexDir "onnxruntime.dll"
   Copy-Item -LiteralPath $ortRuntimeDllAbs -Destination $stagedOrtRuntimePath -Force
   Print-ArtifactInfo -Label "staged_ort_dll" -Path $stagedOrtRuntimePath
 } else {
   Write-Warning "onnxruntime.dll was not staged next to ZSoda.aex."
 }
+
+Print-LoaderEvidence -AexPath $aex
 
 if ($CopyToMediaCore) {
   $mediaCoreOutput = Join-Path $MediaCoreDir "ZSoda.aex"

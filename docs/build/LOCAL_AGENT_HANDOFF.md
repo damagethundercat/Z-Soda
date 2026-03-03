@@ -72,14 +72,19 @@ if exist "C:\Program Files\Adobe\Common\Plug-ins\7.0\MediaCore\ZSoda.aex" (echo 
 if exist "C:\Program Files\Adobe\Common\Plug-ins\7.0\MediaCore\onnxruntime.dll" (echo MEDIA_ORT_DLL: OK) else (echo MEDIA_ORT_DLL: MISSING)
 if exist "build-win\plugin\Release\ZSoda.pdb" (echo PDB: OK) else (echo PDB: MISSING)
 if exist "build-win\plugin\Release\ZSoda.map" (echo MAP: OK) else (echo MAP: MISSING)
-if exist "build-win\plugin\pipl\ZSodaPiPL.rc" (echo PIPL_RC: OK) else (echo PIPL_RC: MISSING)
+if exist "build-win\plugin\pipl\ZSodaPiPL.rr" (echo PIPL_RR: OK) else (echo PIPL_RR: MISSING)
+if exist "build-win\plugin\Release\ZSoda.loader_check.txt" (echo LOADER_CHECK: OK) else (echo LOADER_CHECK: MISSING)
 ```
 
-`No loaders recognized this plugin`가 나오면 우선 `build-win\plugin\pipl\ZSodaPiPL.rc`에 아래 토큰이 있는지 확인:
+`No loaders recognized this plugin`가 나오면 우선 `build-win\plugin\pipl\ZSodaPiPL.rr`에 아래 토큰이 있는지 확인:
 - `CodeWin64X86`
 - `EffectMain`
 - `AE_Effect_Global_OutFlags`
 - `0x04008120`
+
+그리고 `build-win\plugin\Release\ZSoda.loader_check.txt`가 생성되었는지 확인한다.
+- 이 파일은 빌드 스크립트가 수행한 최종 로더 게이트 결과(필수 export/section 점검 대상)를 요약한다.
+- 추가 증적은 빌드 콘솔의 `loader_export:` / `loader_header:` 줄(`dumpbin` 기반)을 사용한다.
 
 덤프 역추적 필수 산출물:
 - `build-win\plugin\Release\ZSoda.pdb`
@@ -209,9 +214,16 @@ if ($p) {
 - `HKCU\Software\Adobe\After Effects\25.0\PluginCache\en_US\ZSoda.aex_*` key is recreated with `Ignore=1` after AE launch even after manual deletion.
 
 #### Ask for next WSL pass
-1. Fix `tools/build_aex.ps1` PiPL signature check to validate the right artifact format (`.rr` literal tokens or `.rc` encoded token mapping) so build gating is accurate.
-2. Keep investigating why AE loader still rejects this binary despite `EffectMain` export + PiPL resource presence.
-3. Include exact evidence in next report:
+1. Keep investigating why AE loader still rejects this binary despite `EffectMain` export + PiPL resource presence.
+2. Include exact evidence in next report:
    - `Plugin Loading.log` snippet around ZSoda load lines
    - current `PluginCache\...\ZSoda.aex_*` values (`Ignore`, `DateLow/DateHigh`)
-   - PiPL dump evidence from built `.aex` (`ZSodaPiPL.rc/.rr` and PE resource inspection).
+   - PiPL dump evidence from built `.aex` (`ZSodaPiPL.rr` and PE resource inspection).
+   - `build-win\plugin\Release\ZSoda.loader_check.txt` 내용 전문.
+
+### Session update (2026-03-03 16:34, WSL script hardening)
+- `tools/build_aex.ps1`의 로더 게이트를 `.rc` 텍스트 기반 검사에서 `.rr` + 최종 `.aex` 바이너리 검사로 재설계:
+  - `Assert-RrSignature`: `ZSodaPiPL.rr`의 literal 토큰(`CodeWin64X86`, `EffectMain`, `AE_Effect_Global_OutFlags`, `0x04008120`) 검증
+  - `Assert-AexLoaderSignature`: 최종 `ZSoda.aex`의 `EffectMain export`, `.rsrc` 섹션, 플랫폼 machine 타입 검증
+  - 빌드 산출물 옆에 `ZSoda.loader_check.txt`를 생성해 게이트 요약 기록
+- 목적: `.rc` 인코딩/토큰 표현 차이로 인한 false fail을 제거하고, 실제 AE 로더 관점(최종 바이너리 기준)으로 실패를 조기에 차단.

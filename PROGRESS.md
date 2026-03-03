@@ -4,7 +4,7 @@
 
 ## 1. 전체 진행률
 - 전체 진행률: **99%** (`PLAN.md`의 `P1`~`P5` 기준, `P3/P4/P5`는 마무리 단계)
-- 마지막 업데이트: **2026-03-03** (No loader recognized 대응: PiPL Windows 코드 엔트리 고정 + 빌드 시 PiPL 시그니처 검증 추가)
+- 마지막 업데이트: **2026-03-03** (빌드 로더 게이트를 `.rr` + 최종 `.aex` 바이너리 검증으로 재설계하고 `ZSoda.loader_check.txt` 산출 추가)
 - 갱신 원칙: **작업 단위 완료 시 즉시 업데이트**
 
 ## 2. 현재 작업 상태
@@ -105,3 +105,4 @@
 - [x] `D63` AE 초기화 복원력 강화: `EffectMain`에서 `BuildSdkDispatch/Dispatch` 실패 시 명령별 정책 적용(`RENDER`만 치명 반환, 나머지 명령은 `PF_Err_NONE`) 및 `%TEMP%\\ZSoda_AE_Runtime.log`에 상세 진단(`cmd/mapped/error`) 기록 (`plugin/ae/AePluginEntry.cpp`)
 - [x] `D64` 로더 인식 실패(Plugin Ignore) 구조 대응: PiPL 리소스의 Windows 코드 엔트리를 `CodeWin64X86 {"EffectMain"}`로 단순 고정하고, `build_aex.ps1`에 생성 PiPL RC 시그니처 검증(`CodeWin64X86/EffectMain/outflags`)을 강제해 비정상 `.aex` 배포를 차단 (`plugin/ae/ZSodaPiPL.r`, `plugin/CMakeLists.txt`, `tools/build_aex.ps1`, `docs/build/LOCAL_AGENT_HANDOFF.md`)
 - [x] `D65` 로컬 재현 로그 재확인 및 WSL 재위임 준비: 최신 `main(73464a4)` pull 후 `tools/build_aex.ps1` 재빌드 시 `Assert-PiPLSignature`가 `.rc`에서 `CodeWin64X86` 토큰 미검출로 실패(동일 시점 `.rr`에는 토큰 존재)함을 확인. AE 재실행 후에도 `Plugin Loading.log`에 `No loaders recognized ... set to Ignore`가 반복되고 `PluginCache\\en_US\\ZSoda.aex_*`가 `Ignore=1`로 재생성됨을 확인해 핸드오프 문서에 증적/다음 액션 반영 (`docs/build/LOCAL_AGENT_HANDOFF.md`)
+- [x] `D66` 빌드 로더 게이트 구조 개선: `tools/build_aex.ps1`를 `.rc` 토큰 검사 방식에서 `.rr` literal 시그니처 + 최종 `ZSoda.aex`(export/`.rsrc`/machine) 검증으로 전환하고, `ZSoda.loader_check.txt` 요약 산출 및 `LOCAL_AGENT_HANDOFF.md` 절차를 동기화 (`tools/build_aex.ps1`, `docs/build/LOCAL_AGENT_HANDOFF.md`)
