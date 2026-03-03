@@ -428,35 +428,38 @@ function Assert-NoMismatchedInstalledCopies {
   $primaryHash = Get-Sha256Lower -Path $primaryAbs
 
   $mismatched = @()
-  $matched = @()
+  $duplicates = @()
   foreach ($candidate in (Find-InstalledEffectsAexCandidates -FileName $FileName)) {
     if ($candidate -ieq $primaryAbs) {
       continue
     }
     $candidateHash = Get-Sha256Lower -Path $candidate
+    $duplicates += [PSCustomObject]@{ Path = $candidate; Hash = $candidateHash }
     if ($candidateHash -ieq $primaryHash) {
-      $matched += [PSCustomObject]@{ Path = $candidate; Hash = $candidateHash }
-    } else {
-      $mismatched += [PSCustomObject]@{ Path = $candidate; Hash = $candidateHash }
+      continue
     }
+    $mismatched += [PSCustomObject]@{ Path = $candidate; Hash = $candidateHash }
   }
 
-  foreach ($same in $matched) {
-    Write-Warning ("Duplicate ZSoda.aex found with identical hash: {0} ({1})" -f $same.Path, $same.Hash)
-  }
-
-  if ($mismatched.Count -eq 0) {
+  if ($duplicates.Count -eq 0) {
     return
   }
 
   $details = @()
   $details += ("Primary: {0} ({1})" -f $primaryAbs, $primaryHash)
-  foreach ($entry in $mismatched) {
-    $details += ("Mismatch: {0} ({1})" -f $entry.Path, $entry.Hash)
+  foreach ($entry in $duplicates) {
+    if ($entry.Hash -ieq $primaryHash) {
+      $details += ("Duplicate: {0} ({1}) [same-hash]" -f $entry.Path, $entry.Hash)
+    } else {
+      $details += ("Duplicate: {0} ({1}) [mismatch]" -f $entry.Path, $entry.Hash)
+    }
   }
-  $details += "Action: keep only one ZSoda.aex copy (recommended: MediaCore), remove stale Effects copies, then clear PluginCache ZSoda keys and retest."
+  $details += "Action: keep only one installed copy (recommended: MediaCore only), remove all Effects duplicates, clear PluginCache keys, then retest."
   $joined = $details -join [Environment]::NewLine
-  throw "Detected mismatched duplicate ZSoda.aex installs.`n$joined"
+  if ($mismatched.Count -gt 0) {
+    throw "Detected duplicated installs with hash mismatch for $FileName.`n$joined"
+  }
+  throw "Detected duplicated installs for $FileName (same hash). Single-install policy is required for reliable AE loading.`n$joined"
 }
 
 function Resolve-OrtRuntimeDll {
@@ -762,5 +765,8 @@ if ($CopyToMediaCore) {
 
   if (-not $SkipDuplicateInstallCheck) {
     Assert-NoMismatchedInstalledCopies -PrimaryAexPath $mediaCoreOutputAbs -FileName "ZSoda.aex"
+    if ($BuildLoaderProbe) {
+      Assert-NoMismatchedInstalledCopies -PrimaryAexPath $mediaCoreProbeOutputAbs -FileName "ZSodaLoaderProbe.aex"
+    }
   }
 }

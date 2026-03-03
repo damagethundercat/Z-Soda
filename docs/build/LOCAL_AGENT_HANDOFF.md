@@ -67,7 +67,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build_aex.ps1 ^
 
 중요:
 - 최신 스크립트는 `-CopyToMediaCore` 시 `Effects\ZSoda.aex` 중복본을 자동 점검합니다.
-- `MediaCore`와 `Effects`의 `ZSoda.aex` 해시가 다르면 빌드를 실패시켜 `25::16 outflags mismatch` 재발을 차단합니다.
+- 최신 정책은 `해시 일치 여부와 무관하게` 중복 설치 자체를 실패로 처리합니다(단일 설치 강제).
+- `MediaCore`와 `Effects`의 `ZSoda*.aex` 해시가 다르면 물론 즉시 실패하며, 해시가 같아도 실패합니다.
 - 정말 점검을 건너뛰어야 할 때만 `-SkipDuplicateInstallCheck`를 명시하세요.
 
 로더 분리 진단용(최소 probe 플러그인 동시 빌드):
