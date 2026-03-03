@@ -559,14 +559,15 @@ PF_Err EffectMainGuarded(PF_Cmd cmd,
                          PF_ParamDef* params[],
                          PF_LayerDef* output,
                          void* extra) {
+  const PF_Err nonfatal_error = (cmd == PF_Cmd_RENDER) ? PF_Err_INTERNAL_STRUCT_DAMAGED : PF_Err_NONE;
   try {
     return EffectMainImpl(cmd, in_data, out_data, params, output, extra);
   } catch (const std::exception& ex) {
     zsoda::ae::AppendDiagnosticsLine("EffectMain", ex.what());
-    return PF_Err_INTERNAL_STRUCT_DAMAGED;
+    return nonfatal_error;
   } catch (...) {
     zsoda::ae::AppendDiagnosticsLine("EffectMain", "unknown c++ exception");
-    return PF_Err_INTERNAL_STRUCT_DAMAGED;
+    return nonfatal_error;
   }
 }
 
@@ -581,7 +582,7 @@ extern "C" DllExport PF_Err EffectMain(PF_Cmd cmd,
     return EffectMainGuarded(cmd, in_data, out_data, params, output, extra);
   } __except (EXCEPTION_EXECUTE_HANDLER) {
     zsoda::ae::LogSehException("EffectMain", static_cast<unsigned>(GetExceptionCode()));
-    return PF_Err_INTERNAL_STRUCT_DAMAGED;
+    return (cmd == PF_Cmd_RENDER) ? PF_Err_INTERNAL_STRUCT_DAMAGED : PF_Err_NONE;
   }
 #else
   return EffectMainGuarded(cmd, in_data, out_data, params, output, extra);

@@ -4,7 +4,7 @@
 
 ## 1. 전체 진행률
 - 전체 진행률: **99%** (`PLAN.md`의 `P1`~`P5` 기준, `P3/P4/P5`는 마무리 단계)
-- 마지막 업데이트: **2026-03-03** (실동작 단계 반영: ORT API 기본 활성화 + outflags2 동기화 + 엔진상태 로그 추가)
+- 마지막 업데이트: **2026-03-03** (`25::3` 초기화 실패 완화: EffectMain 예외 반환 정책을 명령별 비치명 처리로 조정)
 - 갱신 원칙: **작업 단위 완료 시 즉시 업데이트**
 
 ## 2. 현재 작업 상태
@@ -115,3 +115,4 @@
 - [x] `D72` Probe 버전 경고 제거 준비: 네이티브 재현에서 보고된 `After Effects 25::16 version mismatch`(code 1.0 vs PiPL 0.2) 해소를 위해 코드(`my_version`)와 PiPL(`AE_Effect_Version`)을 공용 상수 `ZSODA_EFFECT_VERSION_HEX`로 통일하고, 본 플러그인/Probe 양쪽 모두 동일 버전 소스를 사용하도록 정리 (`plugin/ae/ZSodaVersion.h`, `plugin/ae/AeHostAdapter.cpp`, `plugin/ae/LoaderProbeEntry.cpp`, `plugin/ae/ZSodaPiPL.r`, `plugin/ae/ZSodaLoaderProbePiPL.r`, `docs/build/LOCAL_AGENT_HANDOFF.md`)
 - [x] `D73` 실추론 기본 경로 전환: Windows 빌드 스크립트 `build_aex.ps1`의 기본 동작을 ORT API ON으로 전환(`-DisableOrtApi`로만 OFF)해 기본 빌드가 실제 ONNX Runtime 실행 경로를 타도록 조정하고 README/핸드오프 문서에 운영 기준 반영 (`tools/build_aex.ps1`, `README.md`, `docs/build/LOCAL_AGENT_HANDOFF.md`, `models/README.md`)
 - [x] `D74` MFR 경고 대응 기반 정리: 코드/PiPL outflags를 공용 헤더(`ZSodaAeFlags.h`)로 통합해 `PF_OutFlag2_SUPPORTS_THREADED_RENDERING` 반영을 단일 소스로 맞추고, `EffectMain` 최초 진입 시 엔진 백엔드 상태를 `%TEMP%\\ZSoda_AE_Runtime.log`에 남겨 실추론/폴백 여부를 즉시 진단 가능하게 개선 (`plugin/ae/ZSodaAeFlags.h`, `plugin/ae/AeHostAdapter.cpp`, `plugin/ae/LoaderProbeEntry.cpp`, `plugin/ae/ZSodaPiPL.r`, `plugin/ae/ZSodaLoaderProbePiPL.r`, `plugin/ae/AePluginEntry.cpp`, `docs/build/LOCAL_AGENT_HANDOFF.md`)
+- [x] `D75` 초기화 실패 복원력 강화: `EffectMain` 예외/SEH 처리 시 `PF_Cmd_RENDER`만 치명 에러를 반환하고 나머지 초기화/설정 명령은 `PF_Err_NONE`로 비치명 처리해 `25::3 cannot be initialized` 재발을 완화하고, 원인 추적은 런타임 로그(`EngineStatus`, `EffectMain`)로 이어지도록 조정 (`plugin/ae/AePluginEntry.cpp`, `docs/build/LOCAL_AGENT_HANDOFF.md`)

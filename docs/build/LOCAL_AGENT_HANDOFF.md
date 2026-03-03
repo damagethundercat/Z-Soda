@@ -395,3 +395,12 @@ artifacts/diagnostics/ae_loader_diag_YYYYMMDD_HHMMSS/
 - 런타임 엔진 상태 로깅 추가:
   - `EffectMain` 최초 진입 시 `%TEMP%\ZSoda_AE_Runtime.log`에 `EngineStatus` 기록.
   - 예: `requested=..., active=..., engine=OnnxRuntimeBackend[...]` 또는 fallback reason.
+
+### Session update (2026-03-03 19:15, init-failure hardening)
+- `ZSoda`에서 `25::3 (cannot be initialized)`가 반복되는 경로를 완화하기 위해
+  `EffectMain` 예외 정책을 명령별로 분기:
+  - `PF_Cmd_RENDER`: 기존과 동일하게 치명 오류 반환(`PF_Err_INTERNAL_STRUCT_DAMAGED`)
+  - 그 외 초기화/설정 명령(`GLOBAL_SETUP`, `PARAMS_SETUP` 등): 예외 발생 시 `PF_Err_NONE`로 비치명 처리
+- 목적:
+  - 로더 통과 후 초기화 예외 때문에 전체 이펙트 적용이 막히는 현상을 방지
+  - 적용은 유지하고, 실제 원인은 `%TEMP%\ZSoda_AE_Runtime.log`의 `EffectMain`/`EngineStatus` 로그로 추적
