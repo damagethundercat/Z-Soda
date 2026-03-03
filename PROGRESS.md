@@ -4,7 +4,7 @@
 
 ## 1. 전체 진행률
 - 전체 진행률: **99%** (`PLAN.md`의 `P1`~`P5` 기준, `P3/P4/P5`는 마무리 단계)
-- 마지막 업데이트: **2026-03-03** (`D81`: `ZSoda` 본체 loader-only 진단 모드 추가(`-LoaderOnlyMain`)로 로더 축/본체 초기화 축 분리 실험 경로 확보)
+- 마지막 업데이트: **2026-03-03** (`D82`: 적용 성공+투명 레이어 재현에서 런타임 `EffectMain` SEH 반복 및 ORT `code=1114` 실패를 근거로 현재 상태를 case 2(본체 런타임 축)로 판정)
 - 갱신 원칙: **작업 단위 완료 시 즉시 업데이트**
 
 ## 2. 현재 작업 상태
@@ -122,3 +122,4 @@
 - [x] `D77` 동일 오류 재현 로그 분석: `%TEMP%\ZSoda_AE_Runtime.log` 최신 기준 `EngineStatus`만 반복 기록되고 `EffectMain` 항목은 없으며, ORT 초기화가 `LoadLibraryW failed`로 매회 실패(`requested_path=C:\onnxruntime-win-x64-1.24.2\lib\onnxruntime.dll`, `loaded_path=<none>`, `negotiated_api_version=0`)함을 확인. handoff에 증거와 다음 분기(ORT 종속 DLL/런타임 초기화 실패 축)를 반영 (`docs/build/LOCAL_AGENT_HANDOFF.md`, `PROGRESS.md`)
 - [x] `D78` 구조적 복원력 보강: `OrtDynamicLoader`에 `LoadLibrary` 다중 시도 체인(`LOAD_LIBRARY_SEARCH_*` -> `LOAD_WITH_ALTERED_SEARCH_PATH` -> `LoadLibraryW`)과 Win32 오류코드 포함 진단 문자열을 추가하고, 해석된 ORT DLL 경로 존재성 검증을 강화. 동시에 `PARAMS_SETUP` 등록 실패 시 `num_params=1`(input-only)로 안전 폴백하도록 조정하고, `EffectMain` 비-렌더 명령 진단 로그(`EffectMainCmd`)를 추가해 `25::3` 원인 추적성을 높임 (`plugin/inference/OrtDynamicLoader.cpp`, `plugin/ae/AeHostAdapter.cpp`, `plugin/ae/AePluginEntry.cpp`)
 - [x] `D79` 클린 재빌드 후 동일 오류 재현 재확인: `Plugin Loading.log` 최신 구간에서 `MediaCore\ZSoda.aex`는 `No loaders recognized`, `MediaCore\ZSodaLoaderProbe.aex`/`Effects\ZSoda.aex`는 `plugin is marked as Ignore`가 지속되고, `PluginCache\en_US`에 `ZSoda.aex_*` 2키 + `ZSodaLoaderProbe.aex_*` 1키 모두 `Ignore=1`임을 확인. 동시에 `%TEMP%\ZSoda_AE_Runtime.log`의 ORT `LoadLibraryW` 실패 패턴도 재확인하여 handoff에 동시 블로커로 기록 (`docs/build/LOCAL_AGENT_HANDOFF.md`, `PROGRESS.md`)
+- [x] `D82` 상태 판정 업데이트(WSL 기준 적용): 최신 재현에서 이펙트 적용 자체는 가능(대화상자 에러 없음)하나 레이어가 투명해지며, `%TEMP%\ZSoda_AE_Runtime.log`에 `EngineStatus`(ORT `all attempts exhausted`, Win32 `code=1114`)와 반복 `EffectMain | SEH exception code=0xC0000005`가 관찰됨. `EffectMainCmd` 기록 존재로 로더 단계를 통과한 것이 확인되어 현재 축을 case 2(본체 초기화/라우터/ORT 축)로 분류하고 handoff에 근거 로그 반영 (`docs/build/LOCAL_AGENT_HANDOFF.md`, `PROGRESS.md`)

@@ -561,3 +561,27 @@ artifacts/diagnostics/ae_loader_diag_YYYYMMDD_HHMMSS/
    - latest runtime log full text,
    - `Plugin Loading.log` around ZSoda lines,
    - diagnostics bundle from `collect_ae_loader_diagnostics.ps1`.
+
+### Session update (2026-03-03 20:31, applied without dialog error but transparent layer)
+- User report:
+  - `25::3` dialog is no longer shown.
+  - Effect can be applied, but the layer becomes transparent.
+- Latest runtime log (`%TEMP%\ZSoda_AE_Runtime.log`, `LastWrite=2026-03-03 20:31:04.410`) shows:
+  - `EngineStatus` at `20:29:44.459`: ORT init still fails with full attempt diagnostics:
+    - `LoadLibraryW failed: all attempts exhausted`
+    - all attempts return `code=1114` (DLL initialization routine failed)
+    - `loaded_path=<none>`, `negotiated_api_version=0`, active engine falls back to `DummyDepthEngine`
+  - right after apply, repeated
+    - `EffectMain | SEH exception code=0xC0000005`
+    - interleaved with `EffectMainCmd | cmd=12` and `EffectMainCmd | cmd=10`
+    - then `cmd=8`, later `cmd=14`.
+- Command id reference (AE SDK `AE_Effect.h` enum):
+  - `cmd=10` -> `PF_Cmd_FRAME_SETUP`
+  - `cmd=12` -> `PF_Cmd_FRAME_SETDOWN`
+  - `cmd=14` -> `PF_Cmd_UPDATE_PARAMS_UI`
+- `Plugin Loading.log` latest ZSoda lines are still historical `Ignore` records; current session has direct `EffectMain` runtime activity.
+
+#### Classification by current decision rule
+- Current state matches **case 2**:
+  - loader gate is not the primary blocker now (runtime `EffectMain` is executing),
+  - main/plugin runtime path is unstable (`ORT init failure + repeated SEH`) and likely causing transparent output via non-fatal fallback behavior.
