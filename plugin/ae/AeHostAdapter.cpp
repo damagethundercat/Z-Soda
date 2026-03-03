@@ -540,15 +540,25 @@ bool WireParamSetupPayload(const AeSdkEntryPayload& payload,
                            AeDispatchContext* dispatch,
                            std::string* error) {
   if (payload.out_data != nullptr) {
-    // Safe placeholder path for SDK-offline builds and partial SDK macro surfaces.
-    payload.out_data->num_params = kAeSdkNumParams;
+    // Start from input-only safety and upgrade to full controls only when
+    // scaffold registration succeeds.
+    payload.out_data->num_params = 1;
   }
 
+  if (payload.in_data == nullptr || payload.out_data == nullptr || payload.params == nullptr) {
+    SetError(error, "params setup payload is incomplete; fallback to input-only params");
+    (void)dispatch;
+    return true;
+  }
+
+  payload.out_data->num_params = kAeSdkNumParams;
   const PF_Err register_err = RegisterParamsSetupScaffold(payload);
   if (register_err != PF_Err_NONE) {
-    SetError(error, "params setup scaffold registration failed");
-    // Keep PARAMS_SETUP non-fatal for host responsiveness; out_data->num_params
-    // remains populated for safe fallback behavior.
+    payload.out_data->num_params = 1;
+    SetError(error,
+             "params setup scaffold registration failed (PF_Err=" +
+                 std::to_string(static_cast<int>(register_err)) +
+                 "); fallback to input-only params");
   }
 
   (void)dispatch;
@@ -559,9 +569,7 @@ bool WireGlobalSetupPayload(const AeSdkEntryPayload& payload,
                             AeDispatchContext* dispatch,
                             std::string* error) {
   if (payload.out_data != nullptr) {
-#if defined(PF_VERSION) && defined(PF_Stage_DEVELOP)
     payload.out_data->my_version = static_cast<A_u_long>(ZSODA_EFFECT_VERSION_HEX);
-#endif
     payload.out_data->out_flags = static_cast<A_long>(kAeGlobalOutFlags);
     payload.out_data->out_flags2 = static_cast<A_long>(kAeGlobalOutFlags2);
   }

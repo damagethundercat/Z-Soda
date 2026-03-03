@@ -128,12 +128,12 @@ std::string FormatWin32ErrorMessage(DWORD error_code) {
                                         nullptr);
 
   if (length == 0 || buffer == nullptr) {
-    return "Win32 error " + std::to_string(error_code);
+    return "code=" + std::to_string(error_code);
   }
 
   std::string message(buffer, buffer + length);
   ::LocalFree(buffer);
-  return TrimTrailingWhitespace(message);
+  return "code=" + std::to_string(error_code) + " (" + TrimTrailingWhitespace(message) + ")";
 }
 
 bool Utf8ToWide(const std::string& utf8, std::wstring* wide, std::string* error) {
@@ -273,6 +273,18 @@ bool ResolveLoadPath(const std::string& dll_path,
     }
   }
 
+  if (!FileExists(*load_path_wide)) {
+    if (error != nullptr) {
+      std::string missing_path_utf8;
+      std::string conversion_error;
+      if (!WideToUtf8(*load_path_wide, &missing_path_utf8, &conversion_error)) {
+        missing_path_utf8 = "<path conversion failed: " + conversion_error + ">";
+      }
+      *error = "resolved ORT DLL path does not exist: " + missing_path_utf8;
+    }
+    return false;
+  }
+
   return WideToUtf8(*load_path_wide, load_path_utf8, error);
 }
 
@@ -304,6 +316,60 @@ bool QueryLoadedModulePath(HMODULE module, std::string* loaded_path, std::string
   if (error != nullptr) {
     *error = "GetModuleFileNameW failed: path length exceeded retry limit";
   }
+  return false;
+}
+
+struct LoadAttempt {
+  DWORD flags = 0;
+  bool uses_ex = true;
+  const char* label = "";
+};
+
+bool TryLoadOrtModuleWithFallback(const std::wstring& load_path_wide,
+                                  HMODULE* module,
+                                  std::string* attempts_diagnostics) {
+  if (module == nullptr || attempts_diagnostics == nullptr) {
+    return false;
+  }
+  *module = nullptr;
+  attempts_diagnostics->clear();
+
+  std::vector<LoadAttempt> attempts;
+#if defined(LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR) && defined(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS)
+  attempts.push_back({LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS,
+                      true,
+                      "LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR|LOAD_LIBRARY_SEARCH_DEFAULT_DIRS"});
+#endif
+  attempts.push_back({LOAD_WITH_ALTERED_SEARCH_PATH, true, "LOAD_WITH_ALTERED_SEARCH_PATH"});
+  attempts.push_back({0, false, "LoadLibraryW"});
+
+  for (const auto& attempt : attempts) {
+    ::SetLastError(ERROR_SUCCESS);
+    HMODULE handle = nullptr;
+    if (attempt.uses_ex) {
+      handle = ::LoadLibraryExW(load_path_wide.c_str(), nullptr, attempt.flags);
+    } else {
+      handle = ::LoadLibraryW(load_path_wide.c_str());
+    }
+    if (handle != nullptr) {
+      *module = handle;
+      if (!attempts_diagnostics->empty()) {
+        attempts_diagnostics->append("; ");
+      }
+      attempts_diagnostics->append("success=");
+      attempts_diagnostics->append(attempt.label);
+      return true;
+    }
+
+    const DWORD code = ::GetLastError();
+    if (!attempts_diagnostics->empty()) {
+      attempts_diagnostics->append("; ");
+    }
+    attempts_diagnostics->append(attempt.label);
+    attempts_diagnostics->append(": ");
+    attempts_diagnostics->append(FormatWin32ErrorMessage(code));
+  }
+
   return false;
 }
 #endif
@@ -356,10 +422,11 @@ bool OrtDynamicLoader::Load(const std::string& dll_path,
     return Fail("failed to resolve ORT DLL path: " + resolve_error, error);
   }
 
-  HMODULE module = ::LoadLibraryExW(load_path_wide.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
-  if (module == nullptr) {
-    const std::string win_error = FormatWin32ErrorMessage(::GetLastError());
-    return Fail("LoadLibraryW failed: " + win_error, error);
+  HMODULE module = nullptr;
+  std::string load_attempts_diagnostics;
+  if (!TryLoadOrtModuleWithFallback(load_path_wide, &module, &load_attempts_diagnostics)) {
+    const std::string detail = load_attempts_diagnostics.empty() ? "<none>" : load_attempts_diagnostics;
+    return Fail("LoadLibraryW failed: all attempts exhausted (" + detail + ")", error);
   }
 
   FARPROC symbol = ::GetProcAddress(module, "OrtGetApiBase");

@@ -432,3 +432,30 @@ artifacts/diagnostics/ae_loader_diag_YYYYMMDD_HHMMSS/
 1. Failure is repeating at ORT DLL initialization with the same path/signature, so prioritize dependency/runtime initialization diagnostics over random crash triage.
 2. Add immediate logging of Win32 error code (`GetLastError`) right after failed `LoadLibraryW` and include decoded message text.
 3. Verify transitive dependency loadability of `C:\onnxruntime-win-x64-1.24.2\lib\onnxruntime.dll` under the same user/session context (AE-launched context preferred).
+
+### Session update (2026-03-03 20:10, WSL structural hardening for #2)
+- Implemented loader diagnostics + fallback chain in `OrtDynamicLoader`:
+  - `LoadLibrary` attempts now run in order:
+    1) `LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS` (if available),
+    2) `LOAD_WITH_ALTERED_SEARCH_PATH`,
+    3) `LoadLibraryW`.
+  - Failure message now includes per-attempt Win32 code/message (for direct triage in runtime log).
+  - Resolved ORT DLL path now checks file existence before load.
+- Implemented AE init safety for potential `25::3` trigger in params registration:
+  - In `PARAMS_SETUP`, default to `num_params=1` (input-only safe baseline),
+  - upgrade to full params only if scaffold registration succeeds,
+  - on registration failure, force fallback to input-only and include `PF_Err` code in diagnostic.
+- Added non-render `EffectMain` command tracing:
+  - `%TEMP%\ZSoda_AE_Runtime.log` now records `EffectMainCmd | cmd=<id>` for setup-phase flow confirmation.
+
+#### Next native verification checklist
+1. Rebuild and deploy latest `main` with:
+   - `tools\\build_aex.ps1 ... -Config Release -CopyToMediaCore`
+2. Retest apply in AE and capture `%TEMP%\\ZSoda_AE_Runtime.log`.
+3. Confirm whether log now shows:
+   - `LoadLibraryW failed: all attempts exhausted (...)` with per-attempt `code=<N>`,
+   - and/or `BuildSdkDispatch warning ... params setup scaffold registration failed (PF_Err=<N>)`.
+4. If still `25::3`, share:
+   - latest runtime log full text,
+   - `Plugin Loading.log` around ZSoda lines,
+   - diagnostics bundle from `collect_ae_loader_diagnostics.ps1`.

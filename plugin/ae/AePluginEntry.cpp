@@ -514,6 +514,10 @@ PF_Err EffectMainImpl(PF_Cmd cmd,
                       PF_LayerDef* output,
                       void* extra) {
   LogEngineStatusOnce();
+  if (cmd != PF_Cmd_RENDER) {
+    const std::string cmd_detail = "cmd=" + std::to_string(static_cast<int>(cmd));
+    zsoda::ae::AppendDiagnosticsLine("EffectMainCmd", cmd_detail.c_str());
+  }
 
   std::string error;
 
@@ -532,6 +536,12 @@ PF_Err EffectMainImpl(PF_Cmd cmd,
         ", error=" + (error.empty() ? "<none>" : error);
     zsoda::ae::AppendDiagnosticsLine("EffectMain", detail.c_str());
     return PF_Err_NONE;
+  }
+  if (!error.empty() && cmd != PF_Cmd_RENDER) {
+    const std::string detail =
+        "BuildSdkDispatch warning: cmd=" + std::to_string(static_cast<int>(cmd)) +
+        ", detail=" + error;
+    zsoda::ae::AppendDiagnosticsLine("EffectMain", detail.c_str());
   }
 
   if (dispatch.command.command == zsoda::ae::AeCommand::kUnknown) {
