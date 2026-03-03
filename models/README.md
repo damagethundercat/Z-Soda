@@ -11,6 +11,7 @@
 기본 모델 저장 루트:
 - `models/` (환경 변수 `ZSODA_MODEL_ROOT`로 변경 가능)
 - 기본 매니페스트: `models/models.manifest` (환경 변수 `ZSODA_MODEL_MANIFEST`로 변경 가능)
+- AE 플러그인 런타임 기본 탐색: `.aex` 인접 경로의 `models/` 폴더 우선
 
 예상 파일 경로:
 - `models/depth-anything-v3/depth_anything_v3_small.onnx`
@@ -21,6 +22,11 @@
 다운로드 스크립트:
 ```bash
 bash tools/download_model.sh depth-anything-v3-small
+```
+
+Windows PowerShell:
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\download_model.ps1 -ModelId depth-anything-v3-small
 ```
 
 매니페스트 포맷 (`|` 구분 텍스트, 주석은 `#`):

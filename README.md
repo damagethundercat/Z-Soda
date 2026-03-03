@@ -39,10 +39,19 @@ Download example:
 bash tools/download_model.sh depth-anything-v3-small
 ```
 
+Windows PowerShell:
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\download_model.ps1 -ModelId depth-anything-v3-small
+```
+
 Custom model root example:
 ```bash
 export ZSODA_MODEL_ROOT=/path/to/models
 ```
+
+Runtime default path note:
+- `ZSODA_MODEL_ROOT` 미설정 시 `.aex` 인접 `models/`를 우선 탐색하고, 없으면 상대 경로 `models/`를 사용합니다.
+- `ZSODA_ONNXRUNTIME_LIBRARY` 미설정 시 `.aex` 인접 `runtime/onnxruntime.dll` -> `.aex` 인접 `onnxruntime.dll` 순으로 탐색합니다.
 
 Optional runtime options:
 ```bash
@@ -104,10 +113,10 @@ g++ -std=c++20 -Iplugin \
   plugin/core/BufferPool.cpp plugin/core/Cache.cpp plugin/core/DepthOps.cpp \
   plugin/core/RenderPipeline.cpp plugin/core/Tiler.cpp \
   plugin/inference/DummyInferenceEngine.cpp plugin/inference/EngineFactory.cpp \
-  plugin/inference/ManagedInferenceEngine.cpp plugin/inference/ModelCatalog.cpp \
+  plugin/inference/ManagedInferenceEngine.cpp plugin/inference/ModelCatalog.cpp plugin/inference/RuntimePathResolver.cpp \
   tests/test_ae_params.cpp tests/test_ae_router.cpp tests/test_cache.cpp \
   tests/test_depth_ops.cpp tests/test_inference_engine.cpp \
-  tests/test_render_pipeline.cpp tests/test_tiler.cpp \
+  tests/test_render_pipeline.cpp tests/test_runtime_path_resolver.cpp tests/test_tiler.cpp \
   -o /tmp/zsoda_tests
 /tmp/zsoda_tests
 ```
@@ -119,7 +128,7 @@ g++ -std=c++20 -Iplugin \
   plugin/core/BufferPool.cpp plugin/core/Cache.cpp plugin/core/DepthOps.cpp \
   plugin/core/RenderPipeline.cpp plugin/core/Tiler.cpp \
   plugin/inference/DummyInferenceEngine.cpp plugin/inference/EngineFactory.cpp \
-  plugin/inference/ManagedInferenceEngine.cpp plugin/inference/ModelCatalog.cpp \
+  plugin/inference/ManagedInferenceEngine.cpp plugin/inference/ModelCatalog.cpp plugin/inference/RuntimePathResolver.cpp \
   tests/perf_harness.cpp \
   -o /tmp/zsoda_perf_harness
 /tmp/zsoda_perf_harness --mode benchmark --quiet
@@ -133,11 +142,11 @@ g++ -std=c++20 -DZSODA_WITH_ONNX_RUNTIME=1 -Iplugin \
   plugin/core/BufferPool.cpp plugin/core/Cache.cpp plugin/core/DepthOps.cpp \
   plugin/core/RenderPipeline.cpp plugin/core/Tiler.cpp \
   plugin/inference/DummyInferenceEngine.cpp plugin/inference/EngineFactory.cpp \
-  plugin/inference/ManagedInferenceEngine.cpp plugin/inference/ModelCatalog.cpp \
+  plugin/inference/ManagedInferenceEngine.cpp plugin/inference/ModelCatalog.cpp plugin/inference/RuntimePathResolver.cpp \
   plugin/inference/OnnxRuntimeBackend.cpp \
   tests/test_ae_params.cpp tests/test_ae_router.cpp tests/test_cache.cpp \
   tests/test_depth_ops.cpp tests/test_inference_engine.cpp \
-  tests/test_render_pipeline.cpp tests/test_tiler.cpp \
+  tests/test_render_pipeline.cpp tests/test_runtime_path_resolver.cpp tests/test_tiler.cpp \
   -o /tmp/zsoda_tests_ort
 /tmp/zsoda_tests_ort
 ```

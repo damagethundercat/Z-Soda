@@ -8,6 +8,7 @@ void RunAeRouterTests();
 void RunDepthOpsTests();
 void RunInferenceEngineTests();
 void RunRenderPipelineTests();
+void RunRuntimePathResolverTests();
 
 namespace {
 
@@ -49,6 +50,7 @@ int main() {
   RunDepthOpsTests();
   RunInferenceEngineTests();
   RunRenderPipelineTests();
+  RunRuntimePathResolverTests();
   TestBuildTiles();
   TestComposeTiles();
   return 0;

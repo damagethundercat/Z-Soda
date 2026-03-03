@@ -26,6 +26,7 @@ set(ZSODA_PLUGIN_SOURCES
   inference/EngineFactory.cpp
   inference/ManagedInferenceEngine.cpp
   inference/ModelCatalog.cpp
+  inference/RuntimePathResolver.cpp
 )
 
 add_library(zsoda_plugin STATIC ${ZSODA_PLUGIN_SOURCES})

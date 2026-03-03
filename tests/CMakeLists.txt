@@ -7,6 +7,7 @@ add_executable(zsoda_tests
   test_depth_ops.cpp
   test_inference_engine.cpp
   test_render_pipeline.cpp
+  test_runtime_path_resolver.cpp
   test_tiler.cpp
 )
 

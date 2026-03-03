@@ -4,7 +4,7 @@
 
 ## 1. 전체 진행률
 - 전체 진행률: **99%** (`PLAN.md`의 `P1`~`P5` 기준, `P3/P4/P5`는 마무리 단계)
-- 마지막 업데이트: **2026-03-03** (`D83`: PARAMS_SETUP/렌더 경로 안정화 패치(패스스루 폴백, 포맷 선택 fallback, 비렌더 엔진 초기화 축소) 적용 및 로컬 CI 재통과)
+- 마지막 업데이트: **2026-03-03** (`D84`: DA3 실사용 경로 강화(플러그인 인접 모델/ORT 런타임 경로 자동 탐색, Windows 모델 다운로드 스크립트, 경로 해석 단위 테스트) 반영 및 로컬 CI 재통과)
 - 갱신 원칙: **작업 단위 완료 시 즉시 업데이트**
 
 ## 2. 현재 작업 상태
@@ -124,3 +124,4 @@
 - [x] `D79` 클린 재빌드 후 동일 오류 재현 재확인: `Plugin Loading.log` 최신 구간에서 `MediaCore\ZSoda.aex`는 `No loaders recognized`, `MediaCore\ZSodaLoaderProbe.aex`/`Effects\ZSoda.aex`는 `plugin is marked as Ignore`가 지속되고, `PluginCache\en_US`에 `ZSoda.aex_*` 2키 + `ZSodaLoaderProbe.aex_*` 1키 모두 `Ignore=1`임을 확인. 동시에 `%TEMP%\ZSoda_AE_Runtime.log`의 ORT `LoadLibraryW` 실패 패턴도 재확인하여 handoff에 동시 블로커로 기록 (`docs/build/LOCAL_AGENT_HANDOFF.md`, `PROGRESS.md`)
 - [x] `D82` 상태 판정 업데이트(WSL 기준 적용): 최신 재현에서 이펙트 적용 자체는 가능(대화상자 에러 없음)하나 레이어가 투명해지며, `%TEMP%\ZSoda_AE_Runtime.log`에 `EngineStatus`(ORT `all attempts exhausted`, Win32 `code=1114`)와 반복 `EffectMain | SEH exception code=0xC0000005`가 관찰됨. `EffectMainCmd` 기록 존재로 로더 단계를 통과한 것이 확인되어 현재 축을 case 2(본체 초기화/라우터/ORT 축)로 분류하고 handoff에 근거 로그 반영 (`docs/build/LOCAL_AGENT_HANDOFF.md`, `PROGRESS.md`)
 - [x] `D83` case 2 안정화 1차: `PARAMS_SETUP`에서 `num_params`를 입력 전용 baseline(1)으로 시작해 등록 성공 시에만 확장하도록 정리하고, `PF_Cmd_RENDER` 추출/포맷 결정 실패 시 안전 no-op 대신 source→output pass-through 복사를 수행하도록 조정. 픽셀 포맷 후보 우선순위를 `RGBA8 -> RGBA16 -> RGBA32F`로 재정렬하고 모호한 경우 첫 후보 fallback을 허용해 투명 출력 가능성을 낮춤. 또한 `EffectMain`의 엔진 상태 초기화를 `GLOBAL_SETUP/PARAMS_SETUP/RENDER`에만 제한해 비렌더 명령(SEH) 노이즈를 줄임 (`plugin/ae/AeHostAdapter.cpp`, `plugin/ae/AePluginEntry.cpp`, `tests/test_ae_router.cpp`)
+- [x] `D84` DA3 런타임 경로 구조 보강: `EngineFactory`에 런타임 경로 해석 계층(`RuntimePathResolver`)을 추가해 `ZSODA_MODEL_ROOT`/`ZSODA_ONNXRUNTIME_LIBRARY` 미설정 시 `.aex` 인접 `models/`, `runtime/onnxruntime.dll`(없으면 인접 `onnxruntime.dll`)을 우선 탐색하도록 개선. Windows 네이티브용 모델 설치 스크립트(`tools/download_model.ps1`)를 추가하고, 경로 해석 단위 테스트(`tests/test_runtime_path_resolver.cpp`) 및 로컬 CI 스크립트/문서를 동기화해 회귀를 방지 (`plugin/inference/EngineFactory.cpp`, `plugin/inference/RuntimePathResolver.*`, `tests/*`, `tools/run_local_ci.sh`, `tools/download_model.ps1`, `README.md`, `models/README.md`, `docs/build/LOCAL_AGENT_HANDOFF.md`)

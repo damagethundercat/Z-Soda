@@ -4,9 +4,11 @@
 #include <cstdlib>
 #include <limits>
 #include <memory>
+#include <string>
 
 #include "inference/DummyInferenceEngine.h"
 #include "inference/ManagedInferenceEngine.h"
+#include "inference/RuntimePathResolver.h"
 #include "inference/RuntimeOptions.h"
 
 namespace zsoda::inference {
@@ -26,33 +28,45 @@ int ParsePositiveIntEnvOrDefault(const char* value, int default_value) {
   return static_cast<int>(parsed);
 }
 
+std::string ReadEnvOrEmpty(const char* name) {
+  const char* value = std::getenv(name);
+  if (value == nullptr || value[0] == '\0') {
+    return {};
+  }
+  return value;
+}
+
 }  // namespace
 
 std::shared_ptr<IInferenceEngine> CreateDefaultEngine() {
-  const char* env_model_root = std::getenv("ZSODA_MODEL_ROOT");
-  const std::string model_root = (env_model_root != nullptr && env_model_root[0] != '\0')
-                                     ? env_model_root
-                                     : "models";
+  RuntimePathHints path_hints;
+  path_hints.model_root_env = ReadEnvOrEmpty("ZSODA_MODEL_ROOT");
+  path_hints.model_manifest_env = ReadEnvOrEmpty("ZSODA_MODEL_MANIFEST");
+  path_hints.onnxruntime_library_env = ReadEnvOrEmpty("ZSODA_ONNXRUNTIME_LIBRARY");
+
+  std::string module_dir_error;
+  path_hints.plugin_directory = TryResolveCurrentModuleDirectory(&module_dir_error);
+  const RuntimePathResolution runtime_paths = ResolveRuntimePaths(path_hints);
+  const std::string model_root = runtime_paths.model_root.empty() ? "models" : runtime_paths.model_root;
 
   RuntimeOptions options;
-  const char* env_backend = std::getenv("ZSODA_INFERENCE_BACKEND");
-  if (env_backend != nullptr && env_backend[0] != '\0') {
+  const std::string env_backend = ReadEnvOrEmpty("ZSODA_INFERENCE_BACKEND");
+  if (!env_backend.empty()) {
     options.preferred_backend = ParseRuntimeBackend(env_backend);
   }
 
-  const char* env_manifest_path = std::getenv("ZSODA_MODEL_MANIFEST");
-  if (env_manifest_path != nullptr && env_manifest_path[0] != '\0') {
-    options.model_manifest_path = env_manifest_path;
+  if (!runtime_paths.model_manifest_path.empty()) {
+    options.model_manifest_path = runtime_paths.model_manifest_path;
   }
 
-  const char* env_ort_library = std::getenv("ZSODA_ONNXRUNTIME_LIBRARY");
-  if (env_ort_library != nullptr && env_ort_library[0] != '\0') {
-    options.onnxruntime_library_path = env_ort_library;
+  if (!runtime_paths.onnxruntime_library_path.empty()) {
+    options.onnxruntime_library_path = runtime_paths.onnxruntime_library_path;
   }
 
   const char* env_ort_api = std::getenv("ZSODA_ONNXRUNTIME_API_VERSION");
   options.onnxruntime_api_version = ParsePositiveIntEnvOrDefault(env_ort_api, 0);
 
+  (void)module_dir_error;
   auto engine = std::make_shared<ManagedInferenceEngine>(model_root, options);
   std::string error;
   if (engine->Initialize("", &error)) {
