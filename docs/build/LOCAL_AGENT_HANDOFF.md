@@ -283,3 +283,28 @@ artifacts/diagnostics/ae_loader_diag_YYYYMMDD_HHMMSS/
 1. Investigate why AE’s internal loader rejects this specific AEX despite valid export/resource signatures and successful raw DLL load.
 2. Correlate `PluginCache` hash entries to physical paths and verify whether one failing path can poison the other via shared cache logic.
 3. Attempt a minimal AE SDK sample effect build/load on the same machine to isolate whether issue is plugin-specific vs host policy/environment.
+
+### Session update (2026-03-03 17:34, native diagnostics run with new script)
+- Ran:
+  - `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\collect_ae_loader_diagnostics.ps1 -AfterEffectsVersion "25.0" -OutputRoot ".\artifacts\diagnostics" -ContextLines 8`
+- Full diagnostics output:
+  - `artifacts\diagnostics\ae_loader_diag_20260303_173409`
+  - `summary.txt` reports `plugin_cache_keys=2` and valid `dumpbin` path.
+- Key observations from collected artifacts:
+  - `logs\plugin_loading_zsoda_context.txt` contains repeated rejects on both paths:
+    - `...\MediaCore\ZSoda.aex` -> `No loaders recognized this plugin, so the plugin is set to Ignore.`
+    - `...\Effects\ZSoda.aex` -> `No loaders recognized this plugin, so the plugin is set to Ignore.`
+  - `plugin_cache\zsoda_plugin_cache.json` shows two keys with `Ignore=1`:
+    - `ZSoda.aex_00f48907-5c13-bfaa-3f5b-d4f4b7658605`
+    - `ZSoda.aex_74697f7d-6eaa-731e-5ba9-290933586ec3`
+  - `aex\...MediaCore_ZSoda.aex.meta.txt` confirms:
+    - `sha256=92e75bbaa480f8cba677b627d0d4a0415f5ff01eb87c02610bcfabbef03d97c2`
+    - `loadlibrary_success=True`
+  - `aex\...MediaCore_ZSoda.aex.exports.txt` confirms `EffectMain` export is present.
+
+#### Hand-off hint
+- New script is now the preferred way to hand over reproducible loader evidence.
+- If rerunning, share at minimum:
+  1. `summary.txt`
+  2. `logs\plugin_loading_zsoda_context.txt`
+  3. `plugin_cache\zsoda_plugin_cache.json`
