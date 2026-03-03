@@ -496,7 +496,11 @@ PF_Err EffectMainImpl(PF_Cmd cmd,
   payload.extra = extra;
 
   if (!zsoda::ae::BuildSdkDispatch(payload, &dispatch, &error)) {
-    return PF_Err_INTERNAL_STRUCT_DAMAGED;
+    const std::string detail =
+        "BuildSdkDispatch failed: cmd=" + std::to_string(static_cast<int>(cmd)) +
+        ", error=" + (error.empty() ? "<none>" : error);
+    zsoda::ae::AppendDiagnosticsLine("EffectMain", detail.c_str());
+    return cmd == PF_Cmd_RENDER ? PF_Err_INTERNAL_STRUCT_DAMAGED : PF_Err_NONE;
   }
 
   if (dispatch.command.command == zsoda::ae::AeCommand::kUnknown) {
@@ -505,7 +509,17 @@ PF_Err EffectMainImpl(PF_Cmd cmd,
     return PF_Err_NONE;
   }
 
-  return zsoda::ae::Dispatch(dispatch) == 0 ? PF_Err_NONE : PF_Err_INTERNAL_STRUCT_DAMAGED;
+  if (zsoda::ae::Dispatch(dispatch) == 0) {
+    return PF_Err_NONE;
+  }
+
+  const std::string detail =
+      "Dispatch failed: cmd=" + std::to_string(static_cast<int>(cmd)) +
+      ", mapped=" + std::to_string(static_cast<int>(dispatch.command.command)) +
+      ", error=" + (error.empty() ? "<none>" : error);
+  zsoda::ae::AppendDiagnosticsLine("EffectMain", detail.c_str());
+  return dispatch.command.command == zsoda::ae::AeCommand::kRender ? PF_Err_INTERNAL_STRUCT_DAMAGED
+                                                                    : PF_Err_NONE;
 }
 
 PF_Err EffectMainGuarded(PF_Cmd cmd,
