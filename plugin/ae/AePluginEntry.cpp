@@ -1,8 +1,11 @@
 #include "ae/AeHostAdapter.h"
+#include "ae/ZSodaAeFlags.h"
+#include "ae/ZSodaVersion.h"
 
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <exception>
 #include <limits>
 #include <memory>
@@ -144,6 +147,66 @@ int ZSodaRenderHostBufferStubImpl(const void* src,
                                   std::uint64_t frame_hash,
                                   void* out,
                                   int out_row_bytes);
+
+#if defined(ZSODA_WITH_AE_SDK) && ZSODA_WITH_AE_SDK
+PF_Err RunLoaderOnlyEffectMain(PF_Cmd cmd,
+                               PF_InData* in_data,
+                               PF_OutData* out_data,
+                               PF_ParamDef* params[],
+                               PF_LayerDef* output,
+                               void* extra) {
+  (void)in_data;
+  (void)extra;
+
+  switch (cmd) {
+    case PF_Cmd_ABOUT:
+      if (out_data != nullptr) {
+        std::snprintf(out_data->return_msg,
+                      sizeof(out_data->return_msg),
+                      "ZSoda Loader-Only Mode");
+      }
+      return PF_Err_NONE;
+    case PF_Cmd_GLOBAL_SETUP:
+      if (out_data != nullptr) {
+        out_data->my_version = static_cast<A_u_long>(ZSODA_EFFECT_VERSION_HEX);
+        out_data->out_flags = static_cast<A_long>(ZSODA_AE_GLOBAL_OUTFLAGS);
+        out_data->out_flags2 = static_cast<A_long>(ZSODA_AE_GLOBAL_OUTFLAGS2);
+      }
+      return PF_Err_NONE;
+    case PF_Cmd_PARAMS_SETUP:
+      if (out_data != nullptr) {
+        out_data->num_params = 1;
+      }
+      return PF_Err_NONE;
+    case PF_Cmd_RENDER: {
+      if (params == nullptr || params[0] == nullptr || output == nullptr || output->data == nullptr) {
+        return PF_Err_NONE;
+      }
+      const PF_LayerDef* input = &params[0]->u.ld;
+      if (input->data == nullptr) {
+        return PF_Err_NONE;
+      }
+      const A_long rows = output->height;
+      const A_long bytes_to_copy =
+          (output->rowbytes < input->rowbytes) ? output->rowbytes : input->rowbytes;
+      if (rows <= 0 || bytes_to_copy <= 0) {
+        return PF_Err_NONE;
+      }
+
+      auto* dst = reinterpret_cast<std::uint8_t*>(output->data);
+      const auto* src = reinterpret_cast<const std::uint8_t*>(input->data);
+      for (A_long y = 0; y < rows; ++y) {
+        std::memcpy(dst, src, static_cast<std::size_t>(bytes_to_copy));
+        dst += output->rowbytes;
+        src += input->rowbytes;
+      }
+      return PF_Err_NONE;
+    }
+    default:
+      return PF_Err_NONE;
+  }
+}
+#endif
 
 int ZSodaEffectMainStubImpl(int command_id) {
   std::string error;
@@ -513,6 +576,9 @@ PF_Err EffectMainImpl(PF_Cmd cmd,
                       PF_ParamDef* params[],
                       PF_LayerDef* output,
                       void* extra) {
+#if defined(ZSODA_AE_LOADER_ONLY_MODE) && ZSODA_AE_LOADER_ONLY_MODE
+  return RunLoaderOnlyEffectMain(cmd, in_data, out_data, params, output, extra);
+#else
   LogEngineStatusOnce();
   if (cmd != PF_Cmd_RENDER) {
     const std::string cmd_detail = "cmd=" + std::to_string(static_cast<int>(cmd));
@@ -560,6 +626,7 @@ PF_Err EffectMainImpl(PF_Cmd cmd,
       ", error=" + (error.empty() ? "<none>" : error);
   zsoda::ae::AppendDiagnosticsLine("EffectMain", detail.c_str());
   return PF_Err_NONE;
+#endif
 }
 
 PF_Err EffectMainGuarded(PF_Cmd cmd,

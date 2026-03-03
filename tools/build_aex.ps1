@@ -37,6 +37,8 @@ param(
 
   [switch]$BuildLoaderProbe,
 
+  [switch]$LoaderOnlyMain,
+
   [string]$MediaCoreDir
 )
 
@@ -476,6 +478,9 @@ if ($enableOrtApiEffective -and $OrtDirectLinkMode -eq "OFF") {
 if (-not $enableOrtApiEffective -and $OrtDirectLinkMode -eq "ON") {
   Write-Warning "OrtDirectLinkMode=ON is ignored because ORT API is disabled."
 }
+if ($LoaderOnlyMain) {
+  Write-Host "AE mode: loader-only main effect (ZSODA_AE_LOADER_ONLY_MODE=ON)."
+}
 
 if ($CopyToMediaCore) {
   if ([string]::IsNullOrWhiteSpace($MediaCoreDir)) {
@@ -492,6 +497,7 @@ $configureArgs = @(
   "-G", $Generator,
   "-DZSODA_BUILD_TESTS=OFF",
   "-DZSODA_WITH_AE_SDK=ON",
+  "-DZSODA_AE_LOADER_ONLY_MODE=$([int]$LoaderOnlyMain)",
   "-DZSODA_WITH_ONNX_RUNTIME=ON",
   "-DZSODA_WITH_ONNX_RUNTIME_API=$([int]$enableOrtApiEffective)",
   "-DZSODA_MSVC_RUNTIME_LIBRARY=$MsvcRuntime",

@@ -3,6 +3,7 @@ cmake_minimum_required(VERSION 3.21)
 option(ZSODA_WITH_ONNX_RUNTIME "Enable ONNX Runtime backend scaffold" OFF)
 option(ZSODA_WITH_ONNX_RUNTIME_API "Enable ONNX Runtime C++ API execution path" OFF)
 option(ZSODA_WITH_AE_SDK "Enable Adobe After Effects SDK entrypoint scaffolding" OFF)
+option(ZSODA_AE_LOADER_ONLY_MODE "Build AE entrypoint in loader-only minimal mode (diagnostic)" OFF)
 set(AE_SDK_ROOT "" CACHE PATH "Path to Adobe After Effects SDK root")
 set(AE_SDK_INCLUDE_DIR "" CACHE PATH "Directory containing AE_Effect.h")
 set(ONNXRUNTIME_INCLUDE_DIR "" CACHE PATH "Directory containing onnxruntime_cxx_api.h")
@@ -233,6 +234,7 @@ foreach(target_name IN LISTS ZSODA_PLUGIN_TARGETS)
   target_compile_definitions(${target_name}
     PUBLIC
       ZSODA_WITH_AE_SDK=$<BOOL:${ZSODA_WITH_AE_SDK}>
+      ZSODA_AE_LOADER_ONLY_MODE=$<BOOL:${ZSODA_AE_LOADER_ONLY_MODE}>
   )
 
   target_compile_features(${target_name} PUBLIC cxx_std_20)

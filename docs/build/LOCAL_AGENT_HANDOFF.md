@@ -68,6 +68,20 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build_aex.ps1 ^
   -CopyToMediaCore
 ```
 
+본체 로더-only 진단 빌드(라우터/ORT/파라미터 스캐폴드 우회):
+```cmd
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build_aex.ps1 ^
+  -AeSdkIncludeDir "%AE_HEADERS%" ^
+  -OrtIncludeDir "%ORT_INCLUDE%" ^
+  -OrtLibrary "%ORT_LIB%" ^
+  -MsvcRuntime "MultiThreaded$<$<CONFIG:Debug>:Debug>" ^
+  -BuildDir "build-win" ^
+  -Config Release ^
+  -LoaderOnlyMain ^
+  -BuildLoaderProbe ^
+  -CopyToMediaCore
+```
+
 ORT DLL 복사:
 ```cmd
 copy /Y "%ORT_DLL_DIR%\onnxruntime.dll" "C:\Program Files\Adobe\Common\Plug-ins\7.0\MediaCore\onnxruntime.dll"
@@ -104,6 +118,9 @@ if exist "build-win\plugin\Release\ZSodaLoaderProbe.loader_check.txt" (echo PROB
 - `-BuildLoaderProbe`를 사용했다면 `ZSodaLoaderProbe.aex`도 동일 방식으로 검사된다.
   - `ZSodaLoaderProbe.aex`만 AE에서 로드되면: 현재 본 플러그인(`ZSoda.aex`) 내부 구현/의존성 이슈 가능성 우세
   - 둘 다 `No loaders recognized`면: AE 로더 정책/캐시/설치 경로/호스트 환경 축 우선 점검
+- `-LoaderOnlyMain`을 사용했다면 `ZSoda.aex`는 본체 기능 대신 최소 pass-through 엔트리로 동작한다.
+  - loader-only에서도 `No loaders recognized`면: 본체 로직과 무관한 AE 로더/리소스/캐시 축 이슈
+  - loader-only에서는 로드되고 일반 모드에서만 실패하면: 본체 초기화/라우터/ORT 축 이슈
 
 덤프 역추적 필수 산출물:
 - `build-win\plugin\Release\ZSoda.pdb`
@@ -205,6 +222,64 @@ artifacts/diagnostics/ae_loader_diag_YYYYMMDD_HHMMSS/
     *.dependents.txt
     *.rsrc.txt
 ```
+
+## 9) Ignore 오염 재현 Runbook
+
+모든 Ignore 상태 재현/수집은 아래 절차를 고정적으로 따라야 향후 다른 에이전트가 동일한 증거를 얻을 수 있습니다.
+
+[runbook]
+1. **정리 (Ignore/캐시 초기화)**
+   ```powershell
+   Stop-Process -Name AfterFX -ErrorAction SilentlyContinue
+   reg delete "HKCU:\Software\Adobe\After Effects\25.0\PluginCache\en_US" /f | Out-Null
+   Remove-Item -LiteralPath "C:\Program Files\Adobe\Common\Plug-ins\7.0\MediaCore\ZSoda.aex" -Force -ErrorAction SilentlyContinue
+   Remove-Item -LiteralPath "C:\Program Files\Adobe\Common\Plug-ins\7.0\MediaCore\onnxruntime.dll" -Force -ErrorAction SilentlyContinue
+   ```
+   - 제거 후 `PluginCache\en_US\ZSoda.aex_*` 키가 모두 삭제되었는지 확인하고, 필요한 경우 수동으로 제거합니다.
+2. **배치 (빌드 + MediaCore 재배치)**
+   ```powershell
+   powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build_aex.ps1 `
+     -AeSdkIncludeDir "%AE_HEADERS%" `
+     -OrtIncludeDir "%ORT_INCLUDE%" `
+     -OrtLibrary "%ORT_LIB%" `
+     -MsvcRuntime "MultiThreaded$<$<CONFIG:Debug>:Debug>" `
+     -BuildDir "build-win" `
+     -Config Release `
+     -CopyToMediaCore
+   copy /Y "%ORT_DLL_DIR%\onnxruntime.dll" "C:\Program Files\Adobe\Common\Plug-ins\7.0\MediaCore\onnxruntime.dll"
+   ```
+3. **테스트 (AE 시작 + Ignore 확인)**
+   ```powershell
+   Start-Process "C:\Program Files\Adobe\Adobe After Effects 2025\Support Files\AfterFX.exe"
+   ```
+   - AE를 열고 `ZSoda` 이펙트를 로드하며 `Plugin Loading.log`에 `No loaders recognized` 메시지가 기록되는지를 확인합니다.
+   - ST-01~ST-07(특히 01/03/04/06)을 순차적으로 실행해 `ZSoda`가 적용되는 상태를 유지합니다.
+4. **수집 (원클릭 진단 + 로그 덤프)**
+   ```powershell
+   powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\collect_ae_loader_diagnostics.ps1 `
+     -AfterEffectsVersion 25.0 `
+     -OutputRoot ".\artifacts\diagnostics" `
+     -ContextLines 8
+   ```
+   - 이 명령은 `artifacts/diagnostics/ae_loader_diag_YYYYMMDD_HHMMSS/` 경로에 `summary.txt`, `PluginCache` JSON/TXT, `Plugin Loading.log` 덤프, `dumpbin`/`LoadLibraryW` 결과 등을 저장합니다.
+5. **판정 (Ignore 유지 및 ORT 로그)**
+   ```powershell
+   Select-String -Path "$env:APPDATA\Adobe\After Effects\25.0\logs\Plugin Loading.log" -Pattern "ZSoda"
+   reg query "HKCU\Software\Adobe\After Effects\25.0\PluginCache\en_US" /s | Select-String "ZSoda.aex_"
+   ```
+   - `Plugin Loading.log`에 `No loaders recognized this plugin`/`plugin is marked as Ignore` 문구가 반드시 남아 있어야 Ignore 재현으로 인정합니다.
+   - `PluginCache` 키가 `Ignore=1`이고 `DateLow/DateHigh`가 테스트 시점과 일치하는지 확인합니다.
+   - `%TEMP%\ZSoda_AE_Runtime.log`와 diag `summary.txt`에서 ORT `LoadLibraryW` 실패 또는 협상 실패 로그(`negotiated_api_version=0`)를 확보합니다.
+
+[판정 기준]
+- Ignore 상태: `Plugin Loading.log` + `PluginCache` 키가 `Ignore=1`.
+- ORT 라우터: `%TEMP%\ZSoda_AE_Runtime.log`에 `LoadLibraryW failed`/`negotiated_api_version=0`가 나타나고 diag `summary.txt`가 `fallback_reason`을 기록.
+- 증거 패키지: `artifacts/diagnostics/ae_loader_diag_*/` 하위 `plugin_cache/`, `logs/`, `aex/` 폴더가 모두 존재하고, `summary.txt`에 `timestamp`/`after_effects_version`이 기록됨.
+
+[주의점]
+- AE를 강제로 종료하지 않으면 PluginCache 가 `Ignore` 상태를 계속 유지하지 않으므로 runbook 단위로 AE를 완전히 종료 후 재개하세요.
+- System32/Adobe 번들 `onnxruntime.dll`이 먼저 로드되지 않도록 MediaCore에 명시 복사한 ORT DLL만 남겨두고, 필수 경우 `Copy to MediaCore`를 재실행하세요.
+- `collect_ae_loader_diagnostics.ps1`는 runbook마다 새로운 시간/출력 디렉터리를 만들기 때문에, 산출물을 후속 보고에 포함할 때 경로를 정확히 기록해두세요.
 
 ## Session Handoff (2026-03-03, for next WSL agent)
 

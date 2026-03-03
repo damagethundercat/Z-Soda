@@ -4,7 +4,7 @@
 
 ## 1. 전체 진행률
 - 전체 진행률: **99%** (`PLAN.md`의 `P1`~`P5` 기준, `P3/P4/P5`는 마무리 단계)
-- 마지막 업데이트: **2026-03-03** (`D79`: 클린 재빌드 후 동일 에러 재현에서 `Plugin Loading.log`의 `No loaders recognized`/`Ignore` 지속 + 런타임 ORT `LoadLibraryW` 실패 반복 확인)
+- 마지막 업데이트: **2026-03-03** (`D81`: `ZSoda` 본체 loader-only 진단 모드 추가(`-LoaderOnlyMain`)로 로더 축/본체 초기화 축 분리 실험 경로 확보)
 - 갱신 원칙: **작업 단위 완료 시 즉시 업데이트**
 
 ## 2. 현재 작업 상태
@@ -105,6 +105,8 @@
 - [x] `D63` AE 초기화 복원력 강화: `EffectMain`에서 `BuildSdkDispatch/Dispatch` 실패 시 명령별 정책 적용(`RENDER`만 치명 반환, 나머지 명령은 `PF_Err_NONE`) 및 `%TEMP%\\ZSoda_AE_Runtime.log`에 상세 진단(`cmd/mapped/error`) 기록 (`plugin/ae/AePluginEntry.cpp`)
 - [x] `D64` 로더 인식 실패(Plugin Ignore) 구조 대응: PiPL 리소스의 Windows 코드 엔트리를 `CodeWin64X86 {"EffectMain"}`로 단순 고정하고, `build_aex.ps1`에 생성 PiPL RC 시그니처 검증(`CodeWin64X86/EffectMain/outflags`)을 강제해 비정상 `.aex` 배포를 차단 (`plugin/ae/ZSodaPiPL.r`, `plugin/CMakeLists.txt`, `tools/build_aex.ps1`, `docs/build/LOCAL_AGENT_HANDOFF.md`)
 - [x] `D65` 로컬 재현 로그 재확인 및 WSL 재위임 준비: 최신 `main(73464a4)` pull 후 `tools/build_aex.ps1` 재빌드 시 `Assert-PiPLSignature`가 `.rc`에서 `CodeWin64X86` 토큰 미검출로 실패(동일 시점 `.rr`에는 토큰 존재)함을 확인. AE 재실행 후에도 `Plugin Loading.log`에 `No loaders recognized ... set to Ignore`가 반복되고 `PluginCache\\en_US\\ZSoda.aex_*`가 `Ignore=1`로 재생성됨을 확인해 핸드오프 문서에 증적/다음 액션 반영 (`docs/build/LOCAL_AGENT_HANDOFF.md`)
+- [x] `D80` Ignore 오염 runbook: 단일 정리→배치→테스트→수집→판정 절차를 `docs/build/LOCAL_AGENT_HANDOFF.md`에 명령 중심으로 추가해 Ignore 상태 재현과 증거 확보를 일관되게 안내
+- [x] `D81` 로더 분리 실험 경로 추가: `ZSoda` 본체를 최소 엔트리(pass-through)로 빌드하는 `ZSODA_AE_LOADER_ONLY_MODE` 옵션과 `tools/build_aex.ps1 -LoaderOnlyMain` 스위치를 도입해, `No loaders recognized`가 본체 로직과 무관한지 즉시 판별 가능한 A/B 실험 경로를 구축 (`plugin/ae/AePluginEntry.cpp`, `plugin/CMakeLists.txt`, `tools/build_aex.ps1`, `docs/build/LOCAL_AGENT_HANDOFF.md`)
 - [x] `D66` 빌드 로더 게이트 구조 개선: `tools/build_aex.ps1`를 `.rc` 토큰 검사 방식에서 `.rr` literal 시그니처 + 최종 `ZSoda.aex`(export/`.rsrc`/machine) 검증으로 전환하고, `ZSoda.loader_check.txt` 요약 산출 및 `LOCAL_AGENT_HANDOFF.md` 절차를 동기화 (`tools/build_aex.ps1`, `docs/build/LOCAL_AGENT_HANDOFF.md`)
 - [x] `D67` 듀얼 경로 로더 재현 고정: `MediaCore`/`Effects` 두 위치에 동일 SHA256 `ZSoda.aex`를 배치해 재현해도 양쪽 모두 `No loaders recognized ... set to Ignore`로 실패하고, `PluginCache\\en_US`에 경로별 `ZSoda.aex_*` 2개 키가 `Ignore=1`로 동시 생성됨을 확인. `%TEMP%\\ZSoda_AE_Runtime.log` 미생성과 `LoadLibraryW` 단독 성공/`dumpbin /dependents` 정상 결과를 함께 기록해 실패 지점을 AE 내부 로더 단계로 한정 (`docs/build/LOCAL_AGENT_HANDOFF.md`)
 - [x] `D68` 네이티브 진단 자동화 추가: `tools/collect_ae_loader_diagnostics.ps1`를 추가해 `PluginCache`(ZSoda 키/값), `Plugin Loading.log` 컨텍스트, 대상 `.aex`의 `dumpbin` 증거(`exports/headers/dependents/.rsrc`) + SHA256 + `LoadLibraryW` probe를 세션 폴더로 일괄 수집하도록 구현하고 핸드오프 문서에 실행법/산출물 구조를 반영 (`tools/collect_ae_loader_diagnostics.ps1`, `docs/build/LOCAL_AGENT_HANDOFF.md`)
