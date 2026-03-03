@@ -21,8 +21,14 @@ enum class PixelConversionStatus {
   kFormatMismatch,
 };
 
+enum class HostChannelOrder {
+  kRGBA = 0,
+  kARGB = 1,
+};
+
 // Host buffer view assumptions:
-// - Interleaved RGBA layout in native endianness (R, G, B, A order).
+// - Interleaved 4-channel layout in native endianness.
+// - Channel order is selected by `channel_order` (default: RGBA).
 // - Positive top-down row order only.
 // - row_bytes may include padding and must be >= width * bytes_per_pixel(format).
 struct HostBufferView {
@@ -31,6 +37,7 @@ struct HostBufferView {
   int height = 0;
   std::size_t row_bytes = 0;
   PixelFormat format = PixelFormat::kRGBA8;
+  HostChannelOrder channel_order = HostChannelOrder::kRGBA;
 };
 
 // Same layout contract as HostBufferView, but writable.
@@ -40,6 +47,7 @@ struct MutableHostBufferView {
   int height = 0;
   std::size_t row_bytes = 0;
   PixelFormat format = PixelFormat::kRGBA8;
+  HostChannelOrder channel_order = HostChannelOrder::kRGBA;
 };
 
 [[nodiscard]] inline const char* PixelConversionStatusString(PixelConversionStatus status) {
@@ -193,24 +201,33 @@ template <typename TView>
       float b = 0.0F;
       switch (source.format) {
         case PixelFormat::kRGBA8: {
-          r = static_cast<float>(pixel[0]) * detail::kInv255;
-          g = static_cast<float>(pixel[1]) * detail::kInv255;
-          b = static_cast<float>(pixel[2]) * detail::kInv255;
+          const int r_index = source.channel_order == HostChannelOrder::kARGB ? 1 : 0;
+          const int g_index = source.channel_order == HostChannelOrder::kARGB ? 2 : 1;
+          const int b_index = source.channel_order == HostChannelOrder::kARGB ? 3 : 2;
+          r = static_cast<float>(pixel[r_index]) * detail::kInv255;
+          g = static_cast<float>(pixel[g_index]) * detail::kInv255;
+          b = static_cast<float>(pixel[b_index]) * detail::kInv255;
           break;
         }
         case PixelFormat::kRGBA16: {
-          r = static_cast<float>(detail::LoadU16(pixel + sizeof(std::uint16_t) * 0)) *
+          const int r_index = source.channel_order == HostChannelOrder::kARGB ? 1 : 0;
+          const int g_index = source.channel_order == HostChannelOrder::kARGB ? 2 : 1;
+          const int b_index = source.channel_order == HostChannelOrder::kARGB ? 3 : 2;
+          r = static_cast<float>(detail::LoadU16(pixel + sizeof(std::uint16_t) * r_index)) *
               detail::kInv65535;
-          g = static_cast<float>(detail::LoadU16(pixel + sizeof(std::uint16_t) * 1)) *
+          g = static_cast<float>(detail::LoadU16(pixel + sizeof(std::uint16_t) * g_index)) *
               detail::kInv65535;
-          b = static_cast<float>(detail::LoadU16(pixel + sizeof(std::uint16_t) * 2)) *
+          b = static_cast<float>(detail::LoadU16(pixel + sizeof(std::uint16_t) * b_index)) *
               detail::kInv65535;
           break;
         }
         case PixelFormat::kRGBA32F: {
-          r = detail::ClampUnit(detail::LoadF32(pixel + sizeof(float) * 0));
-          g = detail::ClampUnit(detail::LoadF32(pixel + sizeof(float) * 1));
-          b = detail::ClampUnit(detail::LoadF32(pixel + sizeof(float) * 2));
+          const int r_index = source.channel_order == HostChannelOrder::kARGB ? 1 : 0;
+          const int g_index = source.channel_order == HostChannelOrder::kARGB ? 2 : 1;
+          const int b_index = source.channel_order == HostChannelOrder::kARGB ? 3 : 2;
+          r = detail::ClampUnit(detail::LoadF32(pixel + sizeof(float) * r_index));
+          g = detail::ClampUnit(detail::LoadF32(pixel + sizeof(float) * g_index));
+          b = detail::ClampUnit(detail::LoadF32(pixel + sizeof(float) * b_index));
           break;
         }
         default:
@@ -255,26 +272,38 @@ template <typename TView>
       switch (dest.format) {
         case PixelFormat::kRGBA8: {
           const std::uint8_t q = detail::QuantizeToU8(value);
-          pixel[0] = q;
-          pixel[1] = q;
-          pixel[2] = q;
-          pixel[3] = std::numeric_limits<std::uint8_t>::max();
+          const int a_index = dest.channel_order == HostChannelOrder::kARGB ? 0 : 3;
+          const int r_index = dest.channel_order == HostChannelOrder::kARGB ? 1 : 0;
+          const int g_index = dest.channel_order == HostChannelOrder::kARGB ? 2 : 1;
+          const int b_index = dest.channel_order == HostChannelOrder::kARGB ? 3 : 2;
+          pixel[r_index] = q;
+          pixel[g_index] = q;
+          pixel[b_index] = q;
+          pixel[a_index] = std::numeric_limits<std::uint8_t>::max();
           break;
         }
         case PixelFormat::kRGBA16: {
           const std::uint16_t q = detail::QuantizeToU16(value);
-          detail::StoreU16(pixel + sizeof(std::uint16_t) * 0, q);
-          detail::StoreU16(pixel + sizeof(std::uint16_t) * 1, q);
-          detail::StoreU16(pixel + sizeof(std::uint16_t) * 2, q);
-          detail::StoreU16(pixel + sizeof(std::uint16_t) * 3,
+          const int a_index = dest.channel_order == HostChannelOrder::kARGB ? 0 : 3;
+          const int r_index = dest.channel_order == HostChannelOrder::kARGB ? 1 : 0;
+          const int g_index = dest.channel_order == HostChannelOrder::kARGB ? 2 : 1;
+          const int b_index = dest.channel_order == HostChannelOrder::kARGB ? 3 : 2;
+          detail::StoreU16(pixel + sizeof(std::uint16_t) * r_index, q);
+          detail::StoreU16(pixel + sizeof(std::uint16_t) * g_index, q);
+          detail::StoreU16(pixel + sizeof(std::uint16_t) * b_index, q);
+          detail::StoreU16(pixel + sizeof(std::uint16_t) * a_index,
                            std::numeric_limits<std::uint16_t>::max());
           break;
         }
         case PixelFormat::kRGBA32F: {
-          detail::StoreF32(pixel + sizeof(float) * 0, value);
-          detail::StoreF32(pixel + sizeof(float) * 1, value);
-          detail::StoreF32(pixel + sizeof(float) * 2, value);
-          detail::StoreF32(pixel + sizeof(float) * 3, 1.0F);
+          const int a_index = dest.channel_order == HostChannelOrder::kARGB ? 0 : 3;
+          const int r_index = dest.channel_order == HostChannelOrder::kARGB ? 1 : 0;
+          const int g_index = dest.channel_order == HostChannelOrder::kARGB ? 2 : 1;
+          const int b_index = dest.channel_order == HostChannelOrder::kARGB ? 3 : 2;
+          detail::StoreF32(pixel + sizeof(float) * r_index, value);
+          detail::StoreF32(pixel + sizeof(float) * g_index, value);
+          detail::StoreF32(pixel + sizeof(float) * b_index, value);
+          detail::StoreF32(pixel + sizeof(float) * a_index, 1.0F);
           break;
         }
         default:

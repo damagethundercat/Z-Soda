@@ -49,6 +49,28 @@ parse_auxiliary_assets() {
   done
 }
 
+ensure_ort_external_data_alias() {
+  local downloaded_path="$1"
+  local leaf
+  leaf="$(basename "${downloaded_path}")"
+  if [[ "${leaf}" != *.onnx_data ]]; then
+    return 0
+  fi
+  if [[ "${leaf}" == "model.onnx_data" ]]; then
+    return 0
+  fi
+
+  local directory
+  directory="$(dirname "${downloaded_path}")"
+  local alias_path="${directory}/model.onnx_data"
+  if [[ "${alias_path}" == "${downloaded_path}" ]]; then
+    return 0
+  fi
+
+  cp -f "${downloaded_path}" "${alias_path}"
+  echo "Alias: ${alias_path} <= ${downloaded_path}"
+}
+
 resolve_from_manifest() {
   local manifest="$1"
   local target_id="$2"
@@ -153,5 +175,6 @@ for i in "${!asset_urls[@]}"; do
     curl_args+=(-H "Authorization: Bearer ${HF_TOKEN_VALUE}")
   fi
   curl "${curl_args[@]}" "${url}" -o "${dest}"
+  ensure_ort_external_data_alias "${dest}"
   echo "완료: ${dest}"
 done

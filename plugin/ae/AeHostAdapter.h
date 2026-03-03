@@ -107,6 +107,9 @@ bool BuildSdkDispatch(const AeSdkEntryPayload& payload,
 bool TryExtractPfCmdRenderPayload(const AeSdkEntryPayload& payload,
                                   AeSdkRenderPayloadScaffold* scaffold,
                                   std::string* error);
+bool CommitSdkRenderOutput(const AeSdkEntryPayload& payload,
+                           const AeDispatchContext& dispatch,
+                           std::string* error);
 
 #endif
 

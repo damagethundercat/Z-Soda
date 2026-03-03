@@ -1,8 +1,57 @@
 #include "ae/AeCommandRouter.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <string>
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 namespace zsoda::ae {
+namespace {
+
+void AppendRouterTrace(const char* stage, const char* detail = nullptr) {
+#if defined(_WIN32)
+  char temp_path[MAX_PATH] = {};
+  const DWORD written = ::GetTempPathA(MAX_PATH, temp_path);
+  if (written == 0 || written >= MAX_PATH) {
+    return;
+  }
+
+  char log_path[MAX_PATH] = {};
+  std::snprintf(log_path, sizeof(log_path), "%s%s", temp_path, "ZSoda_AE_Runtime.log");
+  FILE* file = std::fopen(log_path, "ab");
+  if (file == nullptr) {
+    return;
+  }
+
+  SYSTEMTIME now = {};
+  ::GetLocalTime(&now);
+  const unsigned long tid = static_cast<unsigned long>(::GetCurrentThreadId());
+  std::fprintf(file,
+               "%04u-%02u-%02u %02u:%02u:%02u.%03u | RouterTrace | tid=%lu, stage=%s, detail=%s\r\n",
+               static_cast<unsigned>(now.wYear),
+               static_cast<unsigned>(now.wMonth),
+               static_cast<unsigned>(now.wDay),
+               static_cast<unsigned>(now.wHour),
+               static_cast<unsigned>(now.wMinute),
+               static_cast<unsigned>(now.wSecond),
+               static_cast<unsigned>(now.wMilliseconds),
+               tid,
+               stage != nullptr ? stage : "<null>",
+               (detail != nullptr && detail[0] != '\0') ? detail : "<none>");
+  std::fclose(file);
+#else
+  (void)stage;
+  (void)detail;
+#endif
+}
+
+}  // namespace
 
 AeCommandRouter::AeCommandRouter(std::shared_ptr<zsoda::core::RenderPipeline> pipeline,
                                  std::shared_ptr<zsoda::inference::IInferenceEngine> engine)
@@ -27,7 +76,9 @@ bool AeCommandRouter::Handle(const AeCommandContext& context) {
       return UpdateParams(*context.params_update, context.error);
 
     case AeCommand::kRender: {
+      AppendRouterTrace("render_enter");
       if (pipeline_ == nullptr) {
+        AppendRouterTrace("render_invalid_pipeline");
         if (context.error) {
           *context.error = "invalid render command arguments";
         }
@@ -37,8 +88,10 @@ bool AeCommandRouter::Handle(const AeCommandContext& context) {
         // Accept host-only render bridge invocation. PF_Cmd payload wiring will fill
         // render_request/render_response once AE SDK integration is enabled.
         if (context.host != nullptr) {
+          AppendRouterTrace("render_host_only_bridge");
           return true;
         }
+        AppendRouterTrace("render_missing_request_response");
         if (context.error) {
           *context.error = "invalid render command arguments";
         }
@@ -51,10 +104,18 @@ bool AeCommandRouter::Handle(const AeCommandContext& context) {
       auto render_params = ToRenderParams(params);
       render_params.frame_hash = context.render_request->frame_hash;
 
+      const std::string before_detail =
+          "model=" + render_params.model_id + ", quality=" + std::to_string(render_params.quality);
+      AppendRouterTrace("render_before_pipeline", before_detail.c_str());
       const auto output = pipeline_->Render(context.render_request->source, render_params);
+      const std::string after_detail =
+          "status=" + std::to_string(static_cast<int>(output.status)) +
+          ", message=" + (output.message.empty() ? std::string("<none>") : output.message);
+      AppendRouterTrace("render_after_pipeline", after_detail.c_str());
       context.render_response->output = output.frame;
       context.render_response->status = output.status;
       context.render_response->message = output.message;
+      AppendRouterTrace("render_response_written");
       return true;
     }
 

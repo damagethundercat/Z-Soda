@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <exception>
 #include <functional>
 #include <limits>
@@ -10,6 +11,13 @@
 #include <vector>
 
 #include "inference/InferenceEngine.h"
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 namespace zsoda::core {
 namespace {
@@ -22,6 +30,43 @@ constexpr std::size_t kFallbackWorkingSetBytesPerPixelEstimate = 16U;
 
 const char* SafeCStr(const char* value, const char* fallback = "<null>") {
   return value != nullptr ? value : fallback;
+}
+
+void AppendPipelineTrace(const char* stage, const char* detail = nullptr) {
+#if defined(_WIN32)
+  char temp_path[MAX_PATH] = {};
+  const DWORD written = ::GetTempPathA(MAX_PATH, temp_path);
+  if (written == 0 || written >= MAX_PATH) {
+    return;
+  }
+
+  char log_path[MAX_PATH] = {};
+  std::snprintf(log_path, sizeof(log_path), "%s%s", temp_path, "ZSoda_AE_Runtime.log");
+  FILE* file = std::fopen(log_path, "ab");
+  if (file == nullptr) {
+    return;
+  }
+
+  SYSTEMTIME now = {};
+  ::GetLocalTime(&now);
+  const unsigned long tid = static_cast<unsigned long>(::GetCurrentThreadId());
+  std::fprintf(file,
+               "%04u-%02u-%02u %02u:%02u:%02u.%03u | PipelineTrace | tid=%lu, stage=%s, detail=%s\r\n",
+               static_cast<unsigned>(now.wYear),
+               static_cast<unsigned>(now.wMonth),
+               static_cast<unsigned>(now.wDay),
+               static_cast<unsigned>(now.wHour),
+               static_cast<unsigned>(now.wMinute),
+               static_cast<unsigned>(now.wSecond),
+               static_cast<unsigned>(now.wMilliseconds),
+               tid,
+               stage != nullptr ? stage : "<null>",
+               (detail != nullptr && detail[0] != '\0') ? detail : "<none>");
+  std::fclose(file);
+#else
+  (void)stage;
+  (void)detail;
+#endif
 }
 
 FrameBuffer CropGray(const FrameBuffer& source, const TileRect& tile) {
@@ -155,23 +200,35 @@ RenderPipeline::RenderPipeline(std::shared_ptr<inference::IInferenceEngine> engi
 
 RenderOutput RenderPipeline::Render(const FrameBuffer& source, const RenderParams& params) {
   try {
+    const std::string enter_detail =
+        "model=" + params.model_id + ", q=" + std::to_string(params.quality) +
+        ", src=" + std::to_string(source.desc().width) + "x" +
+        std::to_string(source.desc().height);
+    AppendPipelineTrace("render_enter", enter_detail.c_str());
     if (source.empty()) {
+      AppendPipelineTrace("render_source_empty");
       return SafeOutput(source, "empty source frame");
     }
 
     if (!engine_) {
+      AppendPipelineTrace("render_missing_engine");
       return SafeOutput(source, "missing inference engine");
     }
 
+    AppendPipelineTrace("select_model_begin");
     std::string model_selection_error;
     if (!engine_->SelectModel(params.model_id, &model_selection_error)) {
+      AppendPipelineTrace("select_model_failed",
+                          model_selection_error.empty() ? "<none>" : model_selection_error.c_str());
       return SafeOutput(source, "model selection failed: " + model_selection_error);
     }
+    AppendPipelineTrace("select_model_ok");
 
     const RenderCacheKey key = BuildCacheKey(source, params);
     if (params.cache_enabled) {
       FrameBuffer cached;
       if (cache_.Find(key, &cached)) {
+        AppendPipelineTrace("cache_hit");
         return {RenderStatus::kCacheHit, cached, "cache hit (" + engine_->ActiveModelId() + ")"};
       }
     }
@@ -196,10 +253,14 @@ RenderOutput RenderPipeline::Render(const FrameBuffer& source, const RenderParam
     };
 
     std::string direct_error;
+    AppendPipelineTrace("direct_inference_begin");
     if (RunInference(source, params.quality, depth.get(), &direct_error)) {
+      AppendPipelineTrace("direct_inference_ok");
       return finalize_output(RenderStatus::kInference,
                              "direct inference succeeded (" + engine_->ActiveModelId() + ")");
     }
+    AppendPipelineTrace("direct_inference_failed",
+                        direct_error.empty() ? "<none>" : direct_error.c_str());
 
     std::string tiled_error;
     std::vector<std::string> tiled_attempts;
@@ -222,6 +283,7 @@ RenderOutput RenderPipeline::Render(const FrameBuffer& source, const RenderParam
     }
 
     if (successful_tile_size > 0) {
+      AppendPipelineTrace("tiled_fallback_ok");
       std::string message = "tiled fallback succeeded after direct failure (" + engine_->ActiveModelId() +
                             ", tile=" + std::to_string(successful_tile_size) + ")";
       if (!direct_error.empty()) {
@@ -241,6 +303,7 @@ RenderOutput RenderPipeline::Render(const FrameBuffer& source, const RenderParam
     std::string downscaled_error;
     if (RunDownscaledInference(source, params.quality, params.vram_budget_mb, depth.get(),
                                &downscaled_error)) {
+      AppendPipelineTrace("downscaled_fallback_ok");
       std::string message =
           "downscaled fallback succeeded after direct/tiled failures (" + engine_->ActiveModelId() +
           ")";
@@ -254,6 +317,7 @@ RenderOutput RenderPipeline::Render(const FrameBuffer& source, const RenderParam
     }
 
     std::string message = "all inference stages failed";
+    AppendPipelineTrace("all_stages_failed");
     if (!direct_error.empty()) {
       message += " - direct inference failed: " + direct_error;
     }
@@ -269,8 +333,10 @@ RenderOutput RenderPipeline::Render(const FrameBuffer& source, const RenderParam
     }
     return SafeOutput(source, message);
   } catch (const std::exception& ex) {
+    AppendPipelineTrace("render_exception", SafeCStr(ex.what()));
     return SafeOutput(source, std::string("render exception: ") + SafeCStr(ex.what()));
   } catch (...) {
+    AppendPipelineTrace("render_exception_unknown");
     return SafeOutput(source, "render exception: unknown");
   }
 }

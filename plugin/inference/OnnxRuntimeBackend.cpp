@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cstdio>
 #include <cstdint>
 #include <filesystem>
 #include <limits>
@@ -12,6 +13,13 @@
 #include <string_view>
 #include <utility>
 #include <vector>
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 #if defined(ZSODA_WITH_ONNX_RUNTIME_API) && ZSODA_WITH_ONNX_RUNTIME_API
 #define ORT_API_MANUAL_INIT
@@ -77,6 +85,43 @@ std::string ToLowerCopy(std::string_view text) {
 
 const char* SafeCStr(const char* value, const char* fallback = "<null>") {
   return value != nullptr ? value : fallback;
+}
+
+void AppendOrtTrace(const char* stage, const char* detail = nullptr) {
+#if defined(_WIN32)
+  char temp_path[MAX_PATH] = {};
+  const DWORD written = ::GetTempPathA(MAX_PATH, temp_path);
+  if (written == 0 || written >= MAX_PATH) {
+    return;
+  }
+
+  char log_path[MAX_PATH] = {};
+  std::snprintf(log_path, sizeof(log_path), "%s%s", temp_path, "ZSoda_AE_Runtime.log");
+  FILE* file = std::fopen(log_path, "ab");
+  if (file == nullptr) {
+    return;
+  }
+
+  SYSTEMTIME now = {};
+  ::GetLocalTime(&now);
+  const unsigned long tid = static_cast<unsigned long>(::GetCurrentThreadId());
+  std::fprintf(file,
+               "%04u-%02u-%02u %02u:%02u:%02u.%03u | OrtTrace | tid=%lu, stage=%s, detail=%s\r\n",
+               static_cast<unsigned>(now.wYear),
+               static_cast<unsigned>(now.wMonth),
+               static_cast<unsigned>(now.wDay),
+               static_cast<unsigned>(now.wHour),
+               static_cast<unsigned>(now.wMinute),
+               static_cast<unsigned>(now.wSecond),
+               static_cast<unsigned>(now.wMilliseconds),
+               tid,
+               stage != nullptr ? stage : "<null>",
+               (detail != nullptr && detail[0] != '\0') ? detail : "<none>");
+  std::fclose(file);
+#else
+  (void)stage;
+  (void)detail;
+#endif
 }
 
 std::string BuildBackendName(RuntimeBackend active_backend,
@@ -198,6 +243,112 @@ bool ValidateRequest(const InferenceRequest& request,
 
 bool HasOnnxExtension(const std::filesystem::path& path) {
   return ToLowerCopy(path.extension().string()) == ".onnx";
+}
+
+bool IsRegularFile(const std::filesystem::path& path) {
+  std::error_code ec;
+  return std::filesystem::is_regular_file(path, ec);
+}
+
+std::filesystem::path BuildLegacyExternalDataPath(const std::filesystem::path& model_path) {
+  std::filesystem::path legacy_path = model_path;
+  legacy_path += "_data";
+  return legacy_path;
+}
+
+bool EnsureDirectoryExists(const std::filesystem::path& path, std::string* error) {
+  std::error_code ec;
+  std::filesystem::create_directories(path, ec);
+  if (ec) {
+    if (error != nullptr) {
+      *error = "failed to create directory: " + path.string() + " (" + ec.message() + ")";
+    }
+    return false;
+  }
+  return true;
+}
+
+bool CopyFileOverwrite(const std::filesystem::path& source,
+                       const std::filesystem::path& destination,
+                       std::string* error) {
+  std::error_code ec;
+  std::filesystem::copy_file(
+      source, destination, std::filesystem::copy_options::overwrite_existing, ec);
+  if (!ec) {
+    return true;
+  }
+  if (error != nullptr) {
+    *error = "failed to copy file from " + source.string() + " to " + destination.string() +
+             " (" + ec.message() + ")";
+  }
+  return false;
+}
+
+bool CreateHardLinkOrCopy(const std::filesystem::path& source,
+                          const std::filesystem::path& destination,
+                          std::string* error) {
+  std::error_code ec;
+  std::filesystem::remove(destination, ec);
+  ec.clear();
+  std::filesystem::create_hard_link(source, destination, ec);
+  if (!ec) {
+    return true;
+  }
+  return CopyFileOverwrite(source, destination, error);
+}
+
+// Some model packs ship external tensor data as "<model>.onnx_data" while ORT expects
+// "model.onnx_data" relative to the loaded .onnx. Stage a compatibility copy in %TEMP%
+// so we do not mutate installation directories at runtime.
+bool PrepareOrtModelPath(const std::filesystem::path& candidate_path,
+                         std::string_view model_id,
+                         std::filesystem::path* out_session_model_path,
+                         std::string* error) {
+  if (out_session_model_path == nullptr) {
+    if (error != nullptr) {
+      *error = "internal error: session model output path is null";
+    }
+    return false;
+  }
+
+  *out_session_model_path = candidate_path;
+  const std::filesystem::path expected_external_path =
+      candidate_path.parent_path() / "model.onnx_data";
+  if (IsRegularFile(expected_external_path)) {
+    return true;
+  }
+
+  const std::filesystem::path legacy_external_path = BuildLegacyExternalDataPath(candidate_path);
+  if (!IsRegularFile(legacy_external_path)) {
+    return true;
+  }
+
+  std::error_code temp_dir_ec;
+  const std::filesystem::path temp_root = std::filesystem::temp_directory_path(temp_dir_ec);
+  if (temp_dir_ec) {
+    if (error != nullptr) {
+      *error = "failed to resolve temporary directory for model staging (" +
+               temp_dir_ec.message() + ")";
+    }
+    return false;
+  }
+  const std::filesystem::path stage_dir =
+      temp_root / "zsoda-ort-staged-models" / std::string(model_id);
+  if (!EnsureDirectoryExists(stage_dir, error)) {
+    return false;
+  }
+
+  const std::filesystem::path staged_model_path = stage_dir / "model.onnx";
+  const std::filesystem::path staged_external_path = stage_dir / "model.onnx_data";
+  if (!CopyFileOverwrite(candidate_path, staged_model_path, error)) {
+    return false;
+  }
+  if (!CreateHardLinkOrCopy(legacy_external_path, staged_external_path, error)) {
+    return false;
+  }
+
+  *out_session_model_path = staged_model_path;
+  return true;
 }
 
 bool PrepareInputForModel(const InferenceRequest& request,
@@ -425,9 +576,10 @@ bool ResolveSessionIo(const Ort::Session& session,
                       std::string* output_name,
                       int* input_width,
                       int* input_height,
+                      bool* input_has_image_dimension,
                       std::string* error) {
   if (input_name == nullptr || output_name == nullptr || input_width == nullptr ||
-      input_height == nullptr) {
+      input_height == nullptr || input_has_image_dimension == nullptr) {
     if (error != nullptr) {
       *error = "internal error: invalid io metadata pointers";
     }
@@ -464,26 +616,62 @@ bool ResolveSessionIo(const Ort::Session& session,
   }
 
   const std::vector<int64_t> input_shape = input_info.GetShape();
-  if (input_shape.size() != 4U) {
+  const auto BuildShapeString = [](const std::vector<int64_t>& shape) -> std::string {
+    std::ostringstream oss;
+    oss << "[";
+    for (std::size_t i = 0; i < shape.size(); ++i) {
+      if (i != 0U) {
+        oss << ", ";
+      }
+      oss << shape[i];
+    }
+    oss << "]";
+    return oss.str();
+  };
+
+  int64_t batch = 0;
+  int64_t num_images = 1;
+  int64_t channels = 0;
+  int64_t height = 0;
+  int64_t width = 0;
+  bool has_image_dimension = false;
+  if (input_shape.size() == 4U) {
+    // Standard NCHW tensor.
+    batch = input_shape[0];
+    channels = input_shape[1];
+    height = input_shape[2];
+    width = input_shape[3];
+  } else if (input_shape.size() == 5U) {
+    // Some DA3 exports use [batch, num_images, channels, height, width].
+    has_image_dimension = true;
+    batch = input_shape[0];
+    num_images = input_shape[1];
+    channels = input_shape[2];
+    height = input_shape[3];
+    width = input_shape[4];
+  } else {
     if (error != nullptr) {
-      *error = "onnx runtime session input shape must be NCHW";
+      *error = "onnx runtime session input rank is unsupported: shape=" +
+               BuildShapeString(input_shape);
     }
     return false;
   }
 
-  const int64_t batch = input_shape[0];
-  const int64_t channels = input_shape[1];
-  const int64_t height = input_shape[2];
-  const int64_t width = input_shape[3];
   if (batch > 0 && batch != 1) {
     if (error != nullptr) {
       *error = "onnx runtime session only supports batch size 1";
     }
     return false;
   }
+  if (has_image_dimension && num_images > 0 && num_images != 1) {
+    if (error != nullptr) {
+      *error = "onnx runtime session only supports num_images 1 for BNCHW input";
+    }
+    return false;
+  }
   if (channels > 0 && channels != 3) {
     if (error != nullptr) {
-      *error = "onnx runtime session input channel must be 3 for NCHW preprocessing";
+      *error = "onnx runtime session input channel must be 3";
     }
     return false;
   }
@@ -504,6 +692,7 @@ bool ResolveSessionIo(const Ort::Session& session,
 
   *input_width = width > 0 ? static_cast<int>(width) : 0;
   *input_height = height > 0 ? static_cast<int>(height) : 0;
+  *input_has_image_dimension = has_image_dimension;
   if (error != nullptr) {
     error->clear();
   }
@@ -511,33 +700,47 @@ bool ResolveSessionIo(const Ort::Session& session,
 }
 
 bool ExtractDepthOutput(const Ort::Value& output, RawDepthOutput* raw_output, std::string* error) {
+  AppendOrtTrace("extract_fn_enter");
   if (raw_output == nullptr) {
     if (error != nullptr) {
       *error = "internal error: raw output is null";
     }
+    AppendOrtTrace("extract_raw_output_null");
     return false;
   }
+  AppendOrtTrace("extract_after_raw_check");
   if (!output.IsTensor()) {
     if (error != nullptr) {
       *error = "onnx runtime output is not a tensor";
     }
+    AppendOrtTrace("extract_not_tensor");
     return false;
   }
+  AppendOrtTrace("extract_after_is_tensor");
 
   const auto tensor_info = output.GetTensorTypeAndShapeInfo();
+  AppendOrtTrace("extract_after_tensor_info");
   if (tensor_info.GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
     if (error != nullptr) {
       *error = "onnx runtime output tensor must be float";
     }
+    AppendOrtTrace("extract_not_float");
     return false;
   }
+  AppendOrtTrace("extract_after_element_type");
 
   const std::vector<int64_t> shape = tensor_info.GetShape();
+  {
+    std::string shape_detail = "rank=" + std::to_string(shape.size());
+    AppendOrtTrace("extract_after_shape", shape_detail.c_str());
+  }
   const float* data = output.GetTensorData<float>();
+  AppendOrtTrace("extract_after_tensor_data");
   if (data == nullptr) {
     if (error != nullptr) {
       *error = "onnx runtime output tensor data pointer is null";
     }
+    AppendOrtTrace("extract_tensor_data_null");
     return false;
   }
 
@@ -647,6 +850,27 @@ bool ExtractDepthOutput(const Ort::Value& output, RawDepthOutput* raw_output, st
   }
   return true;
 }
+
+#if defined(_WIN32) && defined(_MSC_VER)
+bool TryExtractDepthOutputWithSeh(const Ort::Value& output,
+                                  RawDepthOutput* raw_output,
+                                  std::string* error,
+                                  unsigned int* seh_code) {
+  if (seh_code != nullptr) {
+    *seh_code = 0U;
+  }
+
+  bool extract_ok = false;
+  __try {
+    extract_ok = ExtractDepthOutput(output, raw_output, error);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    if (seh_code != nullptr) {
+      *seh_code = static_cast<unsigned int>(GetExceptionCode());
+    }
+  }
+  return extract_ok;
+}
+#endif
 #endif
 
 class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
@@ -768,6 +992,10 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
     const std::string target_model_path = candidate_path.lexically_normal().string();
     int target_input_width = std::max(kMinimumModelInputSize, target_profile.input_width);
     int target_input_height = std::max(kMinimumModelInputSize, target_profile.input_height);
+    std::filesystem::path session_model_path = candidate_path;
+#if defined(ZSODA_WITH_ONNX_RUNTIME_API) && ZSODA_WITH_ONNX_RUNTIME_API
+    input_has_image_dimension_ = false;
+#endif
 
 #if defined(ZSODA_WITH_ONNX_RUNTIME_API) && ZSODA_WITH_ONNX_RUNTIME_API
     if (env_ == nullptr || session_options_ == nullptr) {
@@ -776,25 +1004,34 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
       }
       return false;
     }
+    std::string staged_model_error;
+    if (!PrepareOrtModelPath(candidate_path, model_id, &session_model_path, &staged_model_error)) {
+      if (error != nullptr) {
+        *error = WithRuntimeDiagnostics(staged_model_error);
+      }
+      return false;
+    }
 
     try {
 #if defined(_WIN32)
-      const std::wstring ort_path = candidate_path.native();
+      const std::wstring ort_path = session_model_path.native();
       auto session = std::make_unique<Ort::Session>(*env_, ort_path.c_str(), *session_options_);
 #else
-      const std::string ort_path = candidate_path.string();
+      const std::string ort_path = session_model_path.string();
       auto session = std::make_unique<Ort::Session>(*env_, ort_path.c_str(), *session_options_);
 #endif
       std::string resolved_input_name;
       std::string resolved_output_name;
       int resolved_input_width = 0;
       int resolved_input_height = 0;
+      bool resolved_input_has_image_dimension = false;
       std::string io_error;
       if (!ResolveSessionIo(*session,
                             &resolved_input_name,
                             &resolved_output_name,
                             &resolved_input_width,
                             &resolved_input_height,
+                            &resolved_input_has_image_dimension,
                             &io_error)) {
         if (error != nullptr) {
           *error = WithRuntimeDiagnostics(io_error);
@@ -811,10 +1048,12 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
       if (resolved_input_height > 0) {
         target_input_height = resolved_input_height;
       }
+      input_has_image_dimension_ = resolved_input_has_image_dimension;
     } catch (const Ort::Exception& ex) {
       session_.reset();
       input_name_.clear();
       output_name_.clear();
+      input_has_image_dimension_ = false;
       if (error != nullptr) {
         *error = WithRuntimeDiagnostics(std::string("onnx runtime session create failed: ") +
                                         SafeCStr(ex.what()));
@@ -838,25 +1077,31 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
   bool Run(const InferenceRequest& request,
            zsoda::core::FrameBuffer* out_depth,
            std::string* error) const override {
+    AppendOrtTrace("run_enter", active_model_id_.empty() ? "<no_model>" : active_model_id_.c_str());
     if (!initialized_) {
       if (error != nullptr) {
         *error = "onnx runtime backend is not initialized";
       }
+      AppendOrtTrace("run_not_initialized");
       return false;
     }
     if (active_model_id_.empty()) {
       if (error != nullptr) {
         *error = "onnx runtime backend has no active model";
       }
+      AppendOrtTrace("run_no_active_model");
       return false;
     }
     if (active_model_path_.empty()) {
       if (error != nullptr) {
         *error = "onnx runtime backend has no active model path";
       }
+      AppendOrtTrace("run_no_model_path");
       return false;
     }
     if (!ValidateRequest(request, out_depth, error)) {
+      AppendOrtTrace("run_validate_failed", (error != nullptr && !error->empty()) ? error->c_str()
+                                                                                   : "<none>");
       return false;
     }
 
@@ -867,7 +1112,22 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
                               model_input_height_,
                               &prepared_input,
                               error)) {
+      AppendOrtTrace("run_prepare_input_failed",
+                     (error != nullptr && !error->empty()) ? error->c_str() : "<none>");
       return false;
+    }
+    {
+#if defined(ZSODA_WITH_ONNX_RUNTIME_API) && ZSODA_WITH_ONNX_RUNTIME_API
+      const bool has_image_dimension = input_has_image_dimension_;
+#else
+      const bool has_image_dimension = false;
+#endif
+      const std::string prepared_detail =
+          "tensor=" + std::to_string(prepared_input.tensor_width) + "x" +
+          std::to_string(prepared_input.tensor_height) + "x" +
+          std::to_string(prepared_input.tensor_channels) +
+          ", image_dim=" + std::string(has_image_dimension ? "1" : "0");
+      AppendOrtTrace("run_prepare_input_ok", prepared_detail.c_str());
     }
 
     RawDepthOutput raw_output;
@@ -885,44 +1145,107 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
       return false;
     }
 
-    const std::array<int64_t, 4> input_shape = {
-        1,
-        prepared_input.tensor_channels,
-        prepared_input.tensor_height,
-        prepared_input.tensor_width,
-    };
     const std::array<const char*, 1> input_names = {input_name_.c_str()};
     const std::array<const char*, 1> output_names = {output_name_.c_str()};
 
     try {
       Ort::MemoryInfo memory_info =
           Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
-      Ort::Value input_tensor = Ort::Value::CreateTensor<float>(
-          memory_info,
-          const_cast<float*>(prepared_input.nchw_values.data()),
-          prepared_input.nchw_values.size(),
-          input_shape.data(),
-          input_shape.size());
-      auto outputs = session_->Run(Ort::RunOptions{nullptr},
-                                   input_names.data(),
-                                   &input_tensor,
-                                   input_names.size(),
-                                   output_names.data(),
-                                   output_names.size());
+      std::vector<Ort::Value> outputs;
+      if (input_has_image_dimension_) {
+        AppendOrtTrace("session_run_begin_bnchw");
+        const std::array<int64_t, 5> input_shape = {
+            1,
+            1,
+            prepared_input.tensor_channels,
+            prepared_input.tensor_height,
+            prepared_input.tensor_width,
+        };
+        Ort::Value input_tensor = Ort::Value::CreateTensor<float>(
+            memory_info,
+            const_cast<float*>(prepared_input.nchw_values.data()),
+            prepared_input.nchw_values.size(),
+            input_shape.data(),
+            input_shape.size());
+        outputs = session_->Run(Ort::RunOptions{nullptr},
+                                input_names.data(),
+                                &input_tensor,
+                                input_names.size(),
+                                output_names.data(),
+                                output_names.size());
+      } else {
+        AppendOrtTrace("session_run_begin_nchw");
+        const std::array<int64_t, 4> input_shape = {
+            1,
+            prepared_input.tensor_channels,
+            prepared_input.tensor_height,
+            prepared_input.tensor_width,
+        };
+        Ort::Value input_tensor = Ort::Value::CreateTensor<float>(
+            memory_info,
+            const_cast<float*>(prepared_input.nchw_values.data()),
+            prepared_input.nchw_values.size(),
+            input_shape.data(),
+            input_shape.size());
+        outputs = session_->Run(Ort::RunOptions{nullptr},
+                                input_names.data(),
+                                &input_tensor,
+                                input_names.size(),
+                                output_names.data(),
+                                output_names.size());
+      }
+      {
+        const std::string run_end_detail = "outputs=" + std::to_string(outputs.size());
+        AppendOrtTrace("session_run_end", run_end_detail.c_str());
+      }
       if (outputs.empty()) {
         if (error != nullptr) {
           *error = "onnx runtime run returned no outputs";
         }
+        AppendOrtTrace("session_run_no_outputs");
         return false;
       }
-      if (!ExtractDepthOutput(outputs.front(), &raw_output, error)) {
+      AppendOrtTrace("extract_output_begin");
+#if defined(_WIN32) && defined(_MSC_VER)
+      unsigned int extract_seh_code = 0U;
+      const bool extract_ok =
+          TryExtractDepthOutputWithSeh(outputs.front(), &raw_output, error, &extract_seh_code);
+      if (extract_seh_code != 0U) {
+        char seh_message[160] = {};
+        std::snprintf(seh_message,
+                      sizeof(seh_message),
+                      "output extraction SEH 0x%08X",
+                      static_cast<unsigned int>(extract_seh_code));
+        AppendOrtTrace("extract_output_seh", seh_message);
+        if (error != nullptr) {
+          *error = WithRuntimeDiagnostics(std::string("onnx runtime output extraction failed: ") +
+                                          seh_message);
+        }
         return false;
+      }
+      if (!extract_ok) {
+        AppendOrtTrace("extract_output_failed",
+                       (error != nullptr && !error->empty()) ? error->c_str() : "<none>");
+        return false;
+      }
+#else
+      if (!ExtractDepthOutput(outputs.front(), &raw_output, error)) {
+        AppendOrtTrace("extract_output_failed",
+                       (error != nullptr && !error->empty()) ? error->c_str() : "<none>");
+        return false;
+      }
+#endif
+      {
+        const std::string out_detail =
+            "depth=" + std::to_string(raw_output.width) + "x" + std::to_string(raw_output.height);
+        AppendOrtTrace("extract_output_ok", out_detail.c_str());
       }
     } catch (const Ort::Exception& ex) {
       if (error != nullptr) {
         *error = WithRuntimeDiagnostics(std::string("onnx runtime run failed: ") +
                                         SafeCStr(ex.what()));
       }
+      AppendOrtTrace("session_run_exception", SafeCStr(ex.what()));
       return false;
     }
 #else
@@ -945,12 +1268,16 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
                                   request.source->desc(),
                                   out_depth,
                                   error)) {
+      AppendOrtTrace("postprocess_failed",
+                     (error != nullptr && !error->empty()) ? error->c_str() : "<none>");
       return false;
     }
+    AppendOrtTrace("postprocess_ok");
 
     if (error != nullptr) {
       error->clear();
     }
+    AppendOrtTrace("run_exit_ok");
     return true;
   }
 
@@ -987,6 +1314,7 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
   std::unique_ptr<Ort::Session> session_;
   std::string input_name_;
   std::string output_name_;
+  bool input_has_image_dimension_ = false;
 #endif
 };
 

@@ -10,6 +10,7 @@
 #include "AE_EffectCB.h"
 #include "AE_EffectVers.h"
 #include "AE_Macros.h"
+#include "AE_PluginData.h"
 #include "ae/ZSodaAeFlags.h"
 #include "ae/ZSodaVersion.h"
 
@@ -20,6 +21,34 @@
 #define DllExport
 #endif
 #endif
+
+extern "C" DllExport PF_Err PluginDataEntryFunction2(PF_PluginDataPtr in_ptr,
+                                                      PF_PluginDataCB2 in_plugin_data_callback_ptr,
+                                                      SPBasicSuite* in_sp_basic_suite_ptr,
+                                                      const char* in_host_name,
+                                                      const char* in_host_version) {
+  constexpr A_long kAeReservedInfo = 8;
+  (void)in_sp_basic_suite_ptr;
+  (void)in_host_name;
+  (void)in_host_version;
+
+  if (in_plugin_data_callback_ptr == nullptr) {
+    return PF_Err_INVALID_CALLBACK;
+  }
+
+  const A_Err result = (*in_plugin_data_callback_ptr)(
+      in_ptr,
+      reinterpret_cast<const A_u_char*>("ZSoda Loader Probe"),
+      reinterpret_cast<const A_u_char*>("ZSoda Loader Probe"),
+      reinterpret_cast<const A_u_char*>("Z-Soda"),
+      reinterpret_cast<const A_u_char*>("EffectMain"),
+      'eFKT',
+      PF_AE_PLUG_IN_VERSION,
+      PF_AE_PLUG_IN_SUBVERS,
+      kAeReservedInfo,
+      reinterpret_cast<const A_u_char*>("https://example.com/zsoda"));
+  return static_cast<PF_Err>(result);
+}
 
 namespace {
 
@@ -50,6 +79,9 @@ PF_Err DoParamsSetup(PF_OutData* out_data) {
   if (out_data == nullptr) {
     return PF_Err_INTERNAL_STRUCT_DAMAGED;
   }
+  out_data->my_version = static_cast<A_u_long>(ZSODA_EFFECT_VERSION_HEX);
+  out_data->out_flags = static_cast<A_long>(ZSODA_AE_GLOBAL_OUTFLAGS);
+  out_data->out_flags2 = static_cast<A_long>(ZSODA_AE_GLOBAL_OUTFLAGS2);
   // Input layer only.
   out_data->num_params = 1;
   return PF_Err_NONE;

@@ -97,6 +97,12 @@ if(ZSODA_WITH_AE_SDK)
     message(FATAL_ERROR "ZSODA_WITH_AE_SDK=ON requires AE_SDK_INCLUDE_DIR (or AE_SDK_ROOT) containing AE_Effect.h")
   endif()
 
+  get_filename_component(AE_SDK_EXAMPLES_DIR "${AE_SDK_INCLUDE_DIR}" DIRECTORY)
+  set(AE_SDK_UTIL_DIR "${AE_SDK_EXAMPLES_DIR}/Util")
+  if(NOT EXISTS "${AE_SDK_UTIL_DIR}")
+    set(AE_SDK_UTIL_DIR "")
+  endif()
+
   if(WIN32)
     add_library(zsoda_aex MODULE ${ZSODA_PLUGIN_SOURCES})
     set_target_properties(zsoda_aex PROPERTIES OUTPUT_NAME "ZSoda" PREFIX "" SUFFIX ".aex")
@@ -115,7 +121,6 @@ if(ZSODA_WITH_AE_SDK)
       message(FATAL_ERROR "Missing PiPL source file: ${ZSODA_PIPL_SOURCE}")
     endif()
 
-    get_filename_component(AE_SDK_EXAMPLES_DIR "${AE_SDK_INCLUDE_DIR}" DIRECTORY)
     set(AE_PIPL_TOOL "${AE_SDK_EXAMPLES_DIR}/Resources/PiPLtool.exe")
     if(NOT EXISTS "${AE_PIPL_TOOL}")
       message(FATAL_ERROR "PiPLtool.exe not found under AE SDK examples resources: ${AE_PIPL_TOOL}")
@@ -241,6 +246,7 @@ foreach(target_name IN LISTS ZSODA_PLUGIN_TARGETS)
     PUBLIC
       ${CMAKE_CURRENT_SOURCE_DIR}
       $<$<BOOL:${ZSODA_WITH_AE_SDK}>:${AE_SDK_INCLUDE_DIR}>
+      $<$<BOOL:${AE_SDK_UTIL_DIR}>:${AE_SDK_UTIL_DIR}>
   )
 
   target_compile_definitions(${target_name}

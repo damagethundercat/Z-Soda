@@ -1,6 +1,7 @@
 #include "inference/ManagedInferenceEngine.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <filesystem>
 #include <sstream>
 #include <utility>
@@ -11,11 +12,55 @@
 #include "inference/OnnxRuntimeBackend.h"
 #endif
 
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 namespace zsoda::inference {
 namespace {
 
 const char* SafeCStr(const char* value, const char* fallback = "<null>") {
   return value != nullptr ? value : fallback;
+}
+
+void AppendInferenceTrace(const char* stage, const char* detail = nullptr) {
+#if defined(_WIN32)
+  char temp_path[MAX_PATH] = {};
+  const DWORD written = ::GetTempPathA(MAX_PATH, temp_path);
+  if (written == 0 || written >= MAX_PATH) {
+    return;
+  }
+
+  char log_path[MAX_PATH] = {};
+  std::snprintf(log_path, sizeof(log_path), "%s%s", temp_path, "ZSoda_AE_Runtime.log");
+  FILE* file = std::fopen(log_path, "ab");
+  if (file == nullptr) {
+    return;
+  }
+
+  SYSTEMTIME now = {};
+  ::GetLocalTime(&now);
+  const unsigned long tid = static_cast<unsigned long>(::GetCurrentThreadId());
+  std::fprintf(file,
+               "%04u-%02u-%02u %02u:%02u:%02u.%03u | InferenceTrace | tid=%lu, stage=%s, detail=%s\r\n",
+               static_cast<unsigned>(now.wYear),
+               static_cast<unsigned>(now.wMonth),
+               static_cast<unsigned>(now.wDay),
+               static_cast<unsigned>(now.wHour),
+               static_cast<unsigned>(now.wMinute),
+               static_cast<unsigned>(now.wSecond),
+               static_cast<unsigned>(now.wMilliseconds),
+               tid,
+               stage != nullptr ? stage : "<null>",
+               (detail != nullptr && detail[0] != '\0') ? detail : "<none>");
+  std::fclose(file);
+#else
+  (void)stage;
+  (void)detail;
+#endif
 }
 
 bool IsModelAssetPresent(const ResolvedModelAsset& asset) {
@@ -107,26 +152,32 @@ bool ManagedInferenceEngine::Run(const InferenceRequest& request,
                                  zsoda::core::FrameBuffer* out_depth,
                                  std::string* error) const {
   zsoda::core::CompatLockGuard lock(mutex_);
+  AppendInferenceTrace("run_enter", active_model_id_.empty() ? "<no_model>" : active_model_id_.c_str());
   if (active_model_id_.empty()) {
     if (error) {
       *error = "model is not selected";
     }
+    AppendInferenceTrace("run_no_model_selected");
     return false;
   }
 
   bool used_fallback_path = true;
 #if defined(ZSODA_WITH_ONNX_RUNTIME)
   if (onnx_backend_ != nullptr && !using_fallback_engine_) {
+    AppendInferenceTrace("onnx_run_begin");
     std::string onnx_error;
     if (onnx_backend_->Run(request, out_depth, &onnx_error)) {
       used_fallback_path = false;
       last_run_used_fallback_ = false;
       fallback_reason_.clear();
+      AppendInferenceTrace("onnx_run_ok");
     } else {
       last_run_used_fallback_ = true;
       fallback_reason_ = onnx_error.empty()
                              ? "onnx runtime backend run failed; using fallback depth path"
                              : onnx_error;
+      AppendInferenceTrace("onnx_run_failed",
+                           onnx_error.empty() ? "<none>" : onnx_error.c_str());
     }
   }
 #endif
@@ -135,10 +186,12 @@ bool ManagedInferenceEngine::Run(const InferenceRequest& request,
     if (error != nullptr) {
       error->clear();
     }
+    AppendInferenceTrace("run_exit_onnx");
     return true;
   }
 
   std::string dummy_error;
+  AppendInferenceTrace("fallback_run_begin");
   if (!fallback_engine_.Run(request, out_depth, &dummy_error)) {
     last_run_used_fallback_ = true;
     if (!dummy_error.empty()) {
@@ -147,9 +200,12 @@ bool ManagedInferenceEngine::Run(const InferenceRequest& request,
     if (error) {
       *error = dummy_error;
     }
+    AppendInferenceTrace("fallback_run_failed",
+                         dummy_error.empty() ? "<none>" : dummy_error.c_str());
     return false;
   }
   last_run_used_fallback_ = true;
+  AppendInferenceTrace("fallback_run_ok");
 
   // Apply a small model-specific curve shift so model switching has visible effect
   // while the fallback depth path is active.
@@ -168,6 +224,7 @@ bool ManagedInferenceEngine::Run(const InferenceRequest& request,
   } else if (error != nullptr) {
     error->clear();
   }
+  AppendInferenceTrace("run_exit_fallback");
   return true;
 }
 

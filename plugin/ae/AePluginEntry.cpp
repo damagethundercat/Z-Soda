@@ -3,6 +3,7 @@
 #include "ae/ZSodaVersion.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -26,6 +27,10 @@
 #include "inference/InferenceEngine.h"
 #include "inference/ManagedInferenceEngine.h"
 
+#if defined(ZSODA_WITH_AE_SDK) && ZSODA_WITH_AE_SDK
+#include "AE_PluginData.h"
+#endif
+
 namespace zsoda::ae {
 namespace {
 
@@ -36,6 +41,31 @@ const char* SafeCStr(const char* value, const char* fallback = "<null>") {
 }
 
 void AppendDiagnosticsLine(const char* tag, const char* detail);
+
+std::atomic<std::uint64_t> g_render_trace_seq{0U};
+
+std::uint64_t NextRenderTraceId() {
+  return g_render_trace_seq.fetch_add(1U, std::memory_order_relaxed) + 1U;
+}
+
+void LogRenderStage(std::uint64_t trace_id, const char* stage, const char* detail = nullptr) {
+  char message[768] = {};
+#if defined(_WIN32)
+  const unsigned long thread_id = static_cast<unsigned long>(::GetCurrentThreadId());
+#else
+  const unsigned long thread_id = 0UL;
+#endif
+  const char* safe_stage = SafeCStr(stage, "<null>");
+  const char* safe_detail = (detail != nullptr && detail[0] != '\0') ? detail : "<none>";
+  std::snprintf(message,
+                sizeof(message),
+                "trace=%llu, tid=%lu, stage=%s, detail=%s",
+                static_cast<unsigned long long>(trace_id),
+                thread_id,
+                safe_stage,
+                safe_detail);
+  AppendDiagnosticsLine("EffectMainRenderTrace", message);
+}
 
 std::optional<zsoda::core::PixelFormat> ParseHostPixelFormat(int pixel_format) {
   switch (pixel_format) {
@@ -230,6 +260,9 @@ PF_Err RunLoaderOnlyEffectMain(PF_Cmd cmd,
       return PF_Err_NONE;
     case PF_Cmd_PARAMS_SETUP:
       if (out_data != nullptr) {
+        out_data->my_version = static_cast<A_u_long>(ZSODA_EFFECT_VERSION_HEX);
+        out_data->out_flags = static_cast<A_long>(ZSODA_AE_GLOBAL_OUTFLAGS);
+        out_data->out_flags2 = static_cast<A_long>(ZSODA_AE_GLOBAL_OUTFLAGS2);
         out_data->num_params = 1;
       }
       return PF_Err_NONE;
@@ -605,6 +638,34 @@ extern "C" int ZSodaRenderHostBufferStub(const void* src,
 #endif
 #endif
 
+extern "C" DllExport PF_Err PluginDataEntryFunction2(PF_PluginDataPtr in_ptr,
+                                                      PF_PluginDataCB2 in_plugin_data_callback_ptr,
+                                                      SPBasicSuite* in_sp_basic_suite_ptr,
+                                                      const char* in_host_name,
+                                                      const char* in_host_version) {
+  constexpr A_long kAeReservedInfo = 8;
+  (void)in_sp_basic_suite_ptr;
+  (void)in_host_name;
+  (void)in_host_version;
+
+  if (in_plugin_data_callback_ptr == nullptr) {
+    return PF_Err_INVALID_CALLBACK;
+  }
+
+  const A_Err result =
+      (*in_plugin_data_callback_ptr)(in_ptr,
+                                     reinterpret_cast<const A_u_char*>("ZSoda"),
+                                     reinterpret_cast<const A_u_char*>("ZSoda Depth"),
+                                     reinterpret_cast<const A_u_char*>("Z-Soda"),
+                                     reinterpret_cast<const A_u_char*>("EffectMain"),
+                                     'eFKT',
+                                     PF_AE_PLUG_IN_VERSION,
+                                     PF_AE_PLUG_IN_SUBVERS,
+                                     kAeReservedInfo,
+                                     reinterpret_cast<const A_u_char*>("https://example.com/zsoda"));
+  return static_cast<PF_Err>(result);
+}
+
 PF_Err EffectMainImpl(PF_Cmd cmd,
                       PF_InData* in_data,
                       PF_OutData* out_data,
@@ -614,7 +675,10 @@ PF_Err EffectMainImpl(PF_Cmd cmd,
 #if defined(ZSODA_AE_LOADER_ONLY_MODE) && ZSODA_AE_LOADER_ONLY_MODE
   return RunLoaderOnlyEffectMain(cmd, in_data, out_data, params, output, extra);
 #else
-  if (cmd == PF_Cmd_RENDER || cmd == PF_Cmd_GLOBAL_SETUP || cmd == PF_Cmd_PARAMS_SETUP) {
+  const bool is_render_cmd = (cmd == PF_Cmd_RENDER);
+  const std::uint64_t render_trace_id = is_render_cmd ? zsoda::ae::NextRenderTraceId() : 0U;
+  if (cmd == PF_Cmd_RENDER) {
+    zsoda::ae::LogRenderStage(render_trace_id, "enter");
     zsoda::ae::LogEngineStatusOnce();
   }
   if (cmd != PF_Cmd_RENDER) {
@@ -634,6 +698,11 @@ PF_Err EffectMainImpl(PF_Cmd cmd,
   payload.extra = extra;
 
   if (!zsoda::ae::BuildSdkDispatch(payload, &dispatch, &error)) {
+    if (is_render_cmd) {
+      zsoda::ae::LogRenderStage(render_trace_id,
+                                "build_dispatch_failed",
+                                error.empty() ? "<none>" : error.c_str());
+    }
     const std::string detail =
         "BuildSdkDispatch failed: cmd=" + std::to_string(static_cast<int>(cmd)) +
         ", error=" + (error.empty() ? "<none>" : error);
@@ -641,24 +710,117 @@ PF_Err EffectMainImpl(PF_Cmd cmd,
     TryApplyRenderPassThrough(cmd, params, output, "BuildSdkDispatch failed");
     return PF_Err_NONE;
   }
-  if (!error.empty() && cmd != PF_Cmd_RENDER) {
-    const std::string detail =
-        "BuildSdkDispatch warning: cmd=" + std::to_string(static_cast<int>(cmd)) +
-        ", detail=" + error;
-    zsoda::ae::AppendDiagnosticsLine("EffectMain", detail.c_str());
+  if (!error.empty()) {
+    if (cmd == PF_Cmd_RENDER) {
+      zsoda::ae::LogRenderStage(render_trace_id, "build_dispatch_warning", error.c_str());
+      static std::string last_render_warning;
+      if (error != last_render_warning) {
+        const std::string detail =
+            "BuildSdkDispatch warning: cmd=" + std::to_string(static_cast<int>(cmd)) +
+            ", detail=" + error;
+        zsoda::ae::AppendDiagnosticsLine("EffectMain", detail.c_str());
+        last_render_warning = error;
+      }
+    } else {
+      const std::string detail =
+          "BuildSdkDispatch warning: cmd=" + std::to_string(static_cast<int>(cmd)) +
+          ", detail=" + error;
+      zsoda::ae::AppendDiagnosticsLine("EffectMain", detail.c_str());
+    }
+  }
+
+  // Keep host loader handshake deterministic: setup commands rely on the
+  // SDK scaffold (BuildSdkDispatch) and should not depend on router state.
+  if (cmd == PF_Cmd_GLOBAL_SETUP || cmd == PF_Cmd_PARAMS_SETUP) {
+    if (out_data != nullptr) {
+      const std::string detail =
+          "setup ok: cmd=" + std::to_string(static_cast<int>(cmd)) +
+          ", my_version=" + std::to_string(static_cast<unsigned long>(out_data->my_version)) +
+          ", out_flags=0x" + [] (A_long value) {
+            char buffer[16] = {};
+            std::snprintf(buffer, sizeof(buffer), "%08X", static_cast<unsigned int>(value));
+            return std::string(buffer);
+          }(out_data->out_flags) +
+          ", out_flags2=0x" + [] (A_long value) {
+            char buffer[16] = {};
+            std::snprintf(buffer, sizeof(buffer), "%08X", static_cast<unsigned int>(value));
+            return std::string(buffer);
+          }(out_data->out_flags2) +
+          ", num_params=" + std::to_string(static_cast<int>(out_data->num_params));
+      zsoda::ae::AppendDiagnosticsLine("EffectMainSetup", detail.c_str());
+    } else {
+      zsoda::ae::AppendDiagnosticsLine("EffectMainSetup", "setup ok with null out_data");
+    }
+    return PF_Err_NONE;
   }
 
   if (dispatch.command.command == zsoda::ae::AeCommand::kUnknown) {
+    if (is_render_cmd) {
+      zsoda::ae::LogRenderStage(render_trace_id, "mapped_unknown");
+    }
     // Skeleton entrypoint ignores unsupported commands until individual handlers
     // are wired.
     TryApplyRenderPassThrough(cmd, params, output, "mapped command is unknown");
     return PF_Err_NONE;
   }
 
-  if (zsoda::ae::Dispatch(dispatch) == 0) {
+  if (is_render_cmd) {
+    const std::string dispatch_begin_detail =
+        "mapped=" + std::to_string(static_cast<int>(dispatch.command.command)) +
+        ", request_ptr=" + (dispatch.command.render_request != nullptr ? std::string("set")
+                                                                       : std::string("null")) +
+        ", response_ptr=" + (dispatch.command.render_response != nullptr ? std::string("set")
+                                                                         : std::string("null"));
+    zsoda::ae::LogRenderStage(render_trace_id, "dispatch_begin", dispatch_begin_detail.c_str());
+  }
+  const int dispatch_result = zsoda::ae::Dispatch(dispatch);
+  if (dispatch_result == 0) {
+    if (is_render_cmd) {
+      const int status_code = static_cast<int>(dispatch.render_response.status);
+      const std::string dispatch_ok_detail =
+          "status=" + std::to_string(status_code) +
+          ", message=" +
+          (dispatch.render_response.message.empty() ? std::string("<none>")
+                                                    : dispatch.render_response.message);
+      zsoda::ae::LogRenderStage(render_trace_id, "dispatch_end_ok", dispatch_ok_detail.c_str());
+    }
+    if (cmd == PF_Cmd_RENDER) {
+      zsoda::ae::LogRenderStage(render_trace_id, "commit_begin");
+      std::string commit_error;
+      if (!zsoda::ae::CommitSdkRenderOutput(payload, dispatch, &commit_error)) {
+        zsoda::ae::LogRenderStage(render_trace_id,
+                                  "commit_failed",
+                                  commit_error.empty() ? "<none>" : commit_error.c_str());
+        const std::string detail = "CommitSdkRenderOutput failed: " +
+                                   (commit_error.empty() ? std::string("<none>") : commit_error);
+        zsoda::ae::AppendDiagnosticsLine("EffectMain", detail.c_str());
+        TryApplyRenderPassThrough(cmd, params, output, "render output commit failed");
+      } else {
+        zsoda::ae::LogRenderStage(render_trace_id, "commit_ok");
+      }
+
+      const int render_status = static_cast<int>(dispatch.render_response.status);
+      const std::string render_message = dispatch.render_response.message;
+      static int last_render_status = std::numeric_limits<int>::min();
+      static std::string last_render_message;
+      if (render_status != last_render_status || render_message != last_render_message) {
+        const std::string detail =
+            "render status=" + std::to_string(render_status) +
+            ", message=" + (render_message.empty() ? "<none>" : render_message);
+        zsoda::ae::AppendDiagnosticsLine("EffectMainRender", detail.c_str());
+        last_render_status = render_status;
+        last_render_message = render_message;
+      }
+      zsoda::ae::LogRenderStage(render_trace_id, "return_ok");
+    }
     return PF_Err_NONE;
   }
 
+  if (is_render_cmd) {
+    zsoda::ae::LogRenderStage(render_trace_id,
+                              "dispatch_failed",
+                              error.empty() ? "<none>" : error.c_str());
+  }
   const std::string detail =
       "Dispatch failed: cmd=" + std::to_string(static_cast<int>(cmd)) +
       ", mapped=" + std::to_string(static_cast<int>(dispatch.command.command)) +

@@ -10,6 +10,8 @@
 #include <type_traits>
 #include <utility>
 
+#include "core/CompatMutex.h"
+
 namespace zsoda::ae {
 namespace {
 
@@ -77,6 +79,10 @@ void InitializeDefaultPixelFormatCandidates(
 }
 
 #if defined(ZSODA_WITH_AE_SDK) && ZSODA_WITH_AE_SDK
+#if defined(_WIN32) && !defined(AE_OS_WIN)
+#define AE_OS_WIN 1
+#endif
+#include "Param_Utils.h"
 constexpr int kAeSdkNumParams = static_cast<int>(AeParamId::kVramBudgetMb) + 1;
 constexpr int kModelPopupChoices = 4;
 constexpr int kQualityPopupChoices = 3;
@@ -441,11 +447,85 @@ constexpr std::array<const char*, 4> kFallbackModelIdOrder = {
     "midas-dpt-large",
 };
 
-const PF_ParamDef* GetParam(const PF_ParamDef* const* params, AeParamId id) {
-  if (params == nullptr) {
+zsoda::core::CompatMutex& AeParamSnapshotMutex() {
+  static zsoda::core::CompatMutex mutex;
+  return mutex;
+}
+
+AeParamValues& AeParamSnapshotStorage() {
+  static AeParamValues snapshot = DefaultAeParams();
+  return snapshot;
+}
+
+AeParamValues ReadAeParamSnapshot() {
+  zsoda::core::CompatLockGuard lock(AeParamSnapshotMutex());
+  return AeParamSnapshotStorage();
+}
+
+void WriteAeParamSnapshot(const AeParamValues& values) {
+  zsoda::core::CompatLockGuard lock(AeParamSnapshotMutex());
+  AeParamSnapshotStorage() = values;
+}
+
+int GetSdkParamCountHint(const AeSdkEntryPayload& payload) {
+  int count = 0;
+  if (payload.in_data != nullptr && payload.in_data->num_params > 0) {
+    count = static_cast<int>(payload.in_data->num_params);
+  }
+  bool allow_out_data_count = payload.command == PF_Cmd_PARAMS_SETUP;
+#if defined(PF_Cmd_USER_CHANGED_PARAM)
+  allow_out_data_count = allow_out_data_count || payload.command == PF_Cmd_USER_CHANGED_PARAM;
+#endif
+#if defined(PF_Cmd_UPDATE_PARAMS_UI)
+  allow_out_data_count = allow_out_data_count || payload.command == PF_Cmd_UPDATE_PARAMS_UI;
+#endif
+  if (allow_out_data_count && payload.out_data != nullptr && payload.out_data->num_params > 0) {
+    count = std::max(count, static_cast<int>(payload.out_data->num_params));
+  }
+  return count;
+}
+
+const PF_ParamDef* GetParam(const AeSdkEntryPayload& payload, AeParamId id) {
+  if (payload.params == nullptr) {
     return nullptr;
   }
-  return params[static_cast<int>(id)];
+  const int index = static_cast<int>(id);
+  if (index < 0) {
+    return nullptr;
+  }
+
+  const int count_hint = GetSdkParamCountHint(payload);
+  if (count_hint > 0) {
+    if (index >= count_hint) {
+      return nullptr;
+    }
+    return payload.params[index];
+  }
+
+  // Runtime fallback: some hosts do not reliably expose num_params on non-setup
+  // commands, but still provide a full params table for render/update paths.
+  bool allow_sdk_table_fallback = false;
+#if defined(PF_Cmd_RENDER)
+  allow_sdk_table_fallback = allow_sdk_table_fallback || payload.command == PF_Cmd_RENDER;
+#endif
+#if defined(PF_Cmd_USER_CHANGED_PARAM)
+  allow_sdk_table_fallback = allow_sdk_table_fallback || payload.command == PF_Cmd_USER_CHANGED_PARAM;
+#endif
+#if defined(PF_Cmd_UPDATE_PARAMS_UI)
+  allow_sdk_table_fallback = allow_sdk_table_fallback || payload.command == PF_Cmd_UPDATE_PARAMS_UI;
+#endif
+  if (allow_sdk_table_fallback) {
+    if (index < kAeSdkNumParams) {
+      return payload.params[index];
+    }
+    return nullptr;
+  }
+
+  // Setup fallback: at minimum input layer param is expected.
+  if (index == 0) {
+    return payload.params[0];
+  }
+  return nullptr;
 }
 
 bool TryReadPopupValue(const PF_ParamDef* param, int* value_out) {
@@ -493,70 +573,85 @@ bool TryExtractPfCmdParamValues(const AeSdkEntryPayload& payload,
     return false;
   }
 
-  AeParamValues values = DefaultAeParams();
+  AeParamValues values = ReadAeParamSnapshot();
   bool any_param_read = false;
 
   int popup_value = 0;
-  if (TryReadPopupValue(GetParam(payload.params, AeParamId::kModel), &popup_value)) {
+  if (TryReadPopupValue(GetParam(payload, AeParamId::kModel), &popup_value)) {
     any_param_read = true;
     const int model_index = std::clamp(popup_value - 1, 0,
                                        static_cast<int>(kFallbackModelIdOrder.size()) - 1);
     values.model_id = kFallbackModelIdOrder[model_index];
   }
 
-  if (TryReadPopupValue(GetParam(payload.params, AeParamId::kQuality), &popup_value)) {
+  if (TryReadPopupValue(GetParam(payload, AeParamId::kQuality), &popup_value)) {
     any_param_read = true;
     values.quality = std::clamp(popup_value, 1, 3);
   }
 
-  if (TryReadPopupValue(GetParam(payload.params, AeParamId::kOutputMode), &popup_value)) {
+  if (TryReadPopupValue(GetParam(payload, AeParamId::kOutputMode), &popup_value)) {
     any_param_read = true;
     values.output_mode = (popup_value >= 2) ? AeOutputMode::kSlicing : AeOutputMode::kDepthMap;
   }
 
   bool checkbox_value = false;
-  if (TryReadCheckboxValue(GetParam(payload.params, AeParamId::kInvert), &checkbox_value)) {
+  if (TryReadCheckboxValue(GetParam(payload, AeParamId::kInvert), &checkbox_value)) {
     any_param_read = true;
     values.invert = checkbox_value;
   }
-  if (TryReadCheckboxValue(GetParam(payload.params, AeParamId::kCacheEnable), &checkbox_value)) {
+  if (TryReadCheckboxValue(GetParam(payload, AeParamId::kCacheEnable), &checkbox_value)) {
     any_param_read = true;
     values.cache_enabled = checkbox_value;
   }
 
   float float_value = 0.0F;
-  if (TryReadFloatSliderValue(GetParam(payload.params, AeParamId::kMinDepth), &float_value)) {
+  if (TryReadFloatSliderValue(GetParam(payload, AeParamId::kMinDepth), &float_value)) {
     any_param_read = true;
     values.min_depth = float_value;
   }
-  if (TryReadFloatSliderValue(GetParam(payload.params, AeParamId::kMaxDepth), &float_value)) {
+  if (TryReadFloatSliderValue(GetParam(payload, AeParamId::kMaxDepth), &float_value)) {
     any_param_read = true;
     values.max_depth = float_value;
   }
-  if (TryReadFloatSliderValue(GetParam(payload.params, AeParamId::kSoftness), &float_value)) {
+  if (TryReadFloatSliderValue(GetParam(payload, AeParamId::kSoftness), &float_value)) {
     any_param_read = true;
     values.softness = float_value;
   }
 
   int int_value = 0;
-  if (TryReadIntegerSliderValue(GetParam(payload.params, AeParamId::kTileSize), &int_value)) {
+  if (TryReadIntegerSliderValue(GetParam(payload, AeParamId::kTileSize), &int_value)) {
     any_param_read = true;
     values.tile_size = int_value;
   }
-  if (TryReadIntegerSliderValue(GetParam(payload.params, AeParamId::kOverlap), &int_value)) {
+  if (TryReadIntegerSliderValue(GetParam(payload, AeParamId::kOverlap), &int_value)) {
     any_param_read = true;
     values.overlap = int_value;
   }
-  if (TryReadIntegerSliderValue(GetParam(payload.params, AeParamId::kVramBudgetMb), &int_value)) {
+  if (TryReadIntegerSliderValue(GetParam(payload, AeParamId::kVramBudgetMb), &int_value)) {
     any_param_read = true;
     values.vram_budget_mb = int_value;
   }
 
   if (!any_param_read) {
-    SetError(error, "sdk params table does not contain readable values");
-    return false;
+    bool allow_snapshot_fallback = false;
+#if defined(PF_Cmd_RENDER)
+    allow_snapshot_fallback = allow_snapshot_fallback || payload.command == PF_Cmd_RENDER;
+#endif
+#if defined(PF_Cmd_USER_CHANGED_PARAM)
+    allow_snapshot_fallback =
+        allow_snapshot_fallback || payload.command == PF_Cmd_USER_CHANGED_PARAM;
+#endif
+#if defined(PF_Cmd_UPDATE_PARAMS_UI)
+    allow_snapshot_fallback =
+        allow_snapshot_fallback || payload.command == PF_Cmd_UPDATE_PARAMS_UI;
+#endif
+    if (!allow_snapshot_fallback) {
+      SetError(error, "sdk params table does not contain readable values");
+      return false;
+    }
   }
 
+  WriteAeParamSnapshot(values);
   *values_out = values;
   if (error != nullptr) {
     error->clear();
@@ -568,28 +663,25 @@ bool WireParamSetupPayload(const AeSdkEntryPayload& payload,
                            AeDispatchContext* dispatch,
                            std::string* error) {
   if (payload.out_data != nullptr) {
-    // Start from input-only baseline and expand only when scaffold registration succeeds.
-    payload.out_data->num_params = 1;
+    // Keep setup metadata deterministic and lock to the full schema count.
+    payload.out_data->my_version = static_cast<A_u_long>(ZSODA_EFFECT_VERSION_HEX);
+    payload.out_data->out_flags = static_cast<A_long>(kAeGlobalOutFlags);
+    payload.out_data->out_flags2 = static_cast<A_long>(kAeGlobalOutFlags2);
+    payload.out_data->num_params = kAeSdkNumParams;
   }
 
   if (payload.in_data == nullptr || payload.out_data == nullptr) {
-    SetError(error, "params setup payload is incomplete; fallback to input-only params");
+    SetError(error, "params setup payload is incomplete; keep fixed param schema");
     (void)dispatch;
     return true;
   }
 
-  payload.out_data->num_params = 1;
   const PF_Err register_err = RegisterParamsSetupScaffold(payload);
   if (register_err != PF_Err_NONE) {
-    payload.out_data->num_params = 1;
     SetError(error,
              "params setup scaffold registration failed (PF_Err=" +
                  std::to_string(static_cast<int>(register_err)) +
-                 "); fallback to input-only params");
-  } else if (payload.out_data->num_params < kAeSdkNumParams) {
-    // Keep a deterministic count for host UI refresh even when SDK macro expansion
-    // reports a smaller incremental value.
-    payload.out_data->num_params = kAeSdkNumParams;
+                 "); keep fixed num_params");
   }
 
   (void)dispatch;
@@ -616,7 +708,7 @@ bool WireParamUpdatePayload(const AeSdkEntryPayload& payload,
   InitializeSdkHostDispatch(payload, AeCommand::kUpdateParams, dispatch, error);
 
   AeParamValues params = DefaultAeParams();
-  if (!TryExtractPfCmdParamValues(payload, &params, nullptr)) {
+  if (!TryExtractPfCmdParamValues(payload, &params, error)) {
     // Keep host responsiveness: skip unsupported payloads without failing host command.
     dispatch->command.command = AeCommand::kUnknown;
     return true;
@@ -888,7 +980,7 @@ AeCommand MapPfCommand(PF_Cmd command) {
 #endif
 #if defined(PF_Cmd_UPDATE_PARAMS_UI)
     case PF_Cmd_UPDATE_PARAMS_UI:
-      return AeCommand::kParamsSetup;
+      return AeCommand::kUpdateParams;
 #endif
 #if defined(PF_Cmd_SEQUENCE_SETUP)
     case PF_Cmd_SEQUENCE_SETUP:
@@ -1024,9 +1116,12 @@ bool TryExtractPfCmdRenderPayload(const AeSdkEntryPayload& payload,
   scaffold->host_render.frame_hash = scaffold->frame_hash;
 
   AeParamValues params_override = DefaultAeParams();
-  if (TryExtractPfCmdParamValues(payload, &params_override, nullptr)) {
+  std::string params_error;
+  if (TryExtractPfCmdParamValues(payload, &params_override, &params_error)) {
     scaffold->host_render.params_override = params_override;
     scaffold->has_params_override = true;
+  } else if (!params_error.empty()) {
+    SetError(error, "render params override unavailable: " + params_error);
   }
 
   int candidate_width = 0;
@@ -1074,12 +1169,50 @@ bool TryExtractPfCmdRenderPayload(const AeSdkEntryPayload& payload,
   scaffold->host_render.source.height = output_height;
   scaffold->host_render.source.row_bytes = source_row_bytes;
   scaffold->host_render.source.format = *selected_format;
+  scaffold->host_render.source.channel_order = zsoda::core::HostChannelOrder::kARGB;
   scaffold->host_render.destination.pixels = output_pixels;
   scaffold->host_render.destination.width = output_width;
   scaffold->host_render.destination.height = output_height;
   scaffold->host_render.destination.row_bytes = output_row_bytes;
   scaffold->host_render.destination.format = *selected_format;
+  scaffold->host_render.destination.channel_order = zsoda::core::HostChannelOrder::kARGB;
   scaffold->has_host_buffers = true;
+  return true;
+}
+
+bool CommitSdkRenderOutput(const AeSdkEntryPayload& payload,
+                           const AeDispatchContext& dispatch,
+                           std::string* error) {
+  if (payload.command != PF_Cmd_RENDER) {
+    if (error != nullptr) {
+      error->clear();
+    }
+    return true;
+  }
+
+  AeSdkRenderPayloadScaffold scaffold{};
+  std::string extract_error;
+  if (!TryExtractPfCmdRenderPayload(payload, &scaffold, &extract_error)) {
+    SetError(error, "render output commit failed: " + extract_error);
+    return false;
+  }
+  if (!scaffold.has_host_buffers) {
+    SetError(error, "render output commit failed: host buffers unavailable");
+    return false;
+  }
+
+  const auto convert_status =
+      zsoda::core::ConvertGray32FToHost(dispatch.render_response.output, scaffold.host_render.destination);
+  if (convert_status != zsoda::core::PixelConversionStatus::kOk) {
+    SetError(error,
+             std::string("render output commit failed: gray->host conversion failed: ") +
+                 zsoda::core::PixelConversionStatusString(convert_status));
+    return false;
+  }
+
+  if (error != nullptr) {
+    error->clear();
+  }
   return true;
 }
 
