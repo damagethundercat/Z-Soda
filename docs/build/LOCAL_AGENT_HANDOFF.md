@@ -707,3 +707,40 @@ artifacts/diagnostics/ae_loader_diag_YYYYMMDD_HHMMSS/
    - `SwitchParameter -> Int32` 캐스팅 오류
    - `C3861 LogEngineStatusOnce` 컴파일 오류
 3. 빌드가 통과하면 AE 적용 재현 후 `%TEMP%\ZSoda_AE_Runtime.log`의 ORT 1114 지속 여부만 별도 수집.
+
+### Session update (2026-03-03 22:10, native hard reverify after cleanup)
+- 네이티브에서 아래 순서로 재검증을 다시 수행:
+  1. `git pull --ff-only origin main` (최신 `29e2515`)
+  2. `Effects` 경로 `ZSoda*.aex` 제거 확인
+  3. `PluginCache\en_US\ZSoda*` 키 삭제 확인
+  4. `tools\build_aex.ps1 ... -Clean -CopyToMediaCore` (기본 중복 검사 ON)
+  5. AE 재실행 후 `25::3` 재현
+- 빌드/배치 결과:
+  - `build-win\plugin\Release\ZSoda.aex` -> `MediaCore\ZSoda.aex` 복사 성공
+  - 최종 배치 해시 예: `b50ff1b7b69a419d4a0df2484ec092e527fabd196df2ac6f569ca224f4f113a2`
+  - `Effects\ZSoda.aex`, `Effects\ZSodaLoaderProbe.aex` 모두 없음(중복 경로 제거 상태 유지)
+- 재현 후 최신 증거:
+  - Sentry run: `a2dd4afe-3e04-4a4c-8407-00fb4add53d3`
+    - `2026-03-03 22:07:56` 근처: `25::16` + `global outflags mismatch (Code 4008120 vs PiPL 4008020)`
+    - `2026-03-03 22:08:04` 근처: `25::3 cannot be initialized`
+  - `Plugin Loading.log`:
+    - `Loading ...\MediaCore\ZSoda.aex` 직후 `No loaders recognized ... set to Ignore`
+    - `Loading ...\MediaCore\ZSodaLoaderProbe.aex`도 동일
+  - `PluginCache`:
+    - `ZSoda.aex_*`, `ZSodaLoaderProbe.aex_*`가 다시 `Ignore=1`로 재생성
+  - `%TEMP%\ZSoda_AE_Runtime.log`:
+    - 신선 로그(길이 930)에서 ORT `LoadLibraryW ... code=1114` + `EffectMainCmd cmd=1/4`
+- 중요 역설(WSL 전달 포인트):
+  - 같은 재검증 세션의 빌드 산출 `build-win\plugin\pipl\ZSodaPiPL.rr`에는
+    `AE_Effect_Global_OutFlags = 0x04008120`으로 명시되어 있음.
+  - 그런데 AE 런타임 Sentry는 계속 `PiPL flags 4008020`로 판정함.
+  - 즉, **소스/rr 값과 AE가 실제 읽는 PiPL 값 사이에 불일치가 지속**됨.
+
+#### Artifacts to hand over (latest)
+1. PiPL text:
+   - `C:\Users\Yongkyu\code\Z-Soda\build-win\plugin\pipl\ZSodaPiPL.rr`
+2. Diagnostics bundle:
+   - `C:\Users\Yongkyu\code\Z-Soda\artifacts\diagnostics\ae_loader_diag_20260303_220840`
+   - `summary.txt`
+   - `logs\plugin_loading_zsoda_context.txt`
+   - `plugin_cache\zsoda_plugin_cache.json`
