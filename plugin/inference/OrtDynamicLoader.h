@@ -37,6 +37,7 @@ class OrtDynamicLoader {
   void ResetState();
 
   void* module_handle_ = nullptr;
+  bool owns_module_handle_ = false;
   const OrtApiBase* api_base_ = nullptr;
   const OrtApi* api_ = nullptr;
   std::uint32_t requested_api_version_ = 0;

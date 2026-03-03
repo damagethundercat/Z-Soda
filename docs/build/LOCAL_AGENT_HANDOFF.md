@@ -762,3 +762,42 @@ artifacts/diagnostics/ae_loader_diag_YYYYMMDD_HHMMSS/
   - Post-check: no `ZSoda*` keys remain.
 - Next verify point in AE:
   - Relaunch AE and check whether `No loaders recognized` disappears before proceeding to ORT 1114 axis.
+
+### Session update (2026-03-04 01:55, runtime activation path hardening + clean redeploy)
+- Code changes applied (native):
+  - `plugin/inference/OrtDynamicLoader.*`
+    - Added preloaded-module reuse path (`GetModuleHandleExW("onnxruntime.dll")`) before explicit `LoadLibrary`.
+    - Added ORT API version downward negotiation (`requested -> ... -> 1`) when `GetApi(requested)` is unavailable.
+    - Added owned/non-owned module tracking so preloaded host modules are never `FreeLibrary`-ed by plugin cleanup.
+  - `plugin/inference/ModelAutoDownloader.cpp`
+    - Added `%TEMP%\\ZSoda_ModelDownload.log` with per-download HRESULT/result to verify whether auto-download truly succeeds.
+  - `tools/build_aex.ps1`
+    - Copies/stages `onnxruntime_providers_shared.dll` together with `onnxruntime.dll`.
+    - Syncs local `models\\` assets (`models.manifest` + any `.onnx`) into `MediaCore\\models`.
+  - `tools/package_plugin.ps1`
+    - Packages and emits SHA256 for `onnxruntime_providers_shared.dll` when available.
+- Clean native rebuild/redeploy:
+  - Command: `tools\\build_aex.ps1 ... -BuildDir build-win -Config Release -Clean -CopyToMediaCore`
+  - Result: success
+  - Hash parity:
+    - `build-win\\plugin\\Release\\ZSoda.aex` = `190B51CD017EB6331850F9ABBDB39AE98639339763244BEE4967961AF1C3D4C5`
+    - `C:\\Program Files\\Adobe\\Common\\Plug-ins\\7.0\\MediaCore\\ZSoda.aex` = same hash
+  - MediaCore runtime set now includes:
+    - `onnxruntime.dll` (1.24.2)
+    - `onnxruntime_providers_shared.dll` (copied)
+    - `models\\models.manifest` (present)
+- Current hard blocker for real DA3 inference:
+  - `tools\\download_model.ps1 -ModelId depth-anything-v3-small` fails in this native env with:
+    - `Invoke-WebRequest : Invalid username or password`
+  - Additional check (`tools\\download_model.ps1 -ModelId midas-dpt-large`) also fails:
+    - `Invoke-WebRequest : The underlying connection was closed unexpectedly`
+  - Meaning: this native environment currently cannot fetch model artifacts from both HuggingFace and GitHub.
+  - Therefore `MediaCore\\models\\depth-anything-v3\\depth_anything_v3_small.onnx` is still missing.
+  - Without `.onnx`, plugin can only run fallback path even if ORT loads.
+- Next action requested to WSL/remote side:
+  1. Provide/download `depth_anything_v3_small.onnx` via authenticated channel/mirror.
+  2. Place it at `C:\\Program Files\\Adobe\\Common\\Plug-ins\\7.0\\MediaCore\\models\\depth-anything-v3\\depth_anything_v3_small.onnx` (or repo `models\\...` then rerun `build_aex.ps1 -CopyToMediaCore`).
+  3. Repro once and check `%TEMP%\\ZSoda_AE_Runtime.log` for:
+     - `EngineStatus` no longer reporting `DummyDepthEngine`
+     - `loaded_path=<actual onnxruntime dll path>`
+     - no `code=1114`.

@@ -515,6 +515,82 @@ function Resolve-OrtRuntimeDll {
   return $null
 }
 
+function Resolve-OrtProvidersSharedDll {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$OrtLibraryPath,
+
+    [string]$OrtRuntimeDllPath
+  )
+
+  $libraryDir = Split-Path -Path $OrtLibraryPath -Parent
+  if ([string]::IsNullOrWhiteSpace($libraryDir)) {
+    return $null
+  }
+
+  $candidates = @(
+    (Join-Path $libraryDir "onnxruntime_providers_shared.dll"),
+    (Join-Path $libraryDir "..\\bin\\onnxruntime_providers_shared.dll")
+  )
+  if (-not [string]::IsNullOrWhiteSpace($OrtRuntimeDllPath)) {
+    $runtimeDir = Split-Path -Path $OrtRuntimeDllPath -Parent
+    if (-not [string]::IsNullOrWhiteSpace($runtimeDir)) {
+      $candidates += (Join-Path $runtimeDir "onnxruntime_providers_shared.dll")
+    }
+  }
+
+  foreach ($candidate in $candidates | Select-Object -Unique) {
+    if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+      return (Resolve-Path -LiteralPath $candidate).Path
+    }
+  }
+
+  return $null
+}
+
+function Sync-ModelAssets {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$SourceRoot,
+
+    [Parameter(Mandatory = $true)]
+    [string]$DestinationRoot
+  )
+
+  if (-not (Test-Path -LiteralPath $SourceRoot -PathType Container)) {
+    Write-Host "models_sync: source models directory not found ($SourceRoot)"
+    return
+  }
+
+  New-Item -ItemType Directory -Path $DestinationRoot -Force | Out-Null
+
+  $manifestSource = Join-Path $SourceRoot "models.manifest"
+  if (Test-Path -LiteralPath $manifestSource -PathType Leaf) {
+    $manifestDestination = Join-Path $DestinationRoot "models.manifest"
+    Copy-Item -LiteralPath $manifestSource -Destination $manifestDestination -Force
+    Print-ArtifactInfo -Label "models_manifest" -Path $manifestDestination
+  } else {
+    Write-Warning "models.manifest not found under $SourceRoot"
+  }
+
+  $onnxFiles = @(Get-ChildItem -LiteralPath $SourceRoot -Recurse -File -Filter *.onnx -ErrorAction SilentlyContinue)
+  if ($onnxFiles.Count -eq 0) {
+    Write-Host "models_sync: no .onnx files found under $SourceRoot"
+    return
+  }
+
+  foreach ($file in $onnxFiles) {
+    $relativePath = $file.FullName.Substring($SourceRoot.Length).TrimStart('\', '/')
+    $targetPath = Join-Path $DestinationRoot $relativePath
+    $targetDir = Split-Path -Path $targetPath -Parent
+    if (-not [string]::IsNullOrWhiteSpace($targetDir)) {
+      New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
+    }
+    Copy-Item -LiteralPath $file.FullName -Destination $targetPath -Force
+    Print-ArtifactInfo -Label "models_copy" -Path $targetPath
+  }
+}
+
 $runningOnWindows = $false
 if (Get-Variable -Name IsWindows -ErrorAction SilentlyContinue) {
   $runningOnWindows = [bool]$IsWindows
@@ -557,6 +633,10 @@ if ($null -eq $ortRuntimeDllAbs) {
     throw $warn
   }
   Write-Warning $warn
+}
+$ortProvidersSharedAbs = Resolve-OrtProvidersSharedDll -OrtLibraryPath $ortLibraryAbs -OrtRuntimeDllPath $ortRuntimeDllAbs
+if ($null -eq $ortProvidersSharedAbs) {
+  Write-Warning "onnxruntime_providers_shared.dll was not resolved. ORT initialization may fail at runtime."
 }
 
 if ($Clean -and (Test-Path -LiteralPath $buildDirAbs)) {
@@ -759,12 +839,18 @@ if ($BuildLoaderProbe) {
 }
 
 $stagedOrtRuntimePath = $null
+$stagedOrtProvidersPath = $null
 if ($ortRuntimeDllAbs) {
   $stagedOrtRuntimePath = Join-Path $aexDir "onnxruntime.dll"
   Copy-Item -LiteralPath $ortRuntimeDllAbs -Destination $stagedOrtRuntimePath -Force
   Print-ArtifactInfo -Label "staged_ort_dll" -Path $stagedOrtRuntimePath
 } else {
   Write-Warning "onnxruntime.dll was not staged next to ZSoda.aex."
+}
+if ($ortProvidersSharedAbs) {
+  $stagedOrtProvidersPath = Join-Path $aexDir "onnxruntime_providers_shared.dll"
+  Copy-Item -LiteralPath $ortProvidersSharedAbs -Destination $stagedOrtProvidersPath -Force
+  Print-ArtifactInfo -Label "staged_ort_providers_shared_dll" -Path $stagedOrtProvidersPath
 }
 
 Print-LoaderEvidence -AexPath $aex
@@ -792,6 +878,18 @@ if ($CopyToMediaCore) {
   } else {
     Write-Warning "MediaCore copy requested but onnxruntime.dll is unavailable."
   }
+  if ($ortProvidersSharedAbs) {
+    $mediaCoreProvidersOutput = Join-Path $MediaCoreDir "onnxruntime_providers_shared.dll"
+    Copy-Item -LiteralPath $ortProvidersSharedAbs -Destination $mediaCoreProvidersOutput -Force
+    $mediaCoreProvidersOutputAbs = Resolve-AbsolutePath -Path $mediaCoreProvidersOutput
+    Print-ArtifactInfo -Label "mediacore_ort_providers_shared_dll" -Path $mediaCoreProvidersOutputAbs
+  } else {
+    Write-Warning "MediaCore copy requested but onnxruntime_providers_shared.dll is unavailable."
+  }
+
+  $repoModelsRoot = Join-Path $repoRoot "models"
+  $mediaCoreModelsRoot = Join-Path $MediaCoreDir "models"
+  Sync-ModelAssets -SourceRoot $repoModelsRoot -DestinationRoot $mediaCoreModelsRoot
 
   if (-not $SkipDuplicateInstallCheck) {
     Assert-NoMismatchedInstalledCopies -PrimaryAexPath $mediaCoreOutputAbs -FileName "ZSoda.aex"

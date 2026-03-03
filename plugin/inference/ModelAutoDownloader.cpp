@@ -1,6 +1,7 @@
 #include "inference/ModelAutoDownloader.h"
 
 #include <filesystem>
+#include <cstdio>
 #include <string>
 #include <thread>
 #include <unordered_set>
@@ -38,6 +39,37 @@ bool IsFilePresent(const std::string& path) {
   std::error_code ec;
   return std::filesystem::is_regular_file(std::filesystem::path(path), ec);
 }
+
+#if defined(_WIN32)
+void AppendDownloadLogLine(const std::string& line) {
+  char temp_path[MAX_PATH] = {};
+  const DWORD written = ::GetTempPathA(MAX_PATH, temp_path);
+  if (written == 0 || written >= MAX_PATH) {
+    return;
+  }
+
+  char log_path[MAX_PATH] = {};
+  std::snprintf(log_path, sizeof(log_path), "%s%s", temp_path, "ZSoda_ModelDownload.log");
+  FILE* file = std::fopen(log_path, "ab");
+  if (file == nullptr) {
+    return;
+  }
+
+  SYSTEMTIME now = {};
+  ::GetLocalTime(&now);
+  std::fprintf(file,
+               "%04u-%02u-%02u %02u:%02u:%02u.%03u | %s\r\n",
+               static_cast<unsigned>(now.wYear),
+               static_cast<unsigned>(now.wMonth),
+               static_cast<unsigned>(now.wDay),
+               static_cast<unsigned>(now.wHour),
+               static_cast<unsigned>(now.wMinute),
+               static_cast<unsigned>(now.wSecond),
+               static_cast<unsigned>(now.wMilliseconds),
+               line.c_str());
+  std::fclose(file);
+}
+#endif
 
 }  // namespace
 
@@ -81,7 +113,21 @@ ModelDownloadRequestStatus RequestModelDownloadAsync(const ModelDownloadRequest&
     if (!ec) {
       const HRESULT hr = ::URLDownloadToFileA(
           nullptr, request.download_url.c_str(), request.destination_path.c_str(), 0, nullptr);
-      (void)hr;
+      const bool downloaded = SUCCEEDED(hr) && IsFilePresent(request.destination_path);
+      if (!downloaded) {
+        std::error_code remove_ec;
+        std::filesystem::remove(std::filesystem::path(request.destination_path), remove_ec);
+      }
+      AppendDownloadLogLine("model_id=" + request.model_id + ", destination=" + request.destination_path +
+                            ", hr=0x" + [] (HRESULT value) {
+                              char buffer[16] = {};
+                              std::snprintf(buffer, sizeof(buffer), "%08X", static_cast<unsigned>(value));
+                              return std::string(buffer);
+                            }(hr) +
+                            ", downloaded=" + (downloaded ? "true" : "false"));
+    } else {
+      AppendDownloadLogLine("model_id=" + request.model_id + ", destination=" + request.destination_path +
+                            ", create_directories_failed=true");
     }
 
     zsoda::core::CompatLockGuard lock(DownloadMutex());

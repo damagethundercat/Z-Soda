@@ -80,6 +80,37 @@ function Resolve-OrtRuntimeDllPath {
   return $null
 }
 
+function Resolve-OrtProvidersSharedDllPath {
+  param(
+    [string]$BuildRoot,
+    [string]$ArtifactFullPath,
+    [string]$ResolvedOrtRuntimeDll
+  )
+
+  $artifactDir = Split-Path -Path $ArtifactFullPath -Parent
+  $runtimeDir = $null
+  if (-not [string]::IsNullOrWhiteSpace($ResolvedOrtRuntimeDll)) {
+    $runtimeDir = Split-Path -Path $ResolvedOrtRuntimeDll -Parent
+  }
+
+  $candidates = @(
+    (Join-Path $artifactDir "onnxruntime_providers_shared.dll"),
+    (Join-Path $BuildRoot "plugin\\Release\\onnxruntime_providers_shared.dll"),
+    (Join-Path $BuildRoot "plugin\\onnxruntime_providers_shared.dll")
+  )
+  if (-not [string]::IsNullOrWhiteSpace($runtimeDir)) {
+    $candidates += (Join-Path $runtimeDir "onnxruntime_providers_shared.dll")
+  }
+
+  foreach ($candidate in $candidates | Select-Object -Unique) {
+    if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+      return (Resolve-Path -LiteralPath $candidate).Path
+    }
+  }
+
+  return $null
+}
+
 $artifactPath = Resolve-ArtifactPath -PlatformName $Platform -BuildRoot $BuildDir
 if (-not $artifactPath) {
   throw "Artifact not found for platform '$Platform' under build dir '$BuildDir'."
@@ -103,12 +134,22 @@ if ($IncludeManifest) {
 }
 
 $ortRuntimeCopiedPath = $null
+$ortProvidersCopiedPath = $null
 if ($Platform -eq "windows") {
   $resolvedOrtRuntimeDll = Resolve-OrtRuntimeDllPath -ExplicitPath $OrtRuntimeDllPath -BuildRoot $BuildDir -ArtifactFullPath $artifactPath
   if ($resolvedOrtRuntimeDll) {
     $ortDestination = Join-Path $OutputDir "onnxruntime.dll"
     Copy-Item -LiteralPath $resolvedOrtRuntimeDll -Destination $ortDestination -Force
     $ortRuntimeCopiedPath = $ortDestination
+
+    $resolvedProvidersDll = Resolve-OrtProvidersSharedDllPath -BuildRoot $BuildDir -ArtifactFullPath $artifactPath -ResolvedOrtRuntimeDll $resolvedOrtRuntimeDll
+    if ($resolvedProvidersDll) {
+      $providersDestination = Join-Path $OutputDir "onnxruntime_providers_shared.dll"
+      Copy-Item -LiteralPath $resolvedProvidersDll -Destination $providersDestination -Force
+      $ortProvidersCopiedPath = $providersDestination
+    } else {
+      Write-Warning "onnxruntime_providers_shared.dll was not resolved for Windows package output."
+    }
   } else {
     $warn = "onnxruntime.dll was not resolved for Windows package output. The plugin may fail to load ORT at runtime."
     if ($RequireOrtRuntimeDll) {
@@ -125,6 +166,10 @@ if (Get-Command Get-FileHash -ErrorAction SilentlyContinue) {
     if ($ortRuntimeCopiedPath) {
       $ortHash = Get-FileHash -Algorithm SHA256 -LiteralPath $ortRuntimeCopiedPath
       "$($ortHash.Hash.ToLowerInvariant())  onnxruntime.dll" | Out-File -FilePath (Join-Path $OutputDir "onnxruntime.dll.sha256") -Encoding ascii
+    }
+    if ($ortProvidersCopiedPath) {
+      $providersHash = Get-FileHash -Algorithm SHA256 -LiteralPath $ortProvidersCopiedPath
+      "$($providersHash.Hash.ToLowerInvariant())  onnxruntime_providers_shared.dll" | Out-File -FilePath (Join-Path $OutputDir "onnxruntime_providers_shared.dll.sha256") -Encoding ascii
     }
   } else {
     $tempTar = Join-Path $env:TEMP "zsoda_plugin_bundle.tar"
@@ -149,4 +194,9 @@ if ($ortRuntimeCopiedPath) {
   Write-Host "  ort dll:  $ortRuntimeCopiedPath"
 } elseif ($Platform -eq "windows") {
   Write-Host "  ort dll:  (not packaged)"
+}
+if ($ortProvidersCopiedPath) {
+  Write-Host "  ort providers:  $ortProvidersCopiedPath"
+} elseif ($Platform -eq "windows") {
+  Write-Host "  ort providers:  (not packaged)"
 }

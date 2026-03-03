@@ -371,6 +371,131 @@ bool QueryLoadedModulePath(HMODULE module, std::string* loaded_path, std::string
   return false;
 }
 
+bool TryResolvePreloadedOrtModule(HMODULE* module, std::string* loaded_path, std::string* error) {
+  if (module == nullptr || loaded_path == nullptr) {
+    if (error != nullptr) {
+      *error = "internal error: preloaded ORT output pointer is null";
+    }
+    return false;
+  }
+  *module = nullptr;
+  loaded_path->clear();
+
+  HMODULE preloaded = nullptr;
+  const BOOL ok = ::GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                       L"onnxruntime.dll",
+                                       &preloaded);
+  if (!ok || preloaded == nullptr) {
+    if (error != nullptr) {
+      *error = "preloaded onnxruntime.dll is not present in process module list";
+    }
+    return false;
+  }
+
+  std::string loaded_path_error;
+  if (!QueryLoadedModulePath(preloaded, loaded_path, &loaded_path_error)) {
+    if (error != nullptr) {
+      *error = "preloaded ORT found but path query failed: " + loaded_path_error;
+    }
+    return false;
+  }
+
+  *module = preloaded;
+  if (error != nullptr) {
+    error->clear();
+  }
+  return true;
+}
+
+bool BindOrtApiFromModule(HMODULE module,
+                          std::uint32_t requested_api_version,
+                          const OrtApiBase** api_base,
+                          const OrtApi** api,
+                          std::uint32_t* negotiated_api_version,
+                          std::string* runtime_version,
+                          std::string* error) {
+  if (module == nullptr || api_base == nullptr || api == nullptr || negotiated_api_version == nullptr ||
+      runtime_version == nullptr) {
+    if (error != nullptr) {
+      *error = "internal error: invalid ORT binding output pointers";
+    }
+    return false;
+  }
+
+  *api_base = nullptr;
+  *api = nullptr;
+  *negotiated_api_version = 0;
+  runtime_version->clear();
+
+  FARPROC symbol = ::GetProcAddress(module, "OrtGetApiBase");
+  if (symbol == nullptr) {
+    if (error != nullptr) {
+      *error = "GetProcAddress(\"OrtGetApiBase\") failed: " +
+               FormatWin32ErrorMessage(::GetLastError());
+    }
+    return false;
+  }
+
+  using OrtGetApiBaseFn = const OrtApiBase* (ORT_API_CALL*)(void);
+  const auto get_api_base = reinterpret_cast<OrtGetApiBaseFn>(symbol);
+  const OrtApiBase* resolved_base = get_api_base();
+  if (resolved_base == nullptr) {
+    if (error != nullptr) {
+      *error = "OrtGetApiBase returned null";
+    }
+    return false;
+  }
+
+  const auto* api_base_compat = reinterpret_cast<const OrtApiBaseCompat*>(resolved_base);
+  if (api_base_compat->GetApi == nullptr) {
+    if (error != nullptr) {
+      *error = "OrtApiBase::GetApi is null";
+    }
+    return false;
+  }
+
+  const std::uint32_t max_try =
+      requested_api_version > 0 ? requested_api_version : static_cast<std::uint32_t>(ORT_API_VERSION);
+  const OrtApi* resolved_api = nullptr;
+  std::uint32_t resolved_version = 0;
+  for (std::uint32_t version = max_try; version >= 1; --version) {
+    const OrtApi* candidate = api_base_compat->GetApi(version);
+    if (candidate != nullptr) {
+      resolved_api = candidate;
+      resolved_version = version;
+      break;
+    }
+    if (version == 1) {
+      break;
+    }
+  }
+
+  if (resolved_api == nullptr) {
+    if (error != nullptr) {
+      *error = std::string(
+                   "OrtApiBase::GetApi returned null for every requested version down to 1 "
+                   "(requested=") +
+               std::to_string(max_try) + ")";
+    }
+    return false;
+  }
+
+  if (api_base_compat->GetVersionString != nullptr) {
+    const char* version = api_base_compat->GetVersionString();
+    if (version != nullptr) {
+      *runtime_version = version;
+    }
+  }
+
+  *api_base = resolved_base;
+  *api = resolved_api;
+  *negotiated_api_version = resolved_version;
+  if (error != nullptr) {
+    error->clear();
+  }
+  return true;
+}
+
 struct LoadAttempt {
   DWORD flags = 0;
   bool uses_ex = true;
@@ -528,51 +653,83 @@ bool OrtDynamicLoader::Load(const std::string& dll_path,
 #if !defined(_WIN32)
   return Fail("OrtDynamicLoader is only implemented for Windows in this build", error);
 #else
+  std::string preloaded_bind_error;
+  HMODULE preloaded_module = nullptr;
+  std::string preloaded_path;
+  std::string preloaded_resolve_error;
+  if (TryResolvePreloadedOrtModule(&preloaded_module, &preloaded_path, &preloaded_resolve_error)) {
+    const OrtApiBase* preloaded_api_base = nullptr;
+    const OrtApi* preloaded_api = nullptr;
+    std::uint32_t preloaded_negotiated_version = 0;
+    std::string preloaded_runtime_version;
+    std::string bind_error;
+    if (BindOrtApiFromModule(preloaded_module,
+                             requested_api_version_,
+                             &preloaded_api_base,
+                             &preloaded_api,
+                             &preloaded_negotiated_version,
+                             &preloaded_runtime_version,
+                             &bind_error)) {
+      module_handle_ = preloaded_module;
+      owns_module_handle_ = false;
+      api_base_ = preloaded_api_base;
+      api_ = preloaded_api;
+      negotiated_api_version_ = preloaded_negotiated_version;
+      attempted_load_path_ = preloaded_path;
+      loaded_dll_path_ = preloaded_path;
+      runtime_version_string_ = preloaded_runtime_version;
+      diagnostics_ = BuildDiagnostics(requested_dll_path_,
+                                      attempted_load_path_,
+                                      loaded_dll_path_,
+                                      runtime_version_string_,
+                                      requested_api_version_,
+                                      negotiated_api_version_,
+                                      std::string("using preloaded process module: onnxruntime.dll"));
+      if (error != nullptr) {
+        error->clear();
+      }
+      return true;
+    }
+    preloaded_bind_error = "preloaded onnxruntime.dll found at " + preloaded_path +
+                           " but API bind failed: " + bind_error;
+  } else {
+    preloaded_bind_error = preloaded_resolve_error;
+  }
+
   std::wstring load_path_wide;
   std::string resolve_error;
   if (!ResolveLoadPath(dll_path, &load_path_wide, &attempted_load_path_, &resolve_error)) {
-    return Fail("failed to resolve ORT DLL path: " + resolve_error, error);
+    std::string combined = "failed to resolve ORT DLL path: " + resolve_error;
+    if (!preloaded_bind_error.empty()) {
+      combined += " | " + preloaded_bind_error;
+    }
+    return Fail(combined, error);
   }
 
   HMODULE module = nullptr;
   std::string load_attempts_diagnostics;
   if (!TryLoadOrtModuleWithFallback(load_path_wide, &module, &load_attempts_diagnostics)) {
     const std::string detail = load_attempts_diagnostics.empty() ? "<none>" : load_attempts_diagnostics;
-    return Fail("LoadLibraryW failed: all attempts exhausted (" + detail + ")", error);
-  }
-
-  FARPROC symbol = ::GetProcAddress(module, "OrtGetApiBase");
-  if (symbol == nullptr) {
-    const std::string win_error = FormatWin32ErrorMessage(::GetLastError());
-    ::FreeLibrary(module);
-    return Fail("GetProcAddress(\"OrtGetApiBase\") failed: " + win_error, error);
-  }
-
-  using OrtGetApiBaseFn = const OrtApiBase* (ORT_API_CALL*)(void);
-  const auto get_api_base = reinterpret_cast<OrtGetApiBaseFn>(symbol);
-  const OrtApiBase* api_base = get_api_base();
-  if (api_base == nullptr) {
-    ::FreeLibrary(module);
-    return Fail("OrtGetApiBase returned null", error);
-  }
-
-  const auto* api_base_compat = reinterpret_cast<const OrtApiBaseCompat*>(api_base);
-  if (api_base_compat->GetApi == nullptr) {
-    ::FreeLibrary(module);
-    return Fail("OrtApiBase::GetApi is null", error);
-  }
-
-  const OrtApi* api = api_base_compat->GetApi(requested_api_version_);
-  if (api == nullptr) {
-    ::FreeLibrary(module);
-    return Fail("OrtApiBase::GetApi(ORT_API_VERSION) returned null", error);
-  }
-
-  if (api_base_compat->GetVersionString != nullptr) {
-    const char* version = api_base_compat->GetVersionString();
-    if (version != nullptr) {
-      runtime_version_string_ = version;
+    std::string combined = "LoadLibraryW failed: all attempts exhausted (" + detail + ")";
+    if (!preloaded_bind_error.empty()) {
+      combined += " | " + preloaded_bind_error;
     }
+    return Fail(combined, error);
+  }
+
+  const OrtApiBase* api_base = nullptr;
+  const OrtApi* api = nullptr;
+  std::uint32_t negotiated_api_version = 0;
+  std::string bind_error;
+  if (!BindOrtApiFromModule(module,
+                            requested_api_version_,
+                            &api_base,
+                            &api,
+                            &negotiated_api_version,
+                            &runtime_version_string_,
+                            &bind_error)) {
+    ::FreeLibrary(module);
+    return Fail(bind_error, error);
   }
 
   std::string loaded_path_error;
@@ -582,9 +739,10 @@ bool OrtDynamicLoader::Load(const std::string& dll_path,
   }
 
   module_handle_ = module;
+  owns_module_handle_ = true;
   api_base_ = api_base;
   api_ = api;
-  negotiated_api_version_ = requested_api_version_;
+  negotiated_api_version_ = negotiated_api_version;
   diagnostics_ = BuildDiagnostics(requested_dll_path_,
                                   attempted_load_path_,
                                   loaded_dll_path_,
@@ -601,7 +759,7 @@ bool OrtDynamicLoader::Load(const std::string& dll_path,
 
 void OrtDynamicLoader::Unload() {
 #if defined(_WIN32)
-  if (module_handle_ != nullptr) {
+  if (module_handle_ != nullptr && owns_module_handle_) {
     ::FreeLibrary(reinterpret_cast<HMODULE>(module_handle_));
   }
 #endif
@@ -664,6 +822,7 @@ bool OrtDynamicLoader::Fail(const std::string& reason, std::string* error) {
 
 void OrtDynamicLoader::ResetState() {
   module_handle_ = nullptr;
+  owns_module_handle_ = false;
   api_base_ = nullptr;
   api_ = nullptr;
   negotiated_api_version_ = 0;
