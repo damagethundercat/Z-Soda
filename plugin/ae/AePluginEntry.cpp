@@ -579,7 +579,9 @@ PF_Err EffectMainImpl(PF_Cmd cmd,
 #if defined(ZSODA_AE_LOADER_ONLY_MODE) && ZSODA_AE_LOADER_ONLY_MODE
   return RunLoaderOnlyEffectMain(cmd, in_data, out_data, params, output, extra);
 #else
-  LogEngineStatusOnce();
+  if (cmd == PF_Cmd_RENDER || cmd == PF_Cmd_GLOBAL_SETUP || cmd == PF_Cmd_PARAMS_SETUP) {
+    LogEngineStatusOnce();
+  }
   if (cmd != PF_Cmd_RENDER) {
     const std::string cmd_detail = "cmd=" + std::to_string(static_cast<int>(cmd));
     zsoda::ae::AppendDiagnosticsLine("EffectMainCmd", cmd_detail.c_str());

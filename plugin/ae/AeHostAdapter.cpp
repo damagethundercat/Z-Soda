@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <type_traits>
 #include <utility>
@@ -406,6 +407,33 @@ bool TryReadLayerWorld(const PF_LayerDef* world,
   return true;
 }
 
+bool TryCopyLayerWorldPassThrough(const PF_LayerDef* source_world, PF_LayerDef* output_world) {
+  if (source_world == nullptr || output_world == nullptr || source_world->data == nullptr ||
+      output_world->data == nullptr) {
+    return false;
+  }
+
+  if (source_world->width <= 0 || source_world->height <= 0 || source_world->rowbytes <= 0 ||
+      output_world->width <= 0 || output_world->height <= 0 || output_world->rowbytes <= 0) {
+    return false;
+  }
+
+  const A_long rows = std::min(source_world->height, output_world->height);
+  const A_long bytes_to_copy = std::min(source_world->rowbytes, output_world->rowbytes);
+  if (rows <= 0 || bytes_to_copy <= 0) {
+    return false;
+  }
+
+  auto* dst = reinterpret_cast<std::uint8_t*>(output_world->data);
+  const auto* src = reinterpret_cast<const std::uint8_t*>(source_world->data);
+  for (A_long y = 0; y < rows; ++y) {
+    std::memcpy(dst, src, static_cast<std::size_t>(bytes_to_copy));
+    dst += output_world->rowbytes;
+    src += source_world->rowbytes;
+  }
+  return true;
+}
+
 constexpr std::array<const char*, 4> kFallbackModelIdOrder = {
     "depth-anything-v3-small",
     "depth-anything-v3-base",
@@ -540,18 +568,17 @@ bool WireParamSetupPayload(const AeSdkEntryPayload& payload,
                            AeDispatchContext* dispatch,
                            std::string* error) {
   if (payload.out_data != nullptr) {
-    // Start from input-only safety and upgrade to full controls only when
-    // scaffold registration succeeds.
+    // Start from input-only baseline and expand only when scaffold registration succeeds.
     payload.out_data->num_params = 1;
   }
 
-  if (payload.in_data == nullptr || payload.out_data == nullptr || payload.params == nullptr) {
+  if (payload.in_data == nullptr || payload.out_data == nullptr) {
     SetError(error, "params setup payload is incomplete; fallback to input-only params");
     (void)dispatch;
     return true;
   }
 
-  payload.out_data->num_params = kAeSdkNumParams;
+  payload.out_data->num_params = 1;
   const PF_Err register_err = RegisterParamsSetupScaffold(payload);
   if (register_err != PF_Err_NONE) {
     payload.out_data->num_params = 1;
@@ -559,6 +586,10 @@ bool WireParamSetupPayload(const AeSdkEntryPayload& payload,
              "params setup scaffold registration failed (PF_Err=" +
                  std::to_string(static_cast<int>(register_err)) +
                  "); fallback to input-only params");
+  } else if (payload.out_data->num_params < kAeSdkNumParams) {
+    // Keep a deterministic count for host UI refresh even when SDK macro expansion
+    // reports a smaller incremental value.
+    payload.out_data->num_params = kAeSdkNumParams;
   }
 
   (void)dispatch;
@@ -599,21 +630,34 @@ bool WireParamUpdatePayload(const AeSdkEntryPayload& payload,
 bool WireRenderPayload(const AeSdkEntryPayload& payload,
                        AeDispatchContext* dispatch,
                        std::string* error) {
+  const PF_LayerDef* source_world = nullptr;
+  if (payload.params != nullptr && payload.params[0] != nullptr) {
+    source_world = &payload.params[0]->u.ld;
+  }
+  const auto try_passthrough = [&]() {
+    if (TryCopyLayerWorldPassThrough(source_world, payload.output)) {
+      SetError(error, "render scaffold fallback: pass-through copy");
+    }
+  };
+
   InitializeSdkHostDispatch(payload, AeCommand::kRender, dispatch, error);
 
   AeSdkRenderPayloadScaffold scaffold{};
-  if (!TryExtractPfCmdRenderPayload(payload, &scaffold, nullptr)) {
-    // Keep safe no-op render behavior when payload probing fails.
+  if (!TryExtractPfCmdRenderPayload(payload, &scaffold, error)) {
+    // Fall back to source pass-through on extraction failures.
+    try_passthrough();
     return true;
   }
   if (!scaffold.has_host_buffers) {
-    // Keep safe no-op render behavior when source/output extraction is incomplete.
+    // Fall back to source pass-through when host buffer extraction is incomplete.
+    try_passthrough();
     return true;
   }
 
-  if (!BuildHostBufferRenderDispatch(scaffold.host_render, dispatch, nullptr)) {
-    // Any conversion failure falls back to safe no-op, never failing PF_Cmd_RENDER dispatch.
+  if (!BuildHostBufferRenderDispatch(scaffold.host_render, dispatch, error)) {
+    // Any conversion failure falls back to source pass-through, never failing PF_Cmd_RENDER dispatch.
     InitializeSdkHostDispatch(payload, AeCommand::kRender, dispatch, error);
+    try_passthrough();
     return true;
   }
 
@@ -686,9 +730,9 @@ std::size_t BuildHostRenderPixelFormatCandidates(
     }
   };
 
-  push_if_fits(zsoda::core::PixelFormat::kRGBA32F, sizeof(float) * 4U);
-  push_if_fits(zsoda::core::PixelFormat::kRGBA16, sizeof(std::uint16_t) * 4U);
   push_if_fits(zsoda::core::PixelFormat::kRGBA8, sizeof(std::uint8_t) * 4U);
+  push_if_fits(zsoda::core::PixelFormat::kRGBA16, sizeof(std::uint16_t) * 4U);
+  push_if_fits(zsoda::core::PixelFormat::kRGBA32F, sizeof(float) * 4U);
 
   if (count == 0) {
     push(zsoda::core::PixelFormat::kRGBA8);
@@ -750,10 +794,7 @@ std::optional<zsoda::core::PixelFormat> SelectHostRenderPixelFormat(
   if (output_stride_hint.has_value() && is_candidate(*output_stride_hint)) {
     return output_stride_hint;
   }
-  if (candidate_count == 1) {
-    return candidates[0];
-  }
-  return std::nullopt;
+  return candidates[0];
 }
 
 bool BuildStubDispatch(int command_id, AeDispatchContext* dispatch, std::string* error) {

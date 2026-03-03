@@ -585,3 +585,32 @@ artifacts/diagnostics/ae_loader_diag_YYYYMMDD_HHMMSS/
 - Current state matches **case 2**:
   - loader gate is not the primary blocker now (runtime `EffectMain` is executing),
   - main/plugin runtime path is unstable (`ORT init failure + repeated SEH`) and likely causing transparent output via non-fatal fallback behavior.
+
+### Session update (2026-03-03 20:50, case 2 stabilization patch)
+- WSL에서 본체 런타임 축 안정화 1차 패치를 적용:
+  1) `PARAMS_SETUP` 처리 정리
+     - `num_params=1` baseline으로 시작하고 등록 성공 시에만 확장
+     - 등록 실패 시 `input-only`로 명확히 폴백
+  2) 렌더 추출/포맷 실패 시 pass-through
+     - 기존 safe no-op 대신 source->output row copy를 수행해 투명 프레임 가능성 완화
+  3) 픽셀 포맷 fallback 정책 완화
+     - 후보 우선순위를 `RGBA8 -> RGBA16 -> RGBA32F`로 정렬
+     - 힌트가 모호해도 첫 후보 선택으로 렌더 경로를 유지
+  4) 비렌더 명령에서 엔진 초기화 호출 축소
+     - `EffectMain` 엔진 상태 초기화를 `GLOBAL_SETUP/PARAMS_SETUP/RENDER`로 제한
+- 관련 파일:
+  - `plugin/ae/AeHostAdapter.cpp`
+  - `plugin/ae/AePluginEntry.cpp`
+  - `tests/test_ae_router.cpp`
+- 로컬 CI(`tools/run_local_ci.sh`) 재통과 확인.
+
+#### Next native verification checklist (case 2 after D83)
+1. 최신 `main` pull 후 일반 모드(LoaderOnlyMain OFF)로 재빌드/배치:
+   - `tools\build_aex.ps1 ... -Config Release -CopyToMediaCore`
+2. AE에서 `ZSoda` 적용 후 확인:
+   - 파라미터 UI 노출 여부
+   - 투명 출력 재발 여부(최소한 source pass-through 유지되는지)
+3. 런타임 로그 수집:
+   - `%TEMP%\ZSoda_AE_Runtime.log`에서 `SEH exception code=0xC0000005` 빈도 감소 여부
+   - ORT `code=1114` 지속 여부
+4. 필요 시 `collect_ae_loader_diagnostics.ps1`로 증거 패키지 재수집.

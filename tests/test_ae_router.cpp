@@ -117,14 +117,14 @@ void TestPixelFormatCandidatesFromRowBytes() {
   std::size_t count =
       zsoda::ae::BuildHostRenderPixelFormatCandidates(8, 8U * 16U, &candidates);
   assert(count == 3U);
-  assert(candidates[0] == zsoda::core::PixelFormat::kRGBA32F);
+  assert(candidates[0] == zsoda::core::PixelFormat::kRGBA8);
   assert(candidates[1] == zsoda::core::PixelFormat::kRGBA16);
-  assert(candidates[2] == zsoda::core::PixelFormat::kRGBA8);
+  assert(candidates[2] == zsoda::core::PixelFormat::kRGBA32F);
 
   count = zsoda::ae::BuildHostRenderPixelFormatCandidates(8, 8U * 8U, &candidates);
   assert(count == 2U);
-  assert(candidates[0] == zsoda::core::PixelFormat::kRGBA16);
-  assert(candidates[1] == zsoda::core::PixelFormat::kRGBA8);
+  assert(candidates[0] == zsoda::core::PixelFormat::kRGBA8);
+  assert(candidates[1] == zsoda::core::PixelFormat::kRGBA16);
 
   count = zsoda::ae::BuildHostRenderPixelFormatCandidates(8, 8U * 4U, &candidates);
   assert(count == 1U);
