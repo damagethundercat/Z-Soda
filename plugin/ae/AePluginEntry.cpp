@@ -531,7 +531,7 @@ PF_Err EffectMainImpl(PF_Cmd cmd,
         "BuildSdkDispatch failed: cmd=" + std::to_string(static_cast<int>(cmd)) +
         ", error=" + (error.empty() ? "<none>" : error);
     zsoda::ae::AppendDiagnosticsLine("EffectMain", detail.c_str());
-    return cmd == PF_Cmd_RENDER ? PF_Err_INTERNAL_STRUCT_DAMAGED : PF_Err_NONE;
+    return PF_Err_NONE;
   }
 
   if (dispatch.command.command == zsoda::ae::AeCommand::kUnknown) {
@@ -549,8 +549,7 @@ PF_Err EffectMainImpl(PF_Cmd cmd,
       ", mapped=" + std::to_string(static_cast<int>(dispatch.command.command)) +
       ", error=" + (error.empty() ? "<none>" : error);
   zsoda::ae::AppendDiagnosticsLine("EffectMain", detail.c_str());
-  return dispatch.command.command == zsoda::ae::AeCommand::kRender ? PF_Err_INTERNAL_STRUCT_DAMAGED
-                                                                    : PF_Err_NONE;
+  return PF_Err_NONE;
 }
 
 PF_Err EffectMainGuarded(PF_Cmd cmd,
@@ -559,15 +558,14 @@ PF_Err EffectMainGuarded(PF_Cmd cmd,
                          PF_ParamDef* params[],
                          PF_LayerDef* output,
                          void* extra) {
-  const PF_Err nonfatal_error = (cmd == PF_Cmd_RENDER) ? PF_Err_INTERNAL_STRUCT_DAMAGED : PF_Err_NONE;
   try {
     return EffectMainImpl(cmd, in_data, out_data, params, output, extra);
   } catch (const std::exception& ex) {
     zsoda::ae::AppendDiagnosticsLine("EffectMain", ex.what());
-    return nonfatal_error;
+    return PF_Err_NONE;
   } catch (...) {
     zsoda::ae::AppendDiagnosticsLine("EffectMain", "unknown c++ exception");
-    return nonfatal_error;
+    return PF_Err_NONE;
   }
 }
 
@@ -582,7 +580,7 @@ extern "C" DllExport PF_Err EffectMain(PF_Cmd cmd,
     return EffectMainGuarded(cmd, in_data, out_data, params, output, extra);
   } __except (EXCEPTION_EXECUTE_HANDLER) {
     zsoda::ae::LogSehException("EffectMain", static_cast<unsigned>(GetExceptionCode()));
-    return (cmd == PF_Cmd_RENDER) ? PF_Err_INTERNAL_STRUCT_DAMAGED : PF_Err_NONE;
+    return PF_Err_NONE;
   }
 #else
   return EffectMainGuarded(cmd, in_data, out_data, params, output, extra);

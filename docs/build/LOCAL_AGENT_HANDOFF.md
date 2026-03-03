@@ -404,3 +404,12 @@ artifacts/diagnostics/ae_loader_diag_YYYYMMDD_HHMMSS/
 - 목적:
   - 로더 통과 후 초기화 예외 때문에 전체 이펙트 적용이 막히는 현상을 방지
   - 적용은 유지하고, 실제 원인은 `%TEMP%\ZSoda_AE_Runtime.log`의 `EffectMain`/`EngineStatus` 로그로 추적
+
+### Session update (2026-03-03 19:25, full non-fatal return policy)
+- 네이티브 보고 기준으로 `ZSoda`는 여전히 `25::3`가 발생하므로, `EffectMain`에서의 실패 반환 정책을 추가 완화:
+  - `BuildSdkDispatch` 실패 시 `PF_Err_NONE`
+  - `Dispatch` 실패 시 `PF_Err_NONE`
+  - C++ 예외/SEH 예외 catch 시 `PF_Err_NONE`
+- 의도:
+  - AE가 이펙트 적용 자체를 거부하지 않도록 하여 본체(`ZSoda`)를 Probe와 동일하게 “적용 가능한 상태”로 맞춤
+  - 실패 원인 분석은 로그(`%TEMP%\ZSoda_AE_Runtime.log`) 기반으로 지속
