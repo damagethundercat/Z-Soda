@@ -4,7 +4,7 @@
 
 ## 1. 전체 진행률
 - 전체 진행률: **99%** (`PLAN.md`의 `P1`~`P5` 기준, `P3/P4/P5`는 마무리 단계)
-- 마지막 업데이트: **2026-03-03** (`25::3` 재발 대응: ZSoda 본체 `EffectMain` 실패 반환을 전면 비치명(`PF_Err_NONE`)으로 완화)
+- 마지막 업데이트: **2026-03-03** (`25::3` 재현 후 런타임 로그 재분석: `EngineStatus`는 기록되나 ORT `LoadLibraryW` 초기화 실패가 반복되고 `EffectMain` 라인 부재 확인)
 - 갱신 원칙: **작업 단위 완료 시 즉시 업데이트**
 
 ## 2. 현재 작업 상태
@@ -117,3 +117,4 @@
 - [x] `D74` MFR 경고 대응 기반 정리: 코드/PiPL outflags를 공용 헤더(`ZSodaAeFlags.h`)로 통합해 `PF_OutFlag2_SUPPORTS_THREADED_RENDERING` 반영을 단일 소스로 맞추고, `EffectMain` 최초 진입 시 엔진 백엔드 상태를 `%TEMP%\\ZSoda_AE_Runtime.log`에 남겨 실추론/폴백 여부를 즉시 진단 가능하게 개선 (`plugin/ae/ZSodaAeFlags.h`, `plugin/ae/AeHostAdapter.cpp`, `plugin/ae/LoaderProbeEntry.cpp`, `plugin/ae/ZSodaPiPL.r`, `plugin/ae/ZSodaLoaderProbePiPL.r`, `plugin/ae/AePluginEntry.cpp`, `docs/build/LOCAL_AGENT_HANDOFF.md`)
 - [x] `D75` 초기화 실패 복원력 강화: `EffectMain` 예외/SEH 처리 시 `PF_Cmd_RENDER`만 치명 에러를 반환하고 나머지 초기화/설정 명령은 `PF_Err_NONE`로 비치명 처리해 `25::3 cannot be initialized` 재발을 완화하고, 원인 추적은 런타임 로그(`EngineStatus`, `EffectMain`)로 이어지도록 조정 (`plugin/ae/AePluginEntry.cpp`, `docs/build/LOCAL_AGENT_HANDOFF.md`)
 - [x] `D76` ZSoda 본체 적용 우선 복구: 네이티브 재현에서 `ZSoda`만 `25::3`가 지속된 문제를 기준으로 `EffectMain`의 실패 반환 정책을 전면 비치명(`PF_Err_NONE`)으로 완화(`BuildSdkDispatch/Dispatch 실패 + C++/SEH 예외`)해 AE가 이펙트 적용 자체를 거부하지 않도록 조정하고, 진단은 로그 기반으로 계속 추적하도록 문서 반영 (`plugin/ae/AePluginEntry.cpp`, `docs/build/LOCAL_AGENT_HANDOFF.md`)
+- [x] `D77` 동일 오류 재현 로그 분석: `%TEMP%\ZSoda_AE_Runtime.log` 최신 기준 `EngineStatus`만 반복 기록되고 `EffectMain` 항목은 없으며, ORT 초기화가 `LoadLibraryW failed`로 매회 실패(`requested_path=C:\onnxruntime-win-x64-1.24.2\lib\onnxruntime.dll`, `loaded_path=<none>`, `negotiated_api_version=0`)함을 확인. handoff에 증거와 다음 분기(ORT 종속 DLL/런타임 초기화 실패 축)를 반영 (`docs/build/LOCAL_AGENT_HANDOFF.md`, `PROGRESS.md`)

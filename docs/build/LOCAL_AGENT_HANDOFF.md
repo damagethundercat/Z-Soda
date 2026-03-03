@@ -413,3 +413,22 @@ artifacts/diagnostics/ae_loader_diag_YYYYMMDD_HHMMSS/
 - 의도:
   - AE가 이펙트 적용 자체를 거부하지 않도록 하여 본체(`ZSoda`)를 Probe와 동일하게 “적용 가능한 상태”로 맞춤
   - 실패 원인 분석은 로그(`%TEMP%\ZSoda_AE_Runtime.log`) 기반으로 지속
+
+### Session update (2026-03-03 19:23, runtime log triage after same error)
+- User retest still reports the same AE apply error.
+- Checked `%TEMP%\ZSoda_AE_Runtime.log`:
+  - `LastWrite`: `2026-03-03 19:23:34.260`
+  - `Size`: `1518` bytes
+- Latest `EngineStatus` lines (`18:57:32.794`, `19:11:28.601`, `19:23:34.260`) all show identical fallback:
+  - `requested=auto, active=cpu, engine=DummyDepthEngine`
+  - `configured_fallback=true, last_run_fallback=true`
+  - `fallback_reason=onnx runtime backend initialization failed`
+  - `requested_path=attempted_load_path=C:\onnxruntime-win-x64-1.24.2\lib\onnxruntime.dll`
+  - `loaded_path=<none>, negotiated_api_version=0, runtime_version=<unknown>`
+  - `error=LoadLibraryW failed: DLL 초기화 루틴을 실행할 수 없습니다.`
+- `EffectMain` keyword search in the same runtime log returns `NONE` (no matching line).
+
+#### Implication for next WSL pass
+1. Failure is repeating at ORT DLL initialization with the same path/signature, so prioritize dependency/runtime initialization diagnostics over random crash triage.
+2. Add immediate logging of Win32 error code (`GetLastError`) right after failed `LoadLibraryW` and include decoded message text.
+3. Verify transitive dependency loadability of `C:\onnxruntime-win-x64-1.24.2\lib\onnxruntime.dll` under the same user/session context (AE-launched context preferred).
