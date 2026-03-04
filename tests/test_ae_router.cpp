@@ -336,10 +336,14 @@ void TestHostBufferRenderDispatchConversion() {
   assert(dispatch.render_request.frame_hash == 404);
   assert(dispatch.render_request.source.desc().width == kWidth);
   assert(dispatch.render_request.source.desc().height == kHeight);
-  assert(dispatch.render_request.source.desc().channels == 1);
-  assert(dispatch.render_request.source.desc().format == zsoda::core::PixelFormat::kGray32F);
-  assert(dispatch.render_request.source.at(0, 0, 0) > 0.2F);
-  assert(dispatch.render_request.source.at(1, 0, 0) > 0.7F);
+  assert(dispatch.render_request.source.desc().channels == 3);
+  assert(dispatch.render_request.source.desc().format == zsoda::core::PixelFormat::kRGBA32F);
+  assert(dispatch.render_request.source.at(0, 0, 0) > 0.9F);
+  assert(dispatch.render_request.source.at(0, 0, 1) < 0.1F);
+  assert(dispatch.render_request.source.at(0, 0, 2) < 0.1F);
+  assert(dispatch.render_request.source.at(1, 0, 0) < 0.1F);
+  assert(dispatch.render_request.source.at(1, 0, 1) > 0.9F);
+  assert(dispatch.render_request.source.at(1, 0, 2) < 0.1F);
 }
 
 void TestHostBufferRenderDispatchValidation() {
@@ -362,7 +366,7 @@ void TestHostBufferRenderDispatchValidation() {
   zsoda::ae::AeDispatchContext dispatch;
   std::string error;
   assert(!zsoda::ae::BuildHostBufferRenderDispatch(payload, &dispatch, &error));
-  assert(error.find("host->gray conversion failed") != std::string::npos);
+  assert(error.find("host->rgb conversion failed") != std::string::npos);
 }
 
 void TestExecuteHostBufferRenderBridge() {

@@ -168,6 +168,110 @@ template <typename TView>
 
 }  // namespace detail
 
+// Converts host RGBA8/16/32F into normalized RGB32F.
+// Integer inputs map full-range [0..max] to [0..1]. Float inputs are sanitized
+// (NaN/inf -> 0). When `unpremultiply_alpha` is true, RGB is unpremultiplied by
+// alpha (with zero-alpha pixels forced to black) to preserve color cues for
+// inference models that expect straight RGB input.
+[[nodiscard]] inline PixelConversionStatus ConvertHostToRgb32F(const HostBufferView& source,
+                                                               FrameBuffer* out_rgb,
+                                                               bool unpremultiply_alpha = true) {
+  if (out_rgb == nullptr) {
+    return PixelConversionStatus::kInvalidArgument;
+  }
+
+  std::size_t bytes_per_pixel = 0;
+  const PixelConversionStatus source_status = detail::ValidateHostView(source, &bytes_per_pixel);
+  if (source_status != PixelConversionStatus::kOk) {
+    return source_status;
+  }
+
+  FrameDesc rgb_desc;
+  rgb_desc.width = source.width;
+  rgb_desc.height = source.height;
+  rgb_desc.channels = 3;
+  rgb_desc.format = PixelFormat::kRGBA32F;
+  out_rgb->Resize(rgb_desc);
+
+  const auto* base = static_cast<const std::uint8_t*>(source.pixels);
+  for (int y = 0; y < source.height; ++y) {
+    const auto* row = base + static_cast<std::size_t>(y) * source.row_bytes;
+    for (int x = 0; x < source.width; ++x) {
+      const auto* pixel = row + static_cast<std::size_t>(x) * bytes_per_pixel;
+
+      float r = 0.0F;
+      float g = 0.0F;
+      float b = 0.0F;
+      float a = 1.0F;
+      switch (source.format) {
+        case PixelFormat::kRGBA8: {
+          const int a_index = source.channel_order == HostChannelOrder::kARGB ? 0 : 3;
+          const int r_index = source.channel_order == HostChannelOrder::kARGB ? 1 : 0;
+          const int g_index = source.channel_order == HostChannelOrder::kARGB ? 2 : 1;
+          const int b_index = source.channel_order == HostChannelOrder::kARGB ? 3 : 2;
+          r = static_cast<float>(pixel[r_index]) * detail::kInv255;
+          g = static_cast<float>(pixel[g_index]) * detail::kInv255;
+          b = static_cast<float>(pixel[b_index]) * detail::kInv255;
+          a = static_cast<float>(pixel[a_index]) * detail::kInv255;
+          break;
+        }
+        case PixelFormat::kRGBA16: {
+          const int a_index = source.channel_order == HostChannelOrder::kARGB ? 0 : 3;
+          const int r_index = source.channel_order == HostChannelOrder::kARGB ? 1 : 0;
+          const int g_index = source.channel_order == HostChannelOrder::kARGB ? 2 : 1;
+          const int b_index = source.channel_order == HostChannelOrder::kARGB ? 3 : 2;
+          r = static_cast<float>(detail::LoadU16(pixel + sizeof(std::uint16_t) * r_index)) *
+              detail::kInv65535;
+          g = static_cast<float>(detail::LoadU16(pixel + sizeof(std::uint16_t) * g_index)) *
+              detail::kInv65535;
+          b = static_cast<float>(detail::LoadU16(pixel + sizeof(std::uint16_t) * b_index)) *
+              detail::kInv65535;
+          a = static_cast<float>(detail::LoadU16(pixel + sizeof(std::uint16_t) * a_index)) *
+              detail::kInv65535;
+          break;
+        }
+        case PixelFormat::kRGBA32F: {
+          const int a_index = source.channel_order == HostChannelOrder::kARGB ? 0 : 3;
+          const int r_index = source.channel_order == HostChannelOrder::kARGB ? 1 : 0;
+          const int g_index = source.channel_order == HostChannelOrder::kARGB ? 2 : 1;
+          const int b_index = source.channel_order == HostChannelOrder::kARGB ? 3 : 2;
+          r = detail::ClampUnit(detail::LoadF32(pixel + sizeof(float) * r_index));
+          g = detail::ClampUnit(detail::LoadF32(pixel + sizeof(float) * g_index));
+          b = detail::ClampUnit(detail::LoadF32(pixel + sizeof(float) * b_index));
+          a = detail::ClampUnit(detail::LoadF32(pixel + sizeof(float) * a_index));
+          break;
+        }
+        default:
+          return PixelConversionStatus::kUnsupportedFormat;
+      }
+
+      r = detail::ClampUnit(r);
+      g = detail::ClampUnit(g);
+      b = detail::ClampUnit(b);
+      a = detail::ClampUnit(a);
+
+      if (unpremultiply_alpha) {
+        if (a <= 1e-6F) {
+          r = 0.0F;
+          g = 0.0F;
+          b = 0.0F;
+        } else if (a < 1.0F) {
+          const float inv_alpha = 1.0F / a;
+          r = detail::ClampUnit(r * inv_alpha);
+          g = detail::ClampUnit(g * inv_alpha);
+          b = detail::ClampUnit(b * inv_alpha);
+        }
+      }
+
+      out_rgb->at(x, y, 0) = r;
+      out_rgb->at(x, y, 1) = g;
+      out_rgb->at(x, y, 2) = b;
+    }
+  }
+
+  return PixelConversionStatus::kOk;
+}
+
 // Converts host RGBA8/16/32F into normalized Gray32F.
 // Integer inputs map full-range [0..max] to [0..1]. Float inputs are sanitized
 // (NaN/inf -> 0) and clamped to [0..1] before luma conversion.

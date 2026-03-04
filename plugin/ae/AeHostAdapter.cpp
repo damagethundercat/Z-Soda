@@ -916,10 +916,10 @@ bool BuildHostBufferRenderDispatch(const AeHostRenderBridgePayload& payload,
   dispatch->render_request = {};
   dispatch->render_response = {};
   const auto source_status =
-      zsoda::core::ConvertHostToGray32F(payload.source, &dispatch->render_request.source);
+      zsoda::core::ConvertHostToRgb32F(payload.source, &dispatch->render_request.source);
   if (source_status != zsoda::core::PixelConversionStatus::kOk) {
     SetError(error,
-             std::string("host->gray conversion failed: ") +
+             std::string("host->rgb conversion failed: ") +
                  zsoda::core::PixelConversionStatusString(source_status));
     return false;
   }

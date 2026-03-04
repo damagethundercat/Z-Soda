@@ -216,6 +216,80 @@ void TestConvertHostToGray32FValidation() {
   assert(zsoda::core::ConvertHostToGray32F(unsupported, &gray) == Status::kUnsupportedFormat);
 }
 
+void TestConvertHostToRgb32FRgba8AndUnpremultiply() {
+  constexpr int kWidth = 2;
+  constexpr int kHeight = 1;
+  constexpr std::size_t kRowBytes = kWidth * 4U;
+  std::vector<std::uint8_t> rgba(kRowBytes * kHeight, 0);
+
+  // Premultiplied red (straight 0.5 red with alpha 0.5 -> stored red ~= 0.25).
+  rgba[0] = 64;
+  rgba[1] = 0;
+  rgba[2] = 0;
+  rgba[3] = 128;
+  // Opaque green.
+  rgba[4] = 0;
+  rgba[5] = 255;
+  rgba[6] = 0;
+  rgba[7] = 255;
+
+  zsoda::core::HostBufferView view;
+  view.pixels = rgba.data();
+  view.width = kWidth;
+  view.height = kHeight;
+  view.row_bytes = kRowBytes;
+  view.format = zsoda::core::PixelFormat::kRGBA8;
+
+  zsoda::core::FrameBuffer rgb;
+  auto status = zsoda::core::ConvertHostToRgb32F(view, &rgb);
+  assert(status == zsoda::core::PixelConversionStatus::kOk);
+  assert(rgb.desc().channels == 3);
+  assert(rgb.desc().format == zsoda::core::PixelFormat::kRGBA32F);
+  assert(NearlyEqual(rgb.at(0, 0, 0), 0.5F, 2e-2F));
+  assert(NearlyEqual(rgb.at(0, 0, 1), 0.0F, 1e-5F));
+  assert(NearlyEqual(rgb.at(0, 0, 2), 0.0F, 1e-5F));
+  assert(NearlyEqual(rgb.at(1, 0, 0), 0.0F, 1e-5F));
+  assert(NearlyEqual(rgb.at(1, 0, 1), 1.0F, 1e-5F));
+  assert(NearlyEqual(rgb.at(1, 0, 2), 0.0F, 1e-5F));
+
+  zsoda::core::FrameBuffer rgb_premult;
+  status = zsoda::core::ConvertHostToRgb32F(view, &rgb_premult, false);
+  assert(status == zsoda::core::PixelConversionStatus::kOk);
+  assert(NearlyEqual(rgb_premult.at(0, 0, 0), 64.0F / 255.0F, 1e-5F));
+}
+
+void TestConvertHostToRgb32FValidation() {
+  using Status = zsoda::core::PixelConversionStatus;
+
+  std::uint8_t pixel[16] = {0};
+  zsoda::core::HostBufferView view;
+  view.pixels = pixel;
+  view.width = 1;
+  view.height = 1;
+  view.row_bytes = 4;
+  view.format = zsoda::core::PixelFormat::kRGBA8;
+
+  zsoda::core::FrameBuffer rgb;
+  assert(zsoda::core::ConvertHostToRgb32F(view, nullptr) == Status::kInvalidArgument);
+
+  zsoda::core::HostBufferView null_pixels = view;
+  null_pixels.pixels = nullptr;
+  assert(zsoda::core::ConvertHostToRgb32F(null_pixels, &rgb) == Status::kInvalidArgument);
+
+  zsoda::core::HostBufferView bad_dims = view;
+  bad_dims.width = 0;
+  assert(zsoda::core::ConvertHostToRgb32F(bad_dims, &rgb) == Status::kInvalidDimensions);
+
+  zsoda::core::HostBufferView bad_stride = view;
+  bad_stride.row_bytes = 3;
+  assert(zsoda::core::ConvertHostToRgb32F(bad_stride, &rgb) == Status::kInvalidStride);
+
+  zsoda::core::HostBufferView unsupported = view;
+  unsupported.row_bytes = 16;
+  unsupported.format = zsoda::core::PixelFormat::kGray32F;
+  assert(zsoda::core::ConvertHostToRgb32F(unsupported, &rgb) == Status::kUnsupportedFormat);
+}
+
 void TestConvertGray32FToHostFormats() {
   zsoda::core::FrameDesc desc;
   desc.width = 3;
@@ -354,6 +428,8 @@ void RunDepthOpsTests() {
   TestConvertHostToGray32FRgba8WithStridePadding();
   TestConvertHostToGray32FRgba32FSanitize();
   TestConvertHostToGray32FValidation();
+  TestConvertHostToRgb32FRgba8AndUnpremultiply();
+  TestConvertHostToRgb32FValidation();
   TestConvertGray32FToHostFormats();
   TestConvertGray32FToHostValidation();
 }
