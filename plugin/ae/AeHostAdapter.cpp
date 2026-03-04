@@ -1182,7 +1182,8 @@ bool TryExtractPfCmdRenderPayload(const AeSdkEntryPayload& payload,
 
 bool CommitSdkRenderOutput(const AeSdkEntryPayload& payload,
                            const AeDispatchContext& dispatch,
-                           std::string* error) {
+                           std::string* error,
+                           const AeSdkRenderPayloadScaffold* cached_scaffold) {
   if (payload.command != PF_Cmd_RENDER) {
     if (error != nullptr) {
       error->clear();
@@ -1190,12 +1191,18 @@ bool CommitSdkRenderOutput(const AeSdkEntryPayload& payload,
     return true;
   }
 
+  // Use cached scaffold if provided, otherwise re-extract.
   AeSdkRenderPayloadScaffold scaffold{};
-  std::string extract_error;
-  if (!TryExtractPfCmdRenderPayload(payload, &scaffold, &extract_error)) {
-    SetError(error, "render output commit failed: " + extract_error);
-    return false;
+  if (cached_scaffold != nullptr) {
+    scaffold = *cached_scaffold;
+  } else {
+    std::string extract_error;
+    if (!TryExtractPfCmdRenderPayload(payload, &scaffold, &extract_error)) {
+      SetError(error, "render output commit failed: " + extract_error);
+      return false;
+    }
   }
+
   if (!scaffold.has_host_buffers) {
     SetError(error, "render output commit failed: host buffers unavailable");
     return false;

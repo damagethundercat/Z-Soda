@@ -6,6 +6,7 @@
 #include <cstring>
 #include <cstdio>
 #include <cstdint>
+#include <exception>
 #include <filesystem>
 #include <limits>
 #include <memory>
@@ -33,6 +34,7 @@ namespace zsoda::inference {
 namespace {
 
 constexpr int kMinimumModelInputSize = 32;
+constexpr std::uint32_t kDefaultOrtApiVersionFloor = 17U;
 
 RuntimeBackend ResolveActiveBackend(RuntimeBackend requested_backend) {
 #if defined(ZSODA_WITH_ONNX_RUNTIME_API) && ZSODA_WITH_ONNX_RUNTIME_API
@@ -174,6 +176,102 @@ std::string BuildProviderNote(RuntimeBackend requested_backend, RuntimeBackend a
   note.append(" (provider wiring pending)");
   return note;
 }
+
+#if defined(ZSODA_WITH_ONNX_RUNTIME_API) && ZSODA_WITH_ONNX_RUNTIME_API
+std::string JoinProviders(const std::vector<std::string>& providers) {
+  if (providers.empty()) {
+    return "<none>";
+  }
+  std::ostringstream oss;
+  for (std::size_t i = 0; i < providers.size(); ++i) {
+    if (i > 0U) {
+      oss << "|";
+    }
+    oss << providers[i];
+  }
+  return oss.str();
+}
+
+std::string ConsumeOrtStatusMessage(const OrtApi* api, OrtStatus* status) {
+  if (api == nullptr || status == nullptr) {
+    return "unknown ORT status error";
+  }
+  const char* raw = api->GetErrorMessage != nullptr ? api->GetErrorMessage(status) : nullptr;
+  std::string message = (raw != nullptr && raw[0] != '\0') ? raw : "unknown ORT status error";
+  if (api->ReleaseStatus != nullptr) {
+    api->ReleaseStatus(status);
+  }
+  return message;
+}
+
+bool QueryRuntimeCapabilities(const OrtApi* api,
+                              RuntimeBackend active_backend,
+                              std::string* capability_note,
+                              std::string* error) {
+  if (capability_note != nullptr) {
+    capability_note->clear();
+  }
+  if (api == nullptr) {
+    if (error != nullptr) {
+      *error = "onnx runtime capability probe failed: api pointer is null";
+    }
+    return false;
+  }
+
+  char** providers_raw = nullptr;
+  int provider_length = 0;
+  OrtStatus* providers_status = api->GetAvailableProviders != nullptr
+                                    ? api->GetAvailableProviders(&providers_raw, &provider_length)
+                                    : nullptr;
+  if (providers_status != nullptr) {
+    if (error != nullptr) {
+      *error = "onnx runtime capability probe failed: GetAvailableProviders failed: " +
+               ConsumeOrtStatusMessage(api, providers_status);
+    }
+    return false;
+  }
+
+  std::vector<std::string> providers;
+  providers.reserve(provider_length > 0 ? static_cast<std::size_t>(provider_length) : 0U);
+  bool has_cpu_provider = false;
+  for (int i = 0; i < provider_length; ++i) {
+    const char* provider = (providers_raw != nullptr) ? providers_raw[i] : nullptr;
+    const std::string provider_name = SafeCStr(provider, "<null provider>");
+    providers.push_back(provider_name);
+    if (ToLowerCopy(provider_name) == "cpuexecutionprovider") {
+      has_cpu_provider = true;
+    }
+  }
+
+  if (api->ReleaseAvailableProviders != nullptr) {
+    api->ReleaseAvailableProviders(providers_raw, provider_length);
+  }
+
+  if (active_backend == RuntimeBackend::kCpu && !has_cpu_provider) {
+    if (error != nullptr) {
+      *error = "onnx runtime capability probe failed: CPUExecutionProvider is unavailable";
+    }
+    return false;
+  }
+
+  std::ostringstream capability;
+  capability << "providers=" << JoinProviders(providers);
+  if (api->GetBuildInfoString != nullptr) {
+    const char* build_info = api->GetBuildInfoString();
+    if (build_info != nullptr && build_info[0] != '\0') {
+      capability << ", build_info=" << build_info;
+    }
+  }
+
+  if (capability_note != nullptr) {
+    *capability_note = capability.str();
+  }
+  if (error != nullptr) {
+    error->clear();
+  }
+  return true;
+}
+#endif
 
 #if defined(ZSODA_WITH_ONNX_RUNTIME_API) && ZSODA_WITH_ONNX_RUNTIME_API
 std::string ResolveConfiguredOrtLibraryPath(const RuntimeOptions& options) {
@@ -728,10 +826,10 @@ bool CheckedMultiplySize(std::size_t lhs, std::size_t rhs, std::size_t* out_valu
   return true;
 }
 
-bool CopyTensorPrefixWithGuards(const float* data,
-                                std::size_t value_count,
-                                std::vector<float>* out_values,
-                                std::string* error) {
+bool CopyTensorPrefix(const float* data,
+                      std::size_t value_count,
+                      std::vector<float>* out_values,
+                      std::string* error) {
   if (out_values == nullptr) {
     if (error != nullptr) {
       *error = "internal error: output vector for tensor copy is null";
@@ -761,89 +859,143 @@ bool CopyTensorPrefixWithGuards(const float* data,
     return false;
   }
 
-  {
-    const std::string detail =
-        "values=" + std::to_string(value_count) + ", bytes=" + std::to_string(byte_count);
-    AppendOrtTrace("extract_before_first_access", detail.c_str());
-  }
-
-#if defined(_WIN32) && defined(_MSC_VER)
-  __try {
-    std::memcpy(out_values->data(), data, byte_count);
-  } __except (EXCEPTION_EXECUTE_HANDLER) {
-    const unsigned int seh_code = static_cast<unsigned int>(::GetExceptionCode());
-    char seh_message[160] = {};
-    std::snprintf(seh_message,
-                  sizeof(seh_message),
-                  "tensor copy SEH 0x%08X",
-                  static_cast<unsigned int>(seh_code));
-    AppendOrtTrace("extract_first_access_seh", seh_message);
-    if (error != nullptr) {
-      *error = std::string("onnx runtime tensor copy failed: ") + seh_message;
-    }
-    return false;
-  }
-#else
   std::memcpy(out_values->data(), data, byte_count);
-#endif
-
-  AppendOrtTrace("extract_after_first_access");
   if (error != nullptr) {
     error->clear();
   }
   return true;
 }
 
-bool ExtractDepthOutput(const Ort::Value& output, RawDepthOutput* raw_output, std::string* error) {
+bool ExtractDepthOutputFromOrtValue(const OrtApi* api,
+                                    const OrtValue* output,
+                                    RawDepthOutput* raw_output,
+                                    std::string* error) {
   AppendOrtTrace("extract_fn_enter");
+  if (api == nullptr) {
+    if (error != nullptr) {
+      *error = "onnx runtime api pointer is null during output extraction";
+    }
+    return false;
+  }
+  if (output == nullptr) {
+    if (error != nullptr) {
+      *error = "onnx runtime output is null";
+    }
+    return false;
+  }
   if (raw_output == nullptr) {
     if (error != nullptr) {
       *error = "internal error: raw output is null";
     }
-    AppendOrtTrace("extract_raw_output_null");
     return false;
   }
-  AppendOrtTrace("extract_after_raw_check");
-  if (!output.IsTensor()) {
+  if (api->IsTensor == nullptr ||
+      api->GetTensorTypeAndShape == nullptr ||
+      api->GetTensorElementType == nullptr ||
+      api->GetDimensionsCount == nullptr ||
+      api->GetDimensions == nullptr ||
+      api->GetTensorShapeElementCount == nullptr ||
+      api->GetTensorMutableData == nullptr ||
+      api->ReleaseTensorTypeAndShapeInfo == nullptr) {
+    if (error != nullptr) {
+      *error = "onnx runtime output extraction API surface is incomplete";
+    }
+    return false;
+  }
+
+  int is_tensor = 0;
+  if (OrtStatus* status = api->IsTensor(output, &is_tensor); status != nullptr) {
+    if (error != nullptr) {
+      *error = "onnx runtime output IsTensor failed: " + ConsumeOrtStatusMessage(api, status);
+    }
+    return false;
+  }
+  if (is_tensor == 0) {
     if (error != nullptr) {
       *error = "onnx runtime output is not a tensor";
     }
-    AppendOrtTrace("extract_not_tensor");
     return false;
   }
-  AppendOrtTrace("extract_after_is_tensor");
 
-  const auto tensor_info = output.GetTensorTypeAndShapeInfo();
-  AppendOrtTrace("extract_after_tensor_info");
-  if (tensor_info.GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
+  OrtTensorTypeAndShapeInfo* tensor_info = nullptr;
+  if (OrtStatus* status = api->GetTensorTypeAndShape(output, &tensor_info); status != nullptr) {
+    if (error != nullptr) {
+      *error = "onnx runtime GetTensorTypeAndShape failed: " + ConsumeOrtStatusMessage(api, status);
+    }
+    return false;
+  }
+
+  auto release_tensor_info = [&]() {
+    if (tensor_info != nullptr) {
+      api->ReleaseTensorTypeAndShapeInfo(tensor_info);
+      tensor_info = nullptr;
+    }
+  };
+
+  ONNXTensorElementDataType element_type = ONNX_TENSOR_ELEMENT_DATA_TYPE_UNDEFINED;
+  if (OrtStatus* status = api->GetTensorElementType(tensor_info, &element_type); status != nullptr) {
+    if (error != nullptr) {
+      *error = "onnx runtime GetTensorElementType failed: " + ConsumeOrtStatusMessage(api, status);
+    }
+    release_tensor_info();
+    return false;
+  }
+  if (element_type != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
     if (error != nullptr) {
       *error = "onnx runtime output tensor must be float";
     }
-    AppendOrtTrace("extract_not_float");
+    release_tensor_info();
     return false;
   }
-  AppendOrtTrace("extract_after_element_type");
 
-  const std::vector<int64_t> shape = tensor_info.GetShape();
-  std::size_t tensor_element_count = 0U;
-  try {
-    tensor_element_count = tensor_info.GetElementCount();
-  } catch (const Ort::Exception& ex) {
+  std::size_t dimensions_count = 0U;
+  if (OrtStatus* status = api->GetDimensionsCount(tensor_info, &dimensions_count); status != nullptr) {
     if (error != nullptr) {
-      *error = std::string("onnx runtime output element count query failed: ") + SafeCStr(ex.what());
+      *error = "onnx runtime GetDimensionsCount failed: " + ConsumeOrtStatusMessage(api, status);
     }
-    AppendOrtTrace("extract_element_count_failed", SafeCStr(ex.what()));
+    release_tensor_info();
     return false;
+  }
+
+  std::vector<int64_t> shape(dimensions_count, 0);
+  if (dimensions_count > 0U) {
+    if (OrtStatus* status = api->GetDimensions(tensor_info, shape.data(), dimensions_count);
+        status != nullptr) {
+      if (error != nullptr) {
+        *error = "onnx runtime GetDimensions failed: " + ConsumeOrtStatusMessage(api, status);
+      }
+      release_tensor_info();
+      return false;
+    }
   }
   {
-    std::string shape_detail = "rank=" + std::to_string(shape.size()) +
-                               ", dims=" + BuildTensorShapeString(shape) +
-                               ", tensor_elements=" + std::to_string(tensor_element_count);
-    AppendOrtTrace("extract_after_shape", shape_detail.c_str());
+    const std::string shape_detail = "shape=" + BuildTensorShapeString(shape);
+    AppendOrtTrace("extract_shape", shape_detail.c_str());
   }
-  AppendOrtTrace("extract_before_tensor_data");
-  const float* data = output.GetTensorData<float>();
-  AppendOrtTrace("extract_after_tensor_data", data != nullptr ? "ptr=non_null" : "ptr=null");
+
+  std::size_t tensor_element_count = 0U;
+  if (OrtStatus* status = api->GetTensorShapeElementCount(tensor_info, &tensor_element_count);
+      status != nullptr) {
+    if (error != nullptr) {
+      *error =
+          "onnx runtime GetTensorShapeElementCount failed: " + ConsumeOrtStatusMessage(api, status);
+    }
+    release_tensor_info();
+    return false;
+  }
+  release_tensor_info();
+
+  void* data_raw = nullptr;
+  if (OrtStatus* status =
+          api->GetTensorMutableData(const_cast<OrtValue*>(output), &data_raw);
+      status != nullptr) {
+    if (error != nullptr) {
+      *error = "onnx runtime GetTensorMutableData failed: " + ConsumeOrtStatusMessage(api, status);
+    }
+    return false;
+  }
+  const float* data = reinterpret_cast<const float*>(data_raw);
+  AppendOrtTrace("extract_output", data != nullptr ? "ptr=non_null" : "ptr=null");
   if (data == nullptr) {
     if (error != nullptr) {
       *error = "onnx runtime output tensor data pointer is null";
@@ -892,7 +1044,7 @@ bool ExtractDepthOutput(const Ort::Value& output, RawDepthOutput* raw_output, st
       }
       return false;
     }
-    if (!CopyTensorPrefixWithGuards(data, pixel_count, &raw_output->depth_values, error)) {
+    if (!CopyTensorPrefix(data, pixel_count, &raw_output->depth_values, error)) {
       return false;
     }
   } else if (shape.size() == 3U) {
@@ -930,7 +1082,7 @@ bool ExtractDepthOutput(const Ort::Value& output, RawDepthOutput* raw_output, st
       }
       return false;
     }
-    if (!CopyTensorPrefixWithGuards(data, pixel_count, &raw_output->depth_values, error)) {
+    if (!CopyTensorPrefix(data, pixel_count, &raw_output->depth_values, error)) {
       return false;
     }
   } else if (shape.size() == 2U) {
@@ -967,7 +1119,7 @@ bool ExtractDepthOutput(const Ort::Value& output, RawDepthOutput* raw_output, st
       }
       return false;
     }
-    if (!CopyTensorPrefixWithGuards(data, pixel_count, &raw_output->depth_values, error)) {
+    if (!CopyTensorPrefix(data, pixel_count, &raw_output->depth_values, error)) {
       return false;
     }
   } else {
@@ -994,26 +1146,6 @@ bool ExtractDepthOutput(const Ort::Value& output, RawDepthOutput* raw_output, st
   return true;
 }
 
-#if defined(_WIN32) && defined(_MSC_VER)
-bool TryExtractDepthOutputWithSeh(const Ort::Value& output,
-                                  RawDepthOutput* raw_output,
-                                  std::string* error,
-                                  unsigned int* seh_code) {
-  if (seh_code != nullptr) {
-    *seh_code = 0U;
-  }
-
-  bool extract_ok = false;
-  __try {
-    extract_ok = ExtractDepthOutput(output, raw_output, error);
-  } __except (EXCEPTION_EXECUTE_HANDLER) {
-    if (seh_code != nullptr) {
-      *seh_code = static_cast<unsigned int>(GetExceptionCode());
-    }
-  }
-  return extract_ok;
-}
-#endif
 #endif
 
 class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
@@ -1041,10 +1173,13 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
     }
 #endif
 
+    const std::uint32_t header_api_version = static_cast<std::uint32_t>(ORT_API_VERSION);
+    const std::uint32_t default_api_version =
+        std::min(header_api_version, kDefaultOrtApiVersionFloor);
     const std::uint32_t requested_api_version =
         options_.onnxruntime_api_version > 0
             ? static_cast<std::uint32_t>(options_.onnxruntime_api_version)
-            : static_cast<std::uint32_t>(ORT_API_VERSION);
+            : default_api_version;
 
     loader_ = std::make_unique<OrtDynamicLoader>();
     std::string loader_error;
@@ -1055,6 +1190,28 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
       }
       return false;
     }
+
+    std::string capability_note;
+    std::string capability_error;
+    if (!QueryRuntimeCapabilities(loader_->Api(), active_backend_, &capability_note, &capability_error)) {
+      initialized_ = false;
+      if (error != nullptr) {
+        const std::string capability_detail =
+            capability_error.empty() ? "onnx runtime capability probe failed" : capability_error;
+        *error = capability_detail + " [" + loader_->Diagnostics() + "]";
+      }
+      return false;
+    }
+
+    if (!capability_note.empty()) {
+      if (provider_note_.empty()) {
+        provider_note_ = capability_note;
+      } else {
+        provider_note_.append("; ");
+        provider_note_.append(capability_note);
+      }
+    }
+
     Ort::InitApi(loader_->Api());
     loader_diagnostics_ = loader_->Diagnostics();
     backend_name_ = BuildBackendName(active_backend_,
@@ -1287,110 +1444,174 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
       }
       return false;
     }
+    if (loader_ == nullptr || loader_->Api() == nullptr) {
+      if (error != nullptr) {
+        *error = WithRuntimeDiagnostics("onnx runtime backend API handle is unavailable");
+      }
+      return false;
+    }
+
+    const OrtApi* api = loader_->Api();
+    if (api->CreateCpuMemoryInfo == nullptr ||
+        api->ReleaseMemoryInfo == nullptr ||
+        api->CreateTensorWithDataAsOrtValue == nullptr ||
+        api->ReleaseValue == nullptr ||
+        api->Run == nullptr) {
+      if (error != nullptr) {
+        *error = WithRuntimeDiagnostics("onnx runtime run API surface is incomplete");
+      }
+      return false;
+    }
 
     const std::array<const char*, 1> input_names = {input_name_.c_str()};
     const std::array<const char*, 1> output_names = {output_name_.c_str()};
 
+    OrtMemoryInfo* memory_info = nullptr;
+    OrtValue* input_tensor = nullptr;
+    OrtValue* output_tensor = nullptr;
+    auto release_run_resources = [&]() {
+      if (output_tensor != nullptr) {
+        api->ReleaseValue(output_tensor);
+        output_tensor = nullptr;
+      }
+      if (input_tensor != nullptr) {
+        api->ReleaseValue(input_tensor);
+        input_tensor = nullptr;
+      }
+      if (memory_info != nullptr) {
+        api->ReleaseMemoryInfo(memory_info);
+        memory_info = nullptr;
+      }
+    };
+
+    const std::array<int64_t, 5> input_shape_bnchw = {
+        1,
+        1,
+        prepared_input.tensor_channels,
+        prepared_input.tensor_height,
+        prepared_input.tensor_width,
+    };
+    const std::array<int64_t, 4> input_shape_nchw = {
+        1,
+        prepared_input.tensor_channels,
+        prepared_input.tensor_height,
+        prepared_input.tensor_width,
+    };
+    const int64_t* input_shape = input_has_image_dimension_ ? input_shape_bnchw.data()
+                                                            : input_shape_nchw.data();
+    const std::size_t input_rank =
+        input_has_image_dimension_ ? input_shape_bnchw.size() : input_shape_nchw.size();
+    AppendOrtTrace(input_has_image_dimension_ ? "session_run_begin_bnchw" : "session_run_begin_nchw");
+
+    std::size_t input_byte_count = 0U;
+    if (!CheckedMultiplySize(prepared_input.nchw_values.size(), sizeof(float), &input_byte_count)) {
+      if (error != nullptr) {
+        *error = "onnx runtime input tensor byte count overflow";
+      }
+      return false;
+    }
+
     try {
-      Ort::MemoryInfo memory_info =
-          Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
-      std::vector<Ort::Value> outputs;
-      if (input_has_image_dimension_) {
-        AppendOrtTrace("session_run_begin_bnchw");
-        const std::array<int64_t, 5> input_shape = {
-            1,
-            1,
-            prepared_input.tensor_channels,
-            prepared_input.tensor_height,
-            prepared_input.tensor_width,
-        };
-        Ort::Value input_tensor = Ort::Value::CreateTensor<float>(
-            memory_info,
-            const_cast<float*>(prepared_input.nchw_values.data()),
-            prepared_input.nchw_values.size(),
-            input_shape.data(),
-            input_shape.size());
-        outputs = session_->Run(Ort::RunOptions{nullptr},
-                                input_names.data(),
-                                &input_tensor,
-                                input_names.size(),
-                                output_names.data(),
-                                output_names.size());
-      } else {
-        AppendOrtTrace("session_run_begin_nchw");
-        const std::array<int64_t, 4> input_shape = {
-            1,
-            prepared_input.tensor_channels,
-            prepared_input.tensor_height,
-            prepared_input.tensor_width,
-        };
-        Ort::Value input_tensor = Ort::Value::CreateTensor<float>(
-            memory_info,
-            const_cast<float*>(prepared_input.nchw_values.data()),
-            prepared_input.nchw_values.size(),
-            input_shape.data(),
-            input_shape.size());
-        outputs = session_->Run(Ort::RunOptions{nullptr},
-                                input_names.data(),
-                                &input_tensor,
-                                input_names.size(),
-                                output_names.data(),
-                                output_names.size());
+      if (OrtStatus* status = api->CreateCpuMemoryInfo(
+              OrtArenaAllocator, OrtMemTypeDefault, &memory_info);
+          status != nullptr) {
+        if (error != nullptr) {
+          *error = WithRuntimeDiagnostics(std::string("onnx runtime CreateCpuMemoryInfo failed: ") +
+                                          ConsumeOrtStatusMessage(api, status));
+        }
+        release_run_resources();
+        return false;
       }
-      {
-        const std::string run_end_detail = "outputs=" + std::to_string(outputs.size());
-        AppendOrtTrace("session_run_end", run_end_detail.c_str());
+
+      if (OrtStatus* status = api->CreateTensorWithDataAsOrtValue(
+              memory_info,
+              const_cast<float*>(prepared_input.nchw_values.data()),
+              input_byte_count,
+              input_shape,
+              input_rank,
+              ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT,
+              &input_tensor);
+          status != nullptr) {
+        if (error != nullptr) {
+          *error =
+              WithRuntimeDiagnostics(std::string("onnx runtime CreateTensorWithDataAsOrtValue failed: ") +
+                                     ConsumeOrtStatusMessage(api, status));
+        }
+        release_run_resources();
+        return false;
       }
-      if (outputs.empty()) {
+
+      int input_is_tensor = 0;
+      if (api->IsTensor == nullptr ||
+          (api->IsTensor(input_tensor, &input_is_tensor) != nullptr) ||
+          input_is_tensor == 0) {
+        if (error != nullptr) {
+          *error = WithRuntimeDiagnostics("onnx runtime input tensor validation failed");
+        }
+        release_run_resources();
+        return false;
+      }
+
+      if (OrtStatus* status = api->Run(*session_,
+                                       nullptr,
+                                       input_names.data(),
+                                       &input_tensor,
+                                       input_names.size(),
+                                       output_names.data(),
+                                       output_names.size(),
+                                       &output_tensor);
+          status != nullptr) {
+        if (error != nullptr) {
+          *error = WithRuntimeDiagnostics(std::string("onnx runtime run failed: ") +
+                                          ConsumeOrtStatusMessage(api, status));
+        }
+        AppendOrtTrace("session_run_exception", (error != nullptr && !error->empty()) ? error->c_str()
+                                                                                       : "<none>");
+        release_run_resources();
+        return false;
+      }
+
+      const std::string run_end_detail = "outputs=" + std::to_string(output_tensor != nullptr ? 1 : 0);
+      AppendOrtTrace("session_run_end", run_end_detail.c_str());
+      if (output_tensor == nullptr) {
         if (error != nullptr) {
           *error = "onnx runtime run returned no outputs";
         }
         AppendOrtTrace("session_run_no_outputs");
+        release_run_resources();
         return false;
       }
+
       AppendOrtTrace("extract_output_begin");
-#if defined(_WIN32) && defined(_MSC_VER)
-      unsigned int extract_seh_code = 0U;
-      const bool extract_ok =
-          TryExtractDepthOutputWithSeh(outputs.front(), &raw_output, error, &extract_seh_code);
-      if (extract_seh_code != 0U) {
-        char seh_message[160] = {};
-        std::snprintf(seh_message,
-                      sizeof(seh_message),
-                      "output extraction SEH 0x%08X",
-                      static_cast<unsigned int>(extract_seh_code));
-        AppendOrtTrace("extract_output_seh", seh_message);
-        if (error != nullptr) {
-          *error = WithRuntimeDiagnostics(std::string("onnx runtime output extraction failed: ") +
-                                          seh_message);
-        }
-        return false;
-      }
-      if (!extract_ok) {
+      if (!ExtractDepthOutputFromOrtValue(api, output_tensor, &raw_output, error)) {
         AppendOrtTrace("extract_output_failed",
                        (error != nullptr && !error->empty()) ? error->c_str() : "<none>");
+        release_run_resources();
         return false;
       }
-#else
-      if (!ExtractDepthOutput(outputs.front(), &raw_output, error)) {
-        AppendOrtTrace("extract_output_failed",
-                       (error != nullptr && !error->empty()) ? error->c_str() : "<none>");
-        return false;
-      }
-#endif
       {
         const std::string out_detail =
             "depth=" + std::to_string(raw_output.width) + "x" + std::to_string(raw_output.height);
         AppendOrtTrace("extract_output_ok", out_detail.c_str());
       }
-    } catch (const Ort::Exception& ex) {
+    } catch (const std::exception& ex) {
       if (error != nullptr) {
-        *error = WithRuntimeDiagnostics(std::string("onnx runtime run failed: ") +
+        *error = WithRuntimeDiagnostics(std::string("onnx runtime run threw exception: ") +
                                         SafeCStr(ex.what()));
       }
       AppendOrtTrace("session_run_exception", SafeCStr(ex.what()));
+      release_run_resources();
+      return false;
+    } catch (...) {
+      if (error != nullptr) {
+        *error = WithRuntimeDiagnostics("onnx runtime run threw unknown exception");
+      }
+      AppendOrtTrace("session_run_exception", "unknown");
+      release_run_resources();
       return false;
     }
+
+    release_run_resources();
 #else
     std::string runtime_error;
     if (!RunPlaceholderInference(backend_name_,

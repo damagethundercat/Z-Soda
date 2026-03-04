@@ -1,6 +1,8 @@
 #include "inference/RuntimePathResolver.h"
 
+#include <cctype>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -18,6 +20,15 @@ bool HasText(const std::string& value) {
   return !value.empty();
 }
 
+std::string ToLowerCopy(std::string_view value) {
+  std::string lowered;
+  lowered.reserve(value.size());
+  for (const char ch : value) {
+    lowered.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
+  }
+  return lowered;
+}
+
 bool IsExistingDirectory(const std::filesystem::path& path) {
   std::error_code ec;
   return std::filesystem::is_directory(path, ec);
@@ -28,13 +39,42 @@ bool IsExistingFile(const std::filesystem::path& path) {
   return std::filesystem::is_regular_file(path, ec);
 }
 
+bool IsSameOnnxRuntimeFileName(const std::filesystem::path& path) {
+  const auto filename = path.filename().string();
+  if (filename.empty()) {
+    return false;
+  }
+  std::string lowered;
+  lowered.reserve(filename.size());
+  for (const char ch : filename) {
+    lowered.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
+  }
+  return lowered == "onnxruntime.dll";
+}
+
+std::filesystem::path PreferIsolatedOnnxRuntimePath(const std::filesystem::path& candidate) {
+  if (!IsSameOnnxRuntimeFileName(candidate)) {
+    return candidate;
+  }
+  const auto parent = candidate.parent_path();
+  if (parent.empty()) {
+    return candidate;
+  }
+  const auto isolated_candidate = parent / "zsoda_ort" / candidate.filename();
+  if (IsExistingFile(isolated_candidate)) {
+    return isolated_candidate;
+  }
+  return candidate;
+}
+
 void SetResolvedOnnxRuntimeLibraryPath(RuntimePathResolution* resolved,
                                        const std::filesystem::path& path) {
   if (resolved == nullptr) {
     return;
   }
-  resolved->onnxruntime_library_path = path.string();
-  const auto parent = path.parent_path();
+  const auto preferred = PreferIsolatedOnnxRuntimePath(path);
+  resolved->onnxruntime_library_path = preferred.string();
+  const auto parent = preferred.parent_path();
   resolved->onnxruntime_library_dir = parent.empty() ? std::string() : parent.string();
 }
 
@@ -44,6 +84,34 @@ std::optional<std::filesystem::path> ParsePluginDirectoryPath(
     return std::nullopt;
   }
   return std::filesystem::path(*plugin_directory);
+}
+
+std::optional<std::filesystem::path> ResolveAdobeMediaCoreModelsDirectory(
+    const std::filesystem::path& plugin_directory) {
+  if (plugin_directory.empty()) {
+    return std::nullopt;
+  }
+
+  std::filesystem::path cursor = plugin_directory;
+  while (!cursor.empty()) {
+    const std::string leaf = ToLowerCopy(cursor.filename().string());
+    if (leaf == "adobe") {
+      const std::filesystem::path media_core_models =
+          cursor / "Common" / "Plug-ins" / "7.0" / "MediaCore" / "models";
+      if (IsExistingDirectory(media_core_models)) {
+        return media_core_models;
+      }
+      break;
+    }
+
+    const std::filesystem::path parent = cursor.parent_path();
+    if (parent.empty() || parent == cursor) {
+      break;
+    }
+    cursor = parent;
+  }
+
+  return std::nullopt;
 }
 
 #if defined(_WIN32)
@@ -115,6 +183,13 @@ RuntimePathResolution ResolveRuntimePaths(const RuntimePathHints& hints) {
     const auto plugin_models = *plugin_directory / "models";
     if (IsExistingDirectory(plugin_models)) {
       resolved.model_root = plugin_models.string();
+    } else if (const auto media_core_models =
+                   ResolveAdobeMediaCoreModelsDirectory(*plugin_directory);
+               media_core_models.has_value()) {
+      resolved.model_root = media_core_models->string();
+    } else {
+      // Keep model root deterministic/absolute to avoid process working-directory drift.
+      resolved.model_root = plugin_models.string();
     }
   }
 
@@ -140,6 +215,8 @@ RuntimePathResolution ResolveRuntimePaths(const RuntimePathHints& hints) {
     SetResolvedOnnxRuntimeLibraryPath(&resolved, std::filesystem::path(hints.onnxruntime_library_env));
   } else if (plugin_directory.has_value()) {
     const std::vector<std::filesystem::path> candidates = {
+        *plugin_directory / "zsoda_ort" / DefaultOnnxRuntimeLibraryFileName(),
+        *plugin_directory / "runtime" / "win-x64" / DefaultOnnxRuntimeLibraryFileName(),
         *plugin_directory / "runtime" / DefaultOnnxRuntimeLibraryFileName(),
         *plugin_directory / DefaultOnnxRuntimeLibraryFileName(),
     };

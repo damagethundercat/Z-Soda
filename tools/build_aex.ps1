@@ -845,14 +845,20 @@ if ($BuildLoaderProbe) {
 $stagedOrtRuntimePath = $null
 $stagedOrtProvidersPath = $null
 if ($ortRuntimeDllAbs) {
-  $stagedOrtRuntimePath = Join-Path $aexDir "onnxruntime.dll"
+  # Deploy into isolated subdirectory to avoid LoadLibraryW conflict with
+  # Adobe AE's preloaded onnxruntime.dll. The loader checks zsoda_ort/ first.
+  $stagedOrtDir = Join-Path $aexDir "zsoda_ort"
+  New-Item -ItemType Directory -Path $stagedOrtDir -Force | Out-Null
+  $stagedOrtRuntimePath = Join-Path $stagedOrtDir "onnxruntime.dll"
   Copy-Item -LiteralPath $ortRuntimeDllAbs -Destination $stagedOrtRuntimePath -Force
   Print-ArtifactInfo -Label "staged_ort_dll" -Path $stagedOrtRuntimePath
 } else {
   Write-Warning "onnxruntime.dll was not staged next to ZSoda.aex."
 }
 if ($ortProvidersSharedAbs) {
-  $stagedOrtProvidersPath = Join-Path $aexDir "onnxruntime_providers_shared.dll"
+  $stagedOrtDir = Join-Path $aexDir "zsoda_ort"
+  New-Item -ItemType Directory -Path $stagedOrtDir -Force | Out-Null
+  $stagedOrtProvidersPath = Join-Path $stagedOrtDir "onnxruntime_providers_shared.dll"
   Copy-Item -LiteralPath $ortProvidersSharedAbs -Destination $stagedOrtProvidersPath -Force
   Print-ArtifactInfo -Label "staged_ort_providers_shared_dll" -Path $stagedOrtProvidersPath
 }
@@ -875,18 +881,38 @@ if ($CopyToMediaCore) {
   }
 
   if ($ortRuntimeDllAbs) {
-    $mediaCoreDllOutput = Join-Path $MediaCoreDir "onnxruntime.dll"
+    # Deploy into isolated subdirectory to avoid same-name collision with
+    # Adobe AE's preloaded onnxruntime.dll in the host process.
+    $mediaCoreOrtDir = Join-Path $MediaCoreDir "zsoda_ort"
+    New-Item -ItemType Directory -Path $mediaCoreOrtDir -Force | Out-Null
+    $mediaCoreDllOutput = Join-Path $mediaCoreOrtDir "onnxruntime.dll"
     Copy-Item -LiteralPath $ortRuntimeDllAbs -Destination $mediaCoreDllOutput -Force
     $mediaCoreDllOutputAbs = Resolve-AbsolutePath -Path $mediaCoreDllOutput
     Print-ArtifactInfo -Label "mediacore_ort_dll" -Path $mediaCoreDllOutputAbs
+    # Remove old copies from MediaCore root to avoid confusion.
+    foreach ($oldName in @("onnxruntime.dll", "onnxruntime_zsoda.dll")) {
+      $oldPath = Join-Path $MediaCoreDir $oldName
+      if (Test-Path -LiteralPath $oldPath -PathType Leaf) {
+        Remove-Item -LiteralPath $oldPath -Force -ErrorAction SilentlyContinue
+        Write-Host "Removed old $oldName from MediaCore directory."
+      }
+    }
   } else {
     Write-Warning "MediaCore copy requested but onnxruntime.dll is unavailable."
   }
   if ($ortProvidersSharedAbs) {
-    $mediaCoreProvidersOutput = Join-Path $MediaCoreDir "onnxruntime_providers_shared.dll"
+    $mediaCoreOrtDir = Join-Path $MediaCoreDir "zsoda_ort"
+    New-Item -ItemType Directory -Path $mediaCoreOrtDir -Force | Out-Null
+    $mediaCoreProvidersOutput = Join-Path $mediaCoreOrtDir "onnxruntime_providers_shared.dll"
     Copy-Item -LiteralPath $ortProvidersSharedAbs -Destination $mediaCoreProvidersOutput -Force
     $mediaCoreProvidersOutputAbs = Resolve-AbsolutePath -Path $mediaCoreProvidersOutput
     Print-ArtifactInfo -Label "mediacore_ort_providers_shared_dll" -Path $mediaCoreProvidersOutputAbs
+    # Remove old copy from MediaCore root.
+    $oldProvidersPath = Join-Path $MediaCoreDir "onnxruntime_providers_shared.dll"
+    if (Test-Path -LiteralPath $oldProvidersPath -PathType Leaf) {
+      Remove-Item -LiteralPath $oldProvidersPath -Force -ErrorAction SilentlyContinue
+      Write-Host "Removed old onnxruntime_providers_shared.dll from MediaCore directory."
+    }
   } else {
     Write-Warning "MediaCore copy requested but onnxruntime_providers_shared.dll is unavailable."
   }

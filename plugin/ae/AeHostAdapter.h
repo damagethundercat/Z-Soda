@@ -109,7 +109,8 @@ bool TryExtractPfCmdRenderPayload(const AeSdkEntryPayload& payload,
                                   std::string* error);
 bool CommitSdkRenderOutput(const AeSdkEntryPayload& payload,
                            const AeDispatchContext& dispatch,
-                           std::string* error);
+                           std::string* error,
+                           const AeSdkRenderPayloadScaffold* cached_scaffold = nullptr);
 
 #endif
 

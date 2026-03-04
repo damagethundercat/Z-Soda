@@ -3,14 +3,13 @@
 #include "ae/ZSodaVersion.h"
 
 #include <algorithm>
-#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
-#include <exception>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
@@ -31,6 +30,10 @@
 #include "AE_PluginData.h"
 #endif
 
+// ---------------------------------------------------------------------------
+// Diagnostics — thin file-append logger, used sparingly (not in render hot path)
+// ---------------------------------------------------------------------------
+
 namespace zsoda::ae {
 namespace {
 
@@ -38,88 +41,6 @@ constexpr int kGrayStubChannels = 4;
 
 const char* SafeCStr(const char* value, const char* fallback = "<null>") {
   return value != nullptr ? value : fallback;
-}
-
-void AppendDiagnosticsLine(const char* tag, const char* detail);
-
-std::atomic<std::uint64_t> g_render_trace_seq{0U};
-
-std::uint64_t NextRenderTraceId() {
-  return g_render_trace_seq.fetch_add(1U, std::memory_order_relaxed) + 1U;
-}
-
-void LogRenderStage(std::uint64_t trace_id, const char* stage, const char* detail = nullptr) {
-  char message[768] = {};
-#if defined(_WIN32)
-  const unsigned long thread_id = static_cast<unsigned long>(::GetCurrentThreadId());
-#else
-  const unsigned long thread_id = 0UL;
-#endif
-  const char* safe_stage = SafeCStr(stage, "<null>");
-  const char* safe_detail = (detail != nullptr && detail[0] != '\0') ? detail : "<none>";
-  std::snprintf(message,
-                sizeof(message),
-                "trace=%llu, tid=%lu, stage=%s, detail=%s",
-                static_cast<unsigned long long>(trace_id),
-                thread_id,
-                safe_stage,
-                safe_detail);
-  AppendDiagnosticsLine("EffectMainRenderTrace", message);
-}
-
-std::optional<zsoda::core::PixelFormat> ParseHostPixelFormat(int pixel_format) {
-  switch (pixel_format) {
-    case static_cast<int>(zsoda::core::PixelFormat::kRGBA8):
-      return zsoda::core::PixelFormat::kRGBA8;
-    case static_cast<int>(zsoda::core::PixelFormat::kRGBA16):
-      return zsoda::core::PixelFormat::kRGBA16;
-    case static_cast<int>(zsoda::core::PixelFormat::kRGBA32F):
-      return zsoda::core::PixelFormat::kRGBA32F;
-    default:
-      return std::nullopt;
-  }
-}
-
-std::shared_ptr<zsoda::inference::IInferenceEngine> GetEngine() {
-  static std::shared_ptr<zsoda::inference::IInferenceEngine> engine =
-      zsoda::inference::CreateDefaultEngine();
-  return engine;
-}
-
-void LogEngineStatusOnce() {
-  static bool logged = false;
-  if (logged) {
-    return;
-  }
-  logged = true;
-
-  const auto engine = GetEngine();
-  if (engine == nullptr) {
-    AppendDiagnosticsLine("EngineStatus", "engine is null");
-    return;
-  }
-
-  std::string status = std::string("engine=") + SafeCStr(engine->Name(), "<null>");
-  const auto managed_engine =
-      std::dynamic_pointer_cast<zsoda::inference::ManagedInferenceEngine>(engine);
-  if (managed_engine != nullptr) {
-    status = managed_engine->BackendStatusString();
-  }
-  AppendDiagnosticsLine("EngineStatus", status.c_str());
-}
-
-std::shared_ptr<zsoda::core::RenderPipeline> GetPipeline() {
-  static auto pipeline = std::make_shared<zsoda::core::RenderPipeline>(GetEngine());
-  return pipeline;
-}
-
-zsoda::ae::AeCommandRouter& GetRouter() {
-  static zsoda::ae::AeCommandRouter router(GetPipeline(), GetEngine());
-  return router;
-}
-
-int Dispatch(const AeDispatchContext& dispatch) {
-  return GetRouter().Handle(dispatch.command) ? 0 : -1;
 }
 
 #if defined(_WIN32)
@@ -154,19 +75,80 @@ void AppendDiagnosticsLine(const char* tag, const char* detail) {
                safe_detail);
   std::fclose(file);
 }
-
-void LogSehException(const char* entrypoint, unsigned int code) {
-  char message[128] = {};
-  std::snprintf(message, sizeof(message), "SEH exception code=0x%08X", code);
-  AppendDiagnosticsLine(entrypoint, message);
-}
 #else
 void AppendDiagnosticsLine(const char* /*tag*/, const char* /*detail*/) {}
-void LogSehException(const char* /*entrypoint*/, unsigned int /*code*/) {}
 #endif
+
+// ---------------------------------------------------------------------------
+// Lazy-initialized singletons — deferred until first GLOBAL_SETUP, not DLL load
+// ---------------------------------------------------------------------------
+
+std::once_flag g_init_flag;
+std::shared_ptr<zsoda::inference::IInferenceEngine> g_engine;
+std::shared_ptr<zsoda::core::RenderPipeline> g_pipeline;
+std::unique_ptr<zsoda::ae::AeCommandRouter> g_router;
+
+void EnsureInitialized() {
+  std::call_once(g_init_flag, [] {
+    g_engine = zsoda::inference::CreateDefaultEngine();
+    g_pipeline = std::make_shared<zsoda::core::RenderPipeline>(g_engine);
+    g_router = std::make_unique<zsoda::ae::AeCommandRouter>(g_pipeline, g_engine);
+
+    // Log engine status exactly once at initialization.
+    if (g_engine != nullptr) {
+      const auto managed_engine =
+          std::dynamic_pointer_cast<zsoda::inference::ManagedInferenceEngine>(g_engine);
+      if (managed_engine != nullptr) {
+        AppendDiagnosticsLine("EngineStatus", managed_engine->BackendStatusString().c_str());
+      } else {
+        std::string status = std::string("engine=") + SafeCStr(g_engine->Name(), "<null>");
+        AppendDiagnosticsLine("EngineStatus", status.c_str());
+      }
+    } else {
+      AppendDiagnosticsLine("EngineStatus", "engine is null");
+    }
+  });
+}
+
+std::shared_ptr<zsoda::inference::IInferenceEngine> GetEngine() {
+  EnsureInitialized();
+  return g_engine;
+}
+
+std::shared_ptr<zsoda::core::RenderPipeline> GetPipeline() {
+  EnsureInitialized();
+  return g_pipeline;
+}
+
+zsoda::ae::AeCommandRouter& GetRouter() {
+  EnsureInitialized();
+  return *g_router;
+}
+
+std::optional<zsoda::core::PixelFormat> ParseHostPixelFormat(int pixel_format) {
+  switch (pixel_format) {
+    case static_cast<int>(zsoda::core::PixelFormat::kRGBA8):
+      return zsoda::core::PixelFormat::kRGBA8;
+    case static_cast<int>(zsoda::core::PixelFormat::kRGBA16):
+      return zsoda::core::PixelFormat::kRGBA16;
+    case static_cast<int>(zsoda::core::PixelFormat::kRGBA32F):
+      return zsoda::core::PixelFormat::kRGBA32F;
+    default:
+      return std::nullopt;
+  }
+}
+
+int Dispatch(const AeDispatchContext& dispatch) {
+  return GetRouter().Handle(dispatch.command) ? 0 : -1;
+}
 
 }  // namespace
 }  // namespace zsoda::ae
+
+// ---------------------------------------------------------------------------
+// C stub entry points — single guard layer (SEH on Windows, catch-all elsewhere)
+// All stubs share a uniform pattern: validate → dispatch → return
+// ---------------------------------------------------------------------------
 
 namespace {
 
@@ -178,103 +160,6 @@ int ZSodaRenderHostBufferStubImpl(const void* src,
                                   std::uint64_t frame_hash,
                                   void* out,
                                   int out_row_bytes);
-
-#if defined(ZSODA_WITH_AE_SDK) && ZSODA_WITH_AE_SDK
-bool TryCopyRenderInputToOutput(PF_ParamDef* params[], PF_LayerDef* output) {
-  if (params == nullptr || params[0] == nullptr || output == nullptr || output->data == nullptr) {
-    return false;
-  }
-
-  const PF_LayerDef* input = &params[0]->u.ld;
-  if (input == nullptr || input->data == nullptr) {
-    return false;
-  }
-  if (input->height <= 0 || input->rowbytes <= 0 || output->height <= 0 || output->rowbytes <= 0) {
-    return false;
-  }
-
-  const A_long rows = std::min(input->height, output->height);
-  const A_long bytes_to_copy = std::min(input->rowbytes, output->rowbytes);
-  if (rows <= 0 || bytes_to_copy <= 0) {
-    return false;
-  }
-
-  auto* dst = reinterpret_cast<std::uint8_t*>(output->data);
-  const auto* src = reinterpret_cast<const std::uint8_t*>(input->data);
-  for (A_long y = 0; y < rows; ++y) {
-    std::memcpy(dst, src, static_cast<std::size_t>(bytes_to_copy));
-    dst += output->rowbytes;
-    src += input->rowbytes;
-  }
-  return true;
-}
-
-void TryApplyRenderPassThrough(PF_Cmd cmd,
-                               PF_ParamDef* params[],
-                               PF_LayerDef* output,
-                               const char* reason) {
-  if (cmd != PF_Cmd_RENDER) {
-    return;
-  }
-  const bool copied = TryCopyRenderInputToOutput(params, output);
-  if (copied) {
-    std::string detail = "render fallback pass-through applied";
-    if (reason != nullptr && reason[0] != '\0') {
-      detail += ": ";
-      detail += reason;
-    }
-    zsoda::ae::AppendDiagnosticsLine("EffectMain", detail.c_str());
-  } else {
-    std::string detail = "render fallback pass-through skipped (invalid input/output)";
-    if (reason != nullptr && reason[0] != '\0') {
-      detail += ": ";
-      detail += reason;
-    }
-    zsoda::ae::AppendDiagnosticsLine("EffectMain", detail.c_str());
-  }
-}
-
-PF_Err RunLoaderOnlyEffectMain(PF_Cmd cmd,
-                               PF_InData* in_data,
-                               PF_OutData* out_data,
-                               PF_ParamDef* params[],
-                               PF_LayerDef* output,
-                               void* extra) {
-  (void)in_data;
-  (void)extra;
-
-  switch (cmd) {
-    case PF_Cmd_ABOUT:
-      if (out_data != nullptr) {
-        std::snprintf(out_data->return_msg,
-                      sizeof(out_data->return_msg),
-                      "ZSoda Loader-Only Mode");
-      }
-      return PF_Err_NONE;
-    case PF_Cmd_GLOBAL_SETUP:
-      if (out_data != nullptr) {
-        out_data->my_version = static_cast<A_u_long>(ZSODA_EFFECT_VERSION_HEX);
-        out_data->out_flags = static_cast<A_long>(ZSODA_AE_GLOBAL_OUTFLAGS);
-        out_data->out_flags2 = static_cast<A_long>(ZSODA_AE_GLOBAL_OUTFLAGS2);
-      }
-      return PF_Err_NONE;
-    case PF_Cmd_PARAMS_SETUP:
-      if (out_data != nullptr) {
-        out_data->my_version = static_cast<A_u_long>(ZSODA_EFFECT_VERSION_HEX);
-        out_data->out_flags = static_cast<A_long>(ZSODA_AE_GLOBAL_OUTFLAGS);
-        out_data->out_flags2 = static_cast<A_long>(ZSODA_AE_GLOBAL_OUTFLAGS2);
-        out_data->num_params = 1;
-      }
-      return PF_Err_NONE;
-    case PF_Cmd_RENDER: {
-      (void)TryCopyRenderInputToOutput(params, output);
-      return PF_Err_NONE;
-    }
-    default:
-      return PF_Err_NONE;
-  }
-}
-#endif
 
 int ZSodaEffectMainStubImpl(int command_id) {
   std::string error;
@@ -425,123 +310,28 @@ int ZSodaRenderHostBufferStubImpl(const void* src,
 
 }  // namespace
 
-int ZSodaEffectMainStubGuarded(int command_id) {
-  try {
-    return ZSodaEffectMainStubImpl(command_id);
-  } catch (const std::exception& ex) {
-    zsoda::ae::AppendDiagnosticsLine("ZSodaEffectMainStub", ex.what());
-    return -1;
-  } catch (...) {
-    zsoda::ae::AppendDiagnosticsLine("ZSodaEffectMainStub", "unknown c++ exception");
-    return -1;
-  }
-}
+// ---------------------------------------------------------------------------
+// C++ guard for extern "C" stubs — SEH is not needed here because these
+// stubs are called from managed C++ code, not from the AE DLL loader.
+// SEH is reserved for EffectMain (the actual AE plugin entry point).
+// ---------------------------------------------------------------------------
 
-int ZSodaSetModelIdStubGuarded(const char* model_id) {
-  try {
-    return ZSodaSetModelIdStubImpl(model_id);
-  } catch (const std::exception& ex) {
-    zsoda::ae::AppendDiagnosticsLine("ZSodaSetModelIdStub", ex.what());
-    return -1;
-  } catch (...) {
-    zsoda::ae::AppendDiagnosticsLine("ZSodaSetModelIdStub", "unknown c++ exception");
-    return -1;
+#define ZSODA_CPP_GUARD(tag, fail_val, expr) \
+  try { return (expr); } \
+  catch (const std::exception& ex) { \
+    zsoda::ae::AppendDiagnosticsLine(tag, ex.what()); \
+    return (fail_val); \
+  } catch (...) { \
+    zsoda::ae::AppendDiagnosticsLine(tag, "unknown c++ exception"); \
+    return (fail_val); \
   }
-}
-
-int ZSodaSetParamsStubGuarded(const char* model_id,
-                              int quality,
-                              int output_mode,
-                              int invert,
-                              float min_depth,
-                              float max_depth,
-                              float softness,
-                              int cache_enabled,
-                              int tile_size,
-                              int overlap,
-                              int vram_budget_mb) {
-  try {
-    return ZSodaSetParamsStubImpl(model_id,
-                                  quality,
-                                  output_mode,
-                                  invert,
-                                  min_depth,
-                                  max_depth,
-                                  softness,
-                                  cache_enabled,
-                                  tile_size,
-                                  overlap,
-                                  vram_budget_mb);
-  } catch (const std::exception& ex) {
-    zsoda::ae::AppendDiagnosticsLine("ZSodaSetParamsStub", ex.what());
-    return -1;
-  } catch (...) {
-    zsoda::ae::AppendDiagnosticsLine("ZSodaSetParamsStub", "unknown c++ exception");
-    return -1;
-  }
-}
-
-int ZSodaRenderGrayFrameStubGuarded(const float* src,
-                                    int width,
-                                    int height,
-                                    std::uint64_t frame_hash,
-                                    float* out,
-                                    int out_size) {
-  try {
-    return ZSodaRenderGrayFrameStubImpl(src, width, height, frame_hash, out, out_size);
-  } catch (const std::exception& ex) {
-    zsoda::ae::AppendDiagnosticsLine("ZSodaRenderGrayFrameStub", ex.what());
-    return -1;
-  } catch (...) {
-    zsoda::ae::AppendDiagnosticsLine("ZSodaRenderGrayFrameStub", "unknown c++ exception");
-    return -1;
-  }
-}
-
-int ZSodaRenderHostBufferStubGuarded(const void* src,
-                                     int width,
-                                     int height,
-                                     int src_row_bytes,
-                                     int pixel_format,
-                                     std::uint64_t frame_hash,
-                                     void* out,
-                                     int out_row_bytes) {
-  try {
-    return ZSodaRenderHostBufferStubImpl(
-        src, width, height, src_row_bytes, pixel_format, frame_hash, out, out_row_bytes);
-  } catch (const std::exception& ex) {
-    zsoda::ae::AppendDiagnosticsLine("ZSodaRenderHostBufferStub", ex.what());
-    return -1;
-  } catch (...) {
-    zsoda::ae::AppendDiagnosticsLine("ZSodaRenderHostBufferStub", "unknown c++ exception");
-    return -1;
-  }
-}
 
 extern "C" int ZSodaEffectMainStub(int command_id) {
-#if defined(_WIN32) && defined(_MSC_VER)
-  __try {
-    return ZSodaEffectMainStubGuarded(command_id);
-  } __except (EXCEPTION_EXECUTE_HANDLER) {
-    zsoda::ae::LogSehException("ZSodaEffectMainStub", static_cast<unsigned>(GetExceptionCode()));
-    return -1;
-  }
-#else
-  return ZSodaEffectMainStubGuarded(command_id);
-#endif
+  ZSODA_CPP_GUARD("ZSodaEffectMainStub", -1, ZSodaEffectMainStubImpl(command_id))
 }
 
 extern "C" int ZSodaSetModelIdStub(const char* model_id) {
-#if defined(_WIN32) && defined(_MSC_VER)
-  __try {
-    return ZSodaSetModelIdStubGuarded(model_id);
-  } __except (EXCEPTION_EXECUTE_HANDLER) {
-    zsoda::ae::LogSehException("ZSodaSetModelIdStub", static_cast<unsigned>(GetExceptionCode()));
-    return -1;
-  }
-#else
-  return ZSodaSetModelIdStubGuarded(model_id);
-#endif
+  ZSODA_CPP_GUARD("ZSodaSetModelIdStub", -1, ZSodaSetModelIdStubImpl(model_id))
 }
 
 extern "C" int ZSodaSetParamsStub(const char* model_id,
@@ -555,36 +345,10 @@ extern "C" int ZSodaSetParamsStub(const char* model_id,
                                   int tile_size,
                                   int overlap,
                                   int vram_budget_mb) {
-#if defined(_WIN32) && defined(_MSC_VER)
-  __try {
-    return ZSodaSetParamsStubGuarded(model_id,
-                                     quality,
-                                     output_mode,
-                                     invert,
-                                     min_depth,
-                                     max_depth,
-                                     softness,
-                                     cache_enabled,
-                                     tile_size,
-                                     overlap,
-                                     vram_budget_mb);
-  } __except (EXCEPTION_EXECUTE_HANDLER) {
-    zsoda::ae::LogSehException("ZSodaSetParamsStub", static_cast<unsigned>(GetExceptionCode()));
-    return -1;
-  }
-#else
-  return ZSodaSetParamsStubGuarded(model_id,
-                                   quality,
-                                   output_mode,
-                                   invert,
-                                   min_depth,
-                                   max_depth,
-                                   softness,
-                                   cache_enabled,
-                                   tile_size,
-                                   overlap,
-                                   vram_budget_mb);
-#endif
+  ZSODA_CPP_GUARD("ZSodaSetParamsStub", -1,
+                  ZSodaSetParamsStubImpl(model_id, quality, output_mode, invert, min_depth,
+                                        max_depth, softness, cache_enabled, tile_size, overlap,
+                                        vram_budget_mb))
 }
 
 extern "C" int ZSodaRenderGrayFrameStub(const float* src,
@@ -593,16 +357,8 @@ extern "C" int ZSodaRenderGrayFrameStub(const float* src,
                                         std::uint64_t frame_hash,
                                         float* out,
                                         int out_size) {
-#if defined(_WIN32) && defined(_MSC_VER)
-  __try {
-    return ZSodaRenderGrayFrameStubGuarded(src, width, height, frame_hash, out, out_size);
-  } __except (EXCEPTION_EXECUTE_HANDLER) {
-    zsoda::ae::LogSehException("ZSodaRenderGrayFrameStub", static_cast<unsigned>(GetExceptionCode()));
-    return -1;
-  }
-#else
-  return ZSodaRenderGrayFrameStubGuarded(src, width, height, frame_hash, out, out_size);
-#endif
+  ZSODA_CPP_GUARD("ZSodaRenderGrayFrameStub", -1,
+                  ZSodaRenderGrayFrameStubImpl(src, width, height, frame_hash, out, out_size))
 }
 
 extern "C" int ZSodaRenderHostBufferStub(const void* src,
@@ -613,20 +369,14 @@ extern "C" int ZSodaRenderHostBufferStub(const void* src,
                                          std::uint64_t frame_hash,
                                          void* out,
                                          int out_row_bytes) {
-#if defined(_WIN32) && defined(_MSC_VER)
-  __try {
-    return ZSodaRenderHostBufferStubGuarded(
-        src, width, height, src_row_bytes, pixel_format, frame_hash, out, out_row_bytes);
-  } __except (EXCEPTION_EXECUTE_HANDLER) {
-    zsoda::ae::LogSehException("ZSodaRenderHostBufferStub",
-                               static_cast<unsigned>(GetExceptionCode()));
-    return -1;
-  }
-#else
-  return ZSodaRenderHostBufferStubGuarded(
-      src, width, height, src_row_bytes, pixel_format, frame_hash, out, out_row_bytes);
-#endif
+  ZSODA_CPP_GUARD("ZSodaRenderHostBufferStub", -1,
+                  ZSodaRenderHostBufferStubImpl(src, width, height, src_row_bytes, pixel_format,
+                                                frame_hash, out, out_row_bytes))
 }
+
+// ---------------------------------------------------------------------------
+// AE SDK EffectMain — only compiled when ZSODA_WITH_AE_SDK=1
+// ---------------------------------------------------------------------------
 
 #if defined(ZSODA_WITH_AE_SDK) && ZSODA_WITH_AE_SDK
 
@@ -637,6 +387,45 @@ extern "C" int ZSodaRenderHostBufferStub(const void* src,
 #define DllExport
 #endif
 #endif
+
+namespace {
+
+bool TryCopyRenderInputToOutput(PF_ParamDef* params[], PF_LayerDef* output) {
+  if (params == nullptr || params[0] == nullptr || output == nullptr || output->data == nullptr) {
+    return false;
+  }
+
+  const PF_LayerDef* input = &params[0]->u.ld;
+  if (input == nullptr || input->data == nullptr) {
+    return false;
+  }
+  if (input->height <= 0 || input->rowbytes <= 0 || output->height <= 0 || output->rowbytes <= 0) {
+    return false;
+  }
+
+  const A_long rows = std::min(input->height, output->height);
+  const A_long bytes_to_copy = std::min(input->rowbytes, output->rowbytes);
+  if (rows <= 0 || bytes_to_copy <= 0) {
+    return false;
+  }
+
+  auto* dst = reinterpret_cast<std::uint8_t*>(output->data);
+  const auto* src = reinterpret_cast<const std::uint8_t*>(input->data);
+  for (A_long y = 0; y < rows; ++y) {
+    std::memcpy(dst, src, static_cast<std::size_t>(bytes_to_copy));
+    dst += output->rowbytes;
+    src += input->rowbytes;
+  }
+  return true;
+}
+
+void RenderPassThrough(PF_Cmd cmd, PF_ParamDef* params[], PF_LayerDef* output) {
+  if (cmd == PF_Cmd_RENDER) {
+    (void)TryCopyRenderInputToOutput(params, output);
+  }
+}
+
+}  // namespace
 
 extern "C" DllExport PF_Err PluginDataEntryFunction2(PF_PluginDataPtr in_ptr,
                                                       PF_PluginDataCB2 in_plugin_data_callback_ptr,
@@ -673,21 +462,44 @@ PF_Err EffectMainImpl(PF_Cmd cmd,
                       PF_LayerDef* output,
                       void* extra) {
 #if defined(ZSODA_AE_LOADER_ONLY_MODE) && ZSODA_AE_LOADER_ONLY_MODE
-  return RunLoaderOnlyEffectMain(cmd, in_data, out_data, params, output, extra);
+  // Loader-only mode: pass-through for diagnostics
+  switch (cmd) {
+    case PF_Cmd_ABOUT:
+      if (out_data != nullptr) {
+        std::snprintf(out_data->return_msg, sizeof(out_data->return_msg),
+                      "ZSoda Loader-Only Mode");
+      }
+      return PF_Err_NONE;
+    case PF_Cmd_GLOBAL_SETUP:
+      if (out_data != nullptr) {
+        out_data->my_version = static_cast<A_u_long>(ZSODA_EFFECT_VERSION_HEX);
+        out_data->out_flags = static_cast<A_long>(ZSODA_AE_GLOBAL_OUTFLAGS);
+        out_data->out_flags2 = static_cast<A_long>(ZSODA_AE_GLOBAL_OUTFLAGS2);
+      }
+      return PF_Err_NONE;
+    case PF_Cmd_PARAMS_SETUP:
+      if (out_data != nullptr) {
+        out_data->my_version = static_cast<A_u_long>(ZSODA_EFFECT_VERSION_HEX);
+        out_data->out_flags = static_cast<A_long>(ZSODA_AE_GLOBAL_OUTFLAGS);
+        out_data->out_flags2 = static_cast<A_long>(ZSODA_AE_GLOBAL_OUTFLAGS2);
+        out_data->num_params = 1;
+      }
+      return PF_Err_NONE;
+    case PF_Cmd_RENDER:
+      (void)TryCopyRenderInputToOutput(params, output);
+      return PF_Err_NONE;
+    default:
+      return PF_Err_NONE;
+  }
 #else
-  const bool is_render_cmd = (cmd == PF_Cmd_RENDER);
-  const std::uint64_t render_trace_id = is_render_cmd ? zsoda::ae::NextRenderTraceId() : 0U;
-  if (cmd == PF_Cmd_RENDER) {
-    zsoda::ae::LogRenderStage(render_trace_id, "enter");
-    zsoda::ae::LogEngineStatusOnce();
-  }
-  if (cmd != PF_Cmd_RENDER) {
-    const std::string cmd_detail = "cmd=" + std::to_string(static_cast<int>(cmd));
-    zsoda::ae::AppendDiagnosticsLine("EffectMainCmd", cmd_detail.c_str());
-  }
+  // -----------------------------------------------------------------------
+  // Normal EffectMain: delegate to SDK dispatch, minimal logging
+  // -----------------------------------------------------------------------
+
+  // Trigger lazy initialization on first meaningful command.
+  zsoda::ae::EnsureInitialized();
 
   std::string error;
-
   zsoda::ae::AeDispatchContext dispatch;
   zsoda::ae::AeSdkEntryPayload payload;
   payload.command = cmd;
@@ -698,154 +510,66 @@ PF_Err EffectMainImpl(PF_Cmd cmd,
   payload.extra = extra;
 
   if (!zsoda::ae::BuildSdkDispatch(payload, &dispatch, &error)) {
-    if (is_render_cmd) {
-      zsoda::ae::LogRenderStage(render_trace_id,
-                                "build_dispatch_failed",
-                                error.empty() ? "<none>" : error.c_str());
-    }
-    const std::string detail =
-        "BuildSdkDispatch failed: cmd=" + std::to_string(static_cast<int>(cmd)) +
-        ", error=" + (error.empty() ? "<none>" : error);
-    zsoda::ae::AppendDiagnosticsLine("EffectMain", detail.c_str());
-    TryApplyRenderPassThrough(cmd, params, output, "BuildSdkDispatch failed");
+    // BuildSdkDispatch handles GLOBAL_SETUP/PARAMS_SETUP internally — if it fails,
+    // fall back to pass-through for render, no-op for others.
+    RenderPassThrough(cmd, params, output);
     return PF_Err_NONE;
   }
-  if (!error.empty()) {
-    if (cmd == PF_Cmd_RENDER) {
-      zsoda::ae::LogRenderStage(render_trace_id, "build_dispatch_warning", error.c_str());
-      static std::string last_render_warning;
-      if (error != last_render_warning) {
-        const std::string detail =
-            "BuildSdkDispatch warning: cmd=" + std::to_string(static_cast<int>(cmd)) +
-            ", detail=" + error;
-        zsoda::ae::AppendDiagnosticsLine("EffectMain", detail.c_str());
-        last_render_warning = error;
-      }
-    } else {
-      const std::string detail =
-          "BuildSdkDispatch warning: cmd=" + std::to_string(static_cast<int>(cmd)) +
-          ", detail=" + error;
-      zsoda::ae::AppendDiagnosticsLine("EffectMain", detail.c_str());
-    }
-  }
 
-  // Keep host loader handshake deterministic: setup commands rely on the
-  // SDK scaffold (BuildSdkDispatch) and should not depend on router state.
+  // Setup commands (GLOBAL_SETUP, PARAMS_SETUP) are handled entirely by
+  // BuildSdkDispatch above — they don't need router dispatch.
   if (cmd == PF_Cmd_GLOBAL_SETUP || cmd == PF_Cmd_PARAMS_SETUP) {
-    if (out_data != nullptr) {
-      const std::string detail =
-          "setup ok: cmd=" + std::to_string(static_cast<int>(cmd)) +
-          ", my_version=" + std::to_string(static_cast<unsigned long>(out_data->my_version)) +
-          ", out_flags=0x" + [] (A_long value) {
-            char buffer[16] = {};
-            std::snprintf(buffer, sizeof(buffer), "%08X", static_cast<unsigned int>(value));
-            return std::string(buffer);
-          }(out_data->out_flags) +
-          ", out_flags2=0x" + [] (A_long value) {
-            char buffer[16] = {};
-            std::snprintf(buffer, sizeof(buffer), "%08X", static_cast<unsigned int>(value));
-            return std::string(buffer);
-          }(out_data->out_flags2) +
-          ", num_params=" + std::to_string(static_cast<int>(out_data->num_params));
-      zsoda::ae::AppendDiagnosticsLine("EffectMainSetup", detail.c_str());
-    } else {
-      zsoda::ae::AppendDiagnosticsLine("EffectMainSetup", "setup ok with null out_data");
-    }
     return PF_Err_NONE;
   }
 
+  // Unknown/unhandled commands → no-op (with render pass-through safety)
   if (dispatch.command.command == zsoda::ae::AeCommand::kUnknown) {
-    if (is_render_cmd) {
-      zsoda::ae::LogRenderStage(render_trace_id, "mapped_unknown");
-    }
-    // Skeleton entrypoint ignores unsupported commands until individual handlers
-    // are wired.
-    TryApplyRenderPassThrough(cmd, params, output, "mapped command is unknown");
+    RenderPassThrough(cmd, params, output);
     return PF_Err_NONE;
   }
 
-  if (is_render_cmd) {
-    const std::string dispatch_begin_detail =
-        "mapped=" + std::to_string(static_cast<int>(dispatch.command.command)) +
-        ", request_ptr=" + (dispatch.command.render_request != nullptr ? std::string("set")
-                                                                       : std::string("null")) +
-        ", response_ptr=" + (dispatch.command.render_response != nullptr ? std::string("set")
-                                                                         : std::string("null"));
-    zsoda::ae::LogRenderStage(render_trace_id, "dispatch_begin", dispatch_begin_detail.c_str());
-  }
+  // Dispatch to router
   const int dispatch_result = zsoda::ae::Dispatch(dispatch);
-  if (dispatch_result == 0) {
-    if (is_render_cmd) {
-      const int status_code = static_cast<int>(dispatch.render_response.status);
-      const std::string dispatch_ok_detail =
-          "status=" + std::to_string(status_code) +
-          ", message=" +
-          (dispatch.render_response.message.empty() ? std::string("<none>")
-                                                    : dispatch.render_response.message);
-      zsoda::ae::LogRenderStage(render_trace_id, "dispatch_end_ok", dispatch_ok_detail.c_str());
-    }
-    if (cmd == PF_Cmd_RENDER) {
-      zsoda::ae::LogRenderStage(render_trace_id, "commit_begin");
-      std::string commit_error;
-      if (!zsoda::ae::CommitSdkRenderOutput(payload, dispatch, &commit_error)) {
-        zsoda::ae::LogRenderStage(render_trace_id,
-                                  "commit_failed",
-                                  commit_error.empty() ? "<none>" : commit_error.c_str());
-        const std::string detail = "CommitSdkRenderOutput failed: " +
-                                   (commit_error.empty() ? std::string("<none>") : commit_error);
-        zsoda::ae::AppendDiagnosticsLine("EffectMain", detail.c_str());
-        TryApplyRenderPassThrough(cmd, params, output, "render output commit failed");
-      } else {
-        zsoda::ae::LogRenderStage(render_trace_id, "commit_ok");
-      }
-
-      const int render_status = static_cast<int>(dispatch.render_response.status);
-      const std::string render_message = dispatch.render_response.message;
-      static int last_render_status = std::numeric_limits<int>::min();
-      static std::string last_render_message;
-      if (render_status != last_render_status || render_message != last_render_message) {
-        const std::string detail =
-            "render status=" + std::to_string(render_status) +
-            ", message=" + (render_message.empty() ? "<none>" : render_message);
-        zsoda::ae::AppendDiagnosticsLine("EffectMainRender", detail.c_str());
-        last_render_status = render_status;
-        last_render_message = render_message;
-      }
-      zsoda::ae::LogRenderStage(render_trace_id, "return_ok");
-    }
+  if (dispatch_result != 0) {
+    RenderPassThrough(cmd, params, output);
     return PF_Err_NONE;
   }
 
-  if (is_render_cmd) {
-    zsoda::ae::LogRenderStage(render_trace_id,
-                              "dispatch_failed",
-                              error.empty() ? "<none>" : error.c_str());
+  // For render: commit depth output back to AE host buffer
+  if (cmd == PF_Cmd_RENDER) {
+    std::string commit_error;
+    if (!zsoda::ae::CommitSdkRenderOutput(payload, dispatch, &commit_error)) {
+      // Commit failed → pass-through rather than black/transparent output
+      RenderPassThrough(cmd, params, output);
+    }
   }
-  const std::string detail =
-      "Dispatch failed: cmd=" + std::to_string(static_cast<int>(cmd)) +
-      ", mapped=" + std::to_string(static_cast<int>(dispatch.command.command)) +
-      ", error=" + (error.empty() ? "<none>" : error);
-  zsoda::ae::AppendDiagnosticsLine("EffectMain", detail.c_str());
-  TryApplyRenderPassThrough(cmd, params, output, "router dispatch failed");
+
   return PF_Err_NONE;
 #endif
 }
 
-PF_Err EffectMainGuarded(PF_Cmd cmd,
-                         PF_InData* in_data,
-                         PF_OutData* out_data,
-                         PF_ParamDef* params[],
-                         PF_LayerDef* output,
-                         void* extra) {
+#if defined(_WIN32) && defined(_MSC_VER)
+// On MSVC, __try and try/catch cannot coexist in the same function (C2712).
+// Split into two functions: CppGuard does try/catch, EffectMain does __try.
+static PF_Err EffectMainCppGuard(PF_Cmd cmd,
+                                 PF_InData* in_data,
+                                 PF_OutData* out_data,
+                                 PF_ParamDef* params[],
+                                 PF_LayerDef* output,
+                                 void* extra) {
   try {
     return EffectMainImpl(cmd, in_data, out_data, params, output, extra);
   } catch (const std::exception& ex) {
     zsoda::ae::AppendDiagnosticsLine("EffectMain", ex.what());
-    TryApplyRenderPassThrough(cmd, params, output, "caught c++ exception");
+    if (cmd == PF_Cmd_RENDER && params != nullptr && output != nullptr) {
+      (void)TryCopyRenderInputToOutput(params, output);
+    }
     return PF_Err_NONE;
   } catch (...) {
     zsoda::ae::AppendDiagnosticsLine("EffectMain", "unknown c++ exception");
-    TryApplyRenderPassThrough(cmd, params, output, "caught unknown c++ exception");
+    if (cmd == PF_Cmd_RENDER && params != nullptr && output != nullptr) {
+      (void)TryCopyRenderInputToOutput(params, output);
+    }
     return PF_Err_NONE;
   }
 }
@@ -856,16 +580,33 @@ extern "C" DllExport PF_Err EffectMain(PF_Cmd cmd,
                                        PF_ParamDef* params[],
                                        PF_LayerDef* output,
                                        void* extra) {
-#if defined(_WIN32) && defined(_MSC_VER)
   __try {
-    return EffectMainGuarded(cmd, in_data, out_data, params, output, extra);
+    return EffectMainCppGuard(cmd, in_data, out_data, params, output, extra);
   } __except (EXCEPTION_EXECUTE_HANDLER) {
-    zsoda::ae::LogSehException("EffectMain", static_cast<unsigned>(GetExceptionCode()));
+    char seh_msg[64] = {};
+    std::snprintf(seh_msg, sizeof(seh_msg), "SEH 0x%08X", static_cast<unsigned>(GetExceptionCode()));
+    zsoda::ae::AppendDiagnosticsLine("EffectMain", seh_msg);
     return PF_Err_NONE;
   }
-#else
-  return EffectMainGuarded(cmd, in_data, out_data, params, output, extra);
-#endif
 }
+#else
+extern "C" DllExport PF_Err EffectMain(PF_Cmd cmd,
+                                       PF_InData* in_data,
+                                       PF_OutData* out_data,
+                                       PF_ParamDef* params[],
+                                       PF_LayerDef* output,
+                                       void* extra) {
+  try {
+    return EffectMainImpl(cmd, in_data, out_data, params, output, extra);
+  } catch (const std::exception& ex) {
+    zsoda::ae::AppendDiagnosticsLine("EffectMain", ex.what());
+    return PF_Err_NONE;
+  } catch (...) {
+    zsoda::ae::AppendDiagnosticsLine("EffectMain", "unknown c++ exception");
+    return PF_Err_NONE;
+  }
+}
+#endif
 
 #endif
+

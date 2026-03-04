@@ -92,6 +92,43 @@ void TestPluginRootOrtFallback() {
   assert(std::filesystem::path(resolved.onnxruntime_library_dir) == plugin_dir);
 }
 
+void TestPluginIsolatedOrtPreferredOverRoot() {
+  TempDir temp_dir;
+  const auto plugin_dir = temp_dir.path() / "plugin";
+  const auto models_dir = plugin_dir / "models";
+  const auto root_ort_path = plugin_dir / zsoda::inference::DefaultOnnxRuntimeLibraryFileName();
+  const auto isolated_ort_path =
+      plugin_dir / "zsoda_ort" / zsoda::inference::DefaultOnnxRuntimeLibraryFileName();
+
+  std::filesystem::create_directories(models_dir);
+  WriteTextFile(root_ort_path, "root-dll");
+  WriteTextFile(isolated_ort_path, "isolated-dll");
+
+  zsoda::inference::RuntimePathHints hints;
+  hints.plugin_directory = plugin_dir.string();
+
+  const auto resolved = zsoda::inference::ResolveRuntimePaths(hints);
+  assert(std::filesystem::path(resolved.onnxruntime_library_path) == isolated_ort_path);
+  assert(std::filesystem::path(resolved.onnxruntime_library_dir) == isolated_ort_path.parent_path());
+}
+
+void TestEnvironmentOrtPathPrefersSiblingIsolatedDirectory() {
+  TempDir temp_dir;
+  const auto env_root = temp_dir.path() / "env";
+  const auto configured_ort_path = env_root / "onnxruntime.dll";
+  const auto isolated_ort_path = env_root / "zsoda_ort" / "onnxruntime.dll";
+
+  WriteTextFile(configured_ort_path, "configured-dll");
+  WriteTextFile(isolated_ort_path, "isolated-dll");
+
+  zsoda::inference::RuntimePathHints hints;
+  hints.onnxruntime_library_env = configured_ort_path.string();
+
+  const auto resolved = zsoda::inference::ResolveRuntimePaths(hints);
+  assert(std::filesystem::path(resolved.onnxruntime_library_path) == isolated_ort_path);
+  assert(std::filesystem::path(resolved.onnxruntime_library_dir) == isolated_ort_path.parent_path());
+}
+
 void TestFallbackToRepositoryRelativeDefaults() {
   zsoda::inference::RuntimePathHints hints;
   const auto resolved = zsoda::inference::ResolveRuntimePaths(hints);
@@ -107,11 +144,46 @@ void TestFallbackToRepositoryRelativeDefaults() {
   assert(resolved.onnxruntime_library_dir.empty());
 }
 
+void TestPluginDirectoryWithoutModelsUsesAbsoluteFallback() {
+  TempDir temp_dir;
+  const auto plugin_dir = temp_dir.path() / "plugin";
+  std::filesystem::create_directories(plugin_dir);
+
+  zsoda::inference::RuntimePathHints hints;
+  hints.plugin_directory = plugin_dir.string();
+
+  const auto resolved = zsoda::inference::ResolveRuntimePaths(hints);
+  assert(std::filesystem::path(resolved.model_root) == (plugin_dir / "models"));
+}
+
+void TestEffectsInstallFallsBackToAdobeMediaCoreModels() {
+  TempDir temp_dir;
+  const auto adobe_root = temp_dir.path() / "Program Files" / "Adobe";
+  const auto effects_plugin_dir =
+      adobe_root / "Adobe After Effects 2025" / "Support Files" / "Plug-ins" / "Effects";
+  const auto media_core_models = adobe_root / "Common" / "Plug-ins" / "7.0" / "MediaCore" / "models";
+  const auto manifest = media_core_models / "models.manifest";
+
+  std::filesystem::create_directories(effects_plugin_dir);
+  WriteTextFile(manifest, "# media core manifest");
+
+  zsoda::inference::RuntimePathHints hints;
+  hints.plugin_directory = effects_plugin_dir.string();
+
+  const auto resolved = zsoda::inference::ResolveRuntimePaths(hints);
+  assert(std::filesystem::path(resolved.model_root) == media_core_models);
+  assert(std::filesystem::path(resolved.model_manifest_path) == manifest);
+}
+
 }  // namespace
 
 void RunRuntimePathResolverTests() {
   TestEnvironmentOverridesPluginDefaults();
   TestPluginAdjacentDefaults();
   TestPluginRootOrtFallback();
+  TestPluginIsolatedOrtPreferredOverRoot();
+  TestEnvironmentOrtPathPrefersSiblingIsolatedDirectory();
   TestFallbackToRepositoryRelativeDefaults();
+  TestPluginDirectoryWithoutModelsUsesAbsoluteFallback();
+  TestEffectsInstallFallsBackToAdobeMediaCoreModels();
 }

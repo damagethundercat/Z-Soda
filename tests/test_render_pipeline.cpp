@@ -296,24 +296,24 @@ void TestFallbackOutputCachingSeparatedByModel() {
   zsoda::core::RenderPipeline pipeline(engine);
   const auto src = MakeSourceFrame(10, 10);
 
-  zsoda::core::RenderParams small;
-  small.model_id = "depth-anything-v3-small";
-  small.frame_hash = 777;
-  small.tile_size = 6;
-  small.overlap = 0;
+  zsoda::core::RenderParams small_params;
+  small_params.model_id = "depth-anything-v3-small";
+  small_params.frame_hash = 777;
+  small_params.tile_size = 6;
+  small_params.overlap = 0;
 
-  const auto first = pipeline.Render(src, small);
+  const auto first = pipeline.Render(src, small_params);
   assert(first.status == zsoda::core::RenderStatus::kFallbackTiled);
   assert(Contains(first.message, "tiled fallback succeeded"));
   const int run_count_after_first = engine->RunCount();
 
-  const auto second = pipeline.Render(src, small);
+  const auto second = pipeline.Render(src, small_params);
   assert(second.status == zsoda::core::RenderStatus::kCacheHit);
   assert(engine->RunCount() == run_count_after_first);
 
-  zsoda::core::RenderParams large = small;
-  large.model_id = "depth-anything-v3-large";
-  const auto third = pipeline.Render(src, large);
+  zsoda::core::RenderParams large_params = small_params;
+  large_params.model_id = "depth-anything-v3-large";
+  const auto third = pipeline.Render(src, large_params);
   assert(third.status != zsoda::core::RenderStatus::kCacheHit);
   assert(engine->RunCount() > run_count_after_first);
 }

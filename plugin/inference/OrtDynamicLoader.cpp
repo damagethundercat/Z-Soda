@@ -1,8 +1,13 @@
 #include "inference/OrtDynamicLoader.h"
 
+#include <algorithm>
+#include <array>
+#include <cctype>
 #include <cstdint>
+#include <cwctype>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -11,6 +16,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <tlhelp32.h>
 #endif
 
 #ifndef ORT_API_VERSION
@@ -286,10 +292,28 @@ bool ResolveLoadPath(const std::string& dll_path,
     std::wstring module_path;
     const HMODULE module = CurrentModuleHandle();
     if (module != nullptr && QueryModulePath(module, &module_path, &module_path_error)) {
-      const std::wstring candidate =
-          JoinPath(ParentDirectory(module_path), std::wstring(L"onnxruntime.dll"));
-      if (FileExists(candidate)) {
-        *load_path_wide = candidate;
+      const std::wstring parent = ParentDirectory(module_path);
+      // Strategy: look for ORT in an isolated subdirectory first.
+      // Adobe AE preloads its own onnxruntime.dll in the process. If we place
+      // our version in a subdirectory (zsoda_ort/), LoadLibraryExW with
+      // LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR resolves onnxruntime_providers_shared.dll
+      // dependencies against our subdirectory's DLL, not AE's preloaded one.
+      const std::wstring subdir = JoinPath(parent, std::wstring(L"zsoda_ort"));
+      const std::wstring subdir_candidate = JoinPath(subdir, std::wstring(L"onnxruntime.dll"));
+      if (FileExists(subdir_candidate)) {
+        *load_path_wide = subdir_candidate;
+        return WideToUtf8(*load_path_wide, load_path_utf8, error);
+      }
+      // Fallback: renamed DLL in the same directory
+      const std::wstring renamed_candidate = JoinPath(parent, std::wstring(L"onnxruntime_zsoda.dll"));
+      if (FileExists(renamed_candidate)) {
+        *load_path_wide = renamed_candidate;
+        return WideToUtf8(*load_path_wide, load_path_utf8, error);
+      }
+      // Fallback: original name (may conflict with AE's preloaded version)
+      const std::wstring original_candidate = JoinPath(parent, std::wstring(L"onnxruntime.dll"));
+      if (FileExists(original_candidate)) {
+        *load_path_wide = original_candidate;
         return WideToUtf8(*load_path_wide, load_path_utf8, error);
       }
     }
@@ -371,40 +395,114 @@ bool QueryLoadedModulePath(HMODULE module, std::string* loaded_path, std::string
   return false;
 }
 
-bool TryResolvePreloadedOrtModule(HMODULE* module, std::string* loaded_path, std::string* error) {
-  if (module == nullptr || loaded_path == nullptr) {
-    if (error != nullptr) {
-      *error = "internal error: preloaded ORT output pointer is null";
+std::array<int, 4> ParseRuntimeVersionKey(std::string_view version_text) {
+  std::array<int, 4> key = {0, 0, 0, 0};
+  std::size_t key_index = 0;
+  std::size_t i = 0;
+  while (i < version_text.size() && key_index < key.size()) {
+    while (i < version_text.size() &&
+           !std::isdigit(static_cast<unsigned char>(version_text[i]))) {
+      ++i;
     }
+    if (i >= version_text.size()) {
+      break;
+    }
+
+    int value = 0;
+    while (i < version_text.size() &&
+           std::isdigit(static_cast<unsigned char>(version_text[i]))) {
+      value = value * 10 + static_cast<int>(version_text[i] - '0');
+      ++i;
+    }
+    key[key_index++] = value;
+  }
+  return key;
+}
+
+int CompareRuntimeVersionKey(std::string_view lhs, std::string_view rhs) {
+  const auto lhs_key = ParseRuntimeVersionKey(lhs);
+  const auto rhs_key = ParseRuntimeVersionKey(rhs);
+  for (std::size_t i = 0; i < lhs_key.size(); ++i) {
+    if (lhs_key[i] != rhs_key[i]) {
+      return lhs_key[i] > rhs_key[i] ? 1 : -1;
+    }
+  }
+  return 0;
+}
+
+std::wstring ToLowerWideCopy(const std::wstring& input) {
+  std::wstring lowered;
+  lowered.reserve(input.size());
+  for (const wchar_t ch : input) {
+    lowered.push_back(static_cast<wchar_t>(::towlower(ch)));
+  }
+  return lowered;
+}
+
+bool IsOnnxRuntimeModuleName(const std::wstring& module_name) {
+  if (module_name.empty()) {
     return false;
   }
-  *module = nullptr;
-  loaded_path->clear();
+  return ToLowerWideCopy(module_name) == L"onnxruntime.dll";
+}
 
-  HMODULE preloaded = nullptr;
-  const BOOL ok = ::GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                                       L"onnxruntime.dll",
-                                       &preloaded);
-  if (!ok || preloaded == nullptr) {
+int RankPreloadedOrtPath(const std::wstring& module_path) {
+  const std::wstring lowered = ToLowerWideCopy(module_path);
+  if (lowered.find(L"\\adobe after effects") != std::wstring::npos &&
+      lowered.find(L"\\support files\\") != std::wstring::npos) {
+    return 300;
+  }
+  if (lowered.find(L"\\common files\\adobe\\plug-ins\\cc\\file formats\\") != std::wstring::npos) {
+    return 200;
+  }
+  return 100;
+}
+
+struct PreloadedOrtCandidate {
+  HMODULE module = nullptr;
+  std::wstring module_path;
+  int priority = 0;
+};
+
+void EnumeratePreloadedOrtCandidates(std::vector<PreloadedOrtCandidate>* out_candidates,
+                                     std::string* error) {
+  if (out_candidates == nullptr) {
+    return;
+  }
+  out_candidates->clear();
+
+  const DWORD pid = ::GetCurrentProcessId();
+  HANDLE snapshot = ::CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid);
+  if (snapshot == INVALID_HANDLE_VALUE) {
     if (error != nullptr) {
-      *error = "preloaded onnxruntime.dll is not present in process module list";
+      *error = "CreateToolhelp32Snapshot failed: " + FormatWin32ErrorMessage(::GetLastError());
     }
-    return false;
+    return;
   }
 
-  std::string loaded_path_error;
-  if (!QueryLoadedModulePath(preloaded, loaded_path, &loaded_path_error)) {
+  MODULEENTRY32W entry = {};
+  entry.dwSize = sizeof(entry);
+  if (!::Module32FirstW(snapshot, &entry)) {
     if (error != nullptr) {
-      *error = "preloaded ORT found but path query failed: " + loaded_path_error;
+      *error = "Module32FirstW failed: " + FormatWin32ErrorMessage(::GetLastError());
     }
-    return false;
+    ::CloseHandle(snapshot);
+    return;
   }
 
-  *module = preloaded;
-  if (error != nullptr) {
-    error->clear();
-  }
-  return true;
+  do {
+    if (!IsOnnxRuntimeModuleName(entry.szModule)) {
+      continue;
+    }
+
+    PreloadedOrtCandidate candidate;
+    candidate.module = entry.hModule;
+    candidate.module_path.assign(entry.szExePath);
+    candidate.priority = RankPreloadedOrtPath(candidate.module_path);
+    out_candidates->push_back(std::move(candidate));
+  } while (::Module32NextW(snapshot, &entry));
+
+  ::CloseHandle(snapshot);
 }
 
 bool BindOrtApiFromModule(HMODULE module,
@@ -496,6 +594,151 @@ bool BindOrtApiFromModule(HMODULE module,
   return true;
 }
 
+struct BoundPreloadedOrtCandidate {
+  HMODULE module = nullptr;
+  std::wstring module_path;
+  std::string loaded_path;
+  int priority = 0;
+  const OrtApiBase* api_base = nullptr;
+  const OrtApi* api = nullptr;
+  std::uint32_t negotiated_api_version = 0;
+  std::string runtime_version;
+};
+
+bool IsBetterBoundPreloadedCandidate(const BoundPreloadedOrtCandidate& candidate,
+                                     const BoundPreloadedOrtCandidate& current_best) {
+  if (candidate.negotiated_api_version != current_best.negotiated_api_version) {
+    return candidate.negotiated_api_version > current_best.negotiated_api_version;
+  }
+  const int runtime_compare =
+      CompareRuntimeVersionKey(candidate.runtime_version, current_best.runtime_version);
+  if (runtime_compare != 0) {
+    return runtime_compare > 0;
+  }
+  if (candidate.priority != current_best.priority) {
+    return candidate.priority > current_best.priority;
+  }
+  const std::wstring candidate_key = ToLowerWideCopy(candidate.module_path);
+  const std::wstring best_key = ToLowerWideCopy(current_best.module_path);
+  if (candidate_key != best_key) {
+    return candidate_key < best_key;
+  }
+  return reinterpret_cast<std::uintptr_t>(candidate.module) <
+         reinterpret_cast<std::uintptr_t>(current_best.module);
+}
+
+bool TryResolvePreloadedOrtModule(std::uint32_t requested_api_version,
+                                  HMODULE* module,
+                                  const OrtApiBase** api_base,
+                                  const OrtApi** api,
+                                  std::uint32_t* negotiated_api_version,
+                                  std::string* runtime_version,
+                                  std::string* loaded_path,
+                                  std::string* error) {
+  if (module == nullptr || api_base == nullptr || api == nullptr || negotiated_api_version == nullptr ||
+      runtime_version == nullptr || loaded_path == nullptr) {
+    if (error != nullptr) {
+      *error = "internal error: preloaded ORT output pointers are null";
+    }
+    return false;
+  }
+
+  *module = nullptr;
+  *api_base = nullptr;
+  *api = nullptr;
+  *negotiated_api_version = 0;
+  runtime_version->clear();
+  loaded_path->clear();
+
+  std::vector<PreloadedOrtCandidate> candidates;
+  std::string enumerate_error;
+  EnumeratePreloadedOrtCandidates(&candidates, &enumerate_error);
+  if (candidates.empty()) {
+    if (error != nullptr) {
+      *error = "preloaded onnxruntime.dll is not present in process module list" +
+               (enumerate_error.empty() ? std::string() : " (" + enumerate_error + ")");
+    }
+    return false;
+  }
+
+  std::vector<BoundPreloadedOrtCandidate> bound_candidates;
+  bound_candidates.reserve(candidates.size());
+  std::string rejection_reasons;
+
+  for (const auto& candidate : candidates) {
+    std::string candidate_path_utf8;
+    std::string path_conversion_error;
+    if (!WideToUtf8(candidate.module_path, &candidate_path_utf8, &path_conversion_error)) {
+      candidate_path_utf8 = "<utf8-convert-failed: " + path_conversion_error + ">";
+    }
+
+    std::string resolved_loaded_path;
+    std::string loaded_path_error;
+    if (!QueryLoadedModulePath(candidate.module, &resolved_loaded_path, &loaded_path_error)) {
+      AppendDiagnosticFragment(&rejection_reasons,
+                               "candidate=" + candidate_path_utf8 +
+                                   " path-query-failed: " + loaded_path_error);
+      continue;
+    }
+
+    const OrtApiBase* candidate_api_base = nullptr;
+    const OrtApi* candidate_api = nullptr;
+    std::uint32_t candidate_negotiated_version = 0;
+    std::string candidate_runtime_version;
+    std::string bind_error;
+    if (!BindOrtApiFromModule(candidate.module,
+                              requested_api_version,
+                              &candidate_api_base,
+                              &candidate_api,
+                              &candidate_negotiated_version,
+                              &candidate_runtime_version,
+                              &bind_error)) {
+      AppendDiagnosticFragment(&rejection_reasons,
+                               "candidate=" + resolved_loaded_path + " bind-failed: " + bind_error);
+      continue;
+    }
+
+    BoundPreloadedOrtCandidate bound_candidate;
+    bound_candidate.module = candidate.module;
+    bound_candidate.module_path = candidate.module_path;
+    bound_candidate.loaded_path = resolved_loaded_path;
+    bound_candidate.priority = candidate.priority;
+    bound_candidate.api_base = candidate_api_base;
+    bound_candidate.api = candidate_api;
+    bound_candidate.negotiated_api_version = candidate_negotiated_version;
+    bound_candidate.runtime_version = candidate_runtime_version;
+    bound_candidates.push_back(std::move(bound_candidate));
+  }
+
+  if (bound_candidates.empty()) {
+    if (error != nullptr) {
+      const std::string reject_detail = rejection_reasons.empty() ? "<none>" : rejection_reasons;
+      *error = "preloaded onnxruntime.dll candidates were found but binding failed for all candidates "
+               "(requested_api_version=" +
+               std::to_string(requested_api_version) + "; failures=" + reject_detail + ")";
+    }
+    return false;
+  }
+
+  BoundPreloadedOrtCandidate best = bound_candidates.front();
+  for (std::size_t i = 1U; i < bound_candidates.size(); ++i) {
+    if (IsBetterBoundPreloadedCandidate(bound_candidates[i], best)) {
+      best = bound_candidates[i];
+    }
+  }
+
+  *module = best.module;
+  *api_base = best.api_base;
+  *api = best.api;
+  *negotiated_api_version = best.negotiated_api_version;
+  *runtime_version = best.runtime_version;
+  *loaded_path = best.loaded_path;
+  if (error != nullptr) {
+    error->clear();
+  }
+  return true;
+}
+
 struct LoadAttempt {
   DWORD flags = 0;
   bool uses_ex = true;
@@ -526,7 +769,10 @@ bool TryLoadOrtModuleWithFallback(const std::wstring& load_path_wide,
       kernel32 == nullptr ? nullptr : ::GetProcAddress(kernel32, "RemoveDllDirectory"));
 
 #if defined(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS)
-  const DWORD default_dll_search_flags = LOAD_LIBRARY_SEARCH_DEFAULT_DIRS;
+  DWORD default_dll_search_flags = LOAD_LIBRARY_SEARCH_DEFAULT_DIRS;
+#if defined(LOAD_LIBRARY_SEARCH_USER_DIRS)
+  default_dll_search_flags |= LOAD_LIBRARY_SEARCH_USER_DIRS;
+#endif
 #else
   const DWORD default_dll_search_flags = 0;
 #endif
@@ -565,9 +811,17 @@ bool TryLoadOrtModuleWithFallback(const std::wstring& load_path_wide,
 
   std::vector<LoadAttempt> attempts;
 #if defined(LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR) && defined(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS)
-  attempts.push_back({LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS,
+  DWORD primary_flags = LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS;
+#if defined(LOAD_LIBRARY_SEARCH_USER_DIRS)
+  primary_flags |= LOAD_LIBRARY_SEARCH_USER_DIRS;
+  attempts.push_back({primary_flags,
+                      true,
+                      "LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR|LOAD_LIBRARY_SEARCH_DEFAULT_DIRS|LOAD_LIBRARY_SEARCH_USER_DIRS"});
+#else
+  attempts.push_back({primary_flags,
                       true,
                       "LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR|LOAD_LIBRARY_SEARCH_DEFAULT_DIRS"});
+#endif
 #endif
   attempts.push_back({LOAD_WITH_ALTERED_SEARCH_PATH, true, "LOAD_WITH_ALTERED_SEARCH_PATH"});
   attempts.push_back({0, false, "LoadLibraryW"});
@@ -653,93 +907,110 @@ bool OrtDynamicLoader::Load(const std::string& dll_path,
 #if !defined(_WIN32)
   return Fail("OrtDynamicLoader is only implemented for Windows in this build", error);
 #else
-  std::string preloaded_bind_error;
-  HMODULE preloaded_module = nullptr;
-  std::string preloaded_path;
-  std::string preloaded_resolve_error;
-  if (TryResolvePreloadedOrtModule(&preloaded_module, &preloaded_path, &preloaded_resolve_error)) {
-    const OrtApiBase* preloaded_api_base = nullptr;
-    const OrtApi* preloaded_api = nullptr;
-    std::uint32_t preloaded_negotiated_version = 0;
-    std::string preloaded_runtime_version;
-    std::string bind_error;
-    if (BindOrtApiFromModule(preloaded_module,
-                             requested_api_version_,
-                             &preloaded_api_base,
-                             &preloaded_api,
-                             &preloaded_negotiated_version,
-                             &preloaded_runtime_version,
-                             &bind_error)) {
-      module_handle_ = preloaded_module;
-      owns_module_handle_ = false;
-      api_base_ = preloaded_api_base;
-      api_ = preloaded_api;
-      negotiated_api_version_ = preloaded_negotiated_version;
-      attempted_load_path_ = preloaded_path;
-      loaded_dll_path_ = preloaded_path;
-      runtime_version_string_ = preloaded_runtime_version;
-      diagnostics_ = BuildDiagnostics(requested_dll_path_,
-                                      attempted_load_path_,
-                                      loaded_dll_path_,
-                                      runtime_version_string_,
-                                      requested_api_version_,
-                                      negotiated_api_version_,
-                                      std::string("using preloaded process module: onnxruntime.dll"));
-      if (error != nullptr) {
-        error->clear();
-      }
-      return true;
-    }
-    preloaded_bind_error = "preloaded onnxruntime.dll found at " + preloaded_path +
-                           " but API bind failed: " + bind_error;
-  } else {
-    preloaded_bind_error = preloaded_resolve_error;
-  }
+  // Prefer loading our isolated runtime path first. If the host process already
+  // loaded onnxruntime.dll and isolated loading fails (common in AE), we fall
+  // back to the preloaded module and negotiate API version safely.
 
   std::wstring load_path_wide;
   std::string resolve_error;
   if (!ResolveLoadPath(dll_path, &load_path_wide, &attempted_load_path_, &resolve_error)) {
-    std::string combined = "failed to resolve ORT DLL path: " + resolve_error;
-    if (!preloaded_bind_error.empty()) {
-      combined += " | " + preloaded_bind_error;
-    }
-    return Fail(combined, error);
+    return Fail("failed to resolve ORT DLL path: " + resolve_error, error);
   }
 
   HMODULE module = nullptr;
-  std::string load_attempts_diagnostics;
-  if (!TryLoadOrtModuleWithFallback(load_path_wide, &module, &load_attempts_diagnostics)) {
-    const std::string detail = load_attempts_diagnostics.empty() ? "<none>" : load_attempts_diagnostics;
-    std::string combined = "LoadLibraryW failed: all attempts exhausted (" + detail + ")";
-    if (!preloaded_bind_error.empty()) {
-      combined += " | " + preloaded_bind_error;
-    }
-    return Fail(combined, error);
-  }
-
   const OrtApiBase* api_base = nullptr;
   const OrtApi* api = nullptr;
   std::uint32_t negotiated_api_version = 0;
+  bool api_bound_from_preloaded = false;
+  bool loaded_from_preloaded_module = false;
+  std::string load_note;
+  std::string load_attempts_diagnostics;
+  if (!TryLoadOrtModuleWithFallback(load_path_wide, &module, &load_attempts_diagnostics)) {
+    const std::string detail = load_attempts_diagnostics.empty() ? "<none>" : load_attempts_diagnostics;
+    HMODULE preloaded_module = nullptr;
+    const OrtApiBase* preloaded_api_base = nullptr;
+    const OrtApi* preloaded_api = nullptr;
+    std::uint32_t preloaded_negotiated_api_version = 0;
+    std::string preloaded_runtime_version;
+    std::string preloaded_path;
+    std::string preloaded_error;
+    if (!TryResolvePreloadedOrtModule(requested_api_version_,
+                                      &preloaded_module,
+                                      &preloaded_api_base,
+                                      &preloaded_api,
+                                      &preloaded_negotiated_api_version,
+                                      &preloaded_runtime_version,
+                                      &preloaded_path,
+                                      &preloaded_error)) {
+      const std::string preloaded_detail = preloaded_error.empty() ? "<none>" : preloaded_error;
+      return Fail("LoadLibraryW failed: all attempts exhausted (" + detail +
+                      "); preloaded fallback unavailable (" + preloaded_detail + ")",
+                  error);
+    }
+    module = preloaded_module;
+    api_base = preloaded_api_base;
+    api = preloaded_api;
+    negotiated_api_version = preloaded_negotiated_api_version;
+    runtime_version_string_ = preloaded_runtime_version;
+    api_bound_from_preloaded = true;
+    loaded_from_preloaded_module = true;
+    load_note = "used preloaded onnxruntime module";
+    if (!preloaded_path.empty()) {
+      load_note.append(" (path=");
+      load_note.append(preloaded_path);
+    }
+    if (!runtime_version_string_.empty()) {
+      load_note.append(", runtime=");
+      load_note.append(runtime_version_string_);
+    }
+    load_note.append(", negotiated_api=");
+    load_note.append(std::to_string(negotiated_api_version));
+    if (!preloaded_path.empty()) {
+      load_note.append(")");
+    }
+    load_note.append("; isolated load failed: ");
+    load_note.append(detail);
+  }
+
   std::string bind_error;
-  if (!BindOrtApiFromModule(module,
-                            requested_api_version_,
-                            &api_base,
-                            &api,
-                            &negotiated_api_version,
-                            &runtime_version_string_,
-                            &bind_error)) {
-    ::FreeLibrary(module);
-    return Fail(bind_error, error);
+  if (!api_bound_from_preloaded) {
+    if (!BindOrtApiFromModule(module,
+                              requested_api_version_,
+                              &api_base,
+                              &api,
+                              &negotiated_api_version,
+                              &runtime_version_string_,
+                              &bind_error)) {
+      if (!loaded_from_preloaded_module) {
+        ::FreeLibrary(module);
+      }
+      return Fail(bind_error, error);
+    }
+  }
+  if (negotiated_api_version < requested_api_version_) {
+    if (!loaded_from_preloaded_module) {
+      ::FreeLibrary(module);
+    }
+    std::ostringstream oss;
+    oss << "onnx runtime API negotiation downgraded below requested version"
+        << " (requested=" << requested_api_version_
+        << ", negotiated=" << negotiated_api_version
+        << ", runtime_version="
+        << (runtime_version_string_.empty() ? "<unknown>" : runtime_version_string_)
+        << "); refusing to bind this runtime";
+    return Fail(oss.str(), error);
   }
 
   std::string loaded_path_error;
   if (!QueryLoadedModulePath(module, &loaded_dll_path_, &loaded_path_error)) {
-    ::FreeLibrary(module);
+    if (!loaded_from_preloaded_module) {
+      ::FreeLibrary(module);
+    }
     return Fail("failed to query loaded DLL path: " + loaded_path_error, error);
   }
 
   module_handle_ = module;
-  owns_module_handle_ = true;
+  owns_module_handle_ = !loaded_from_preloaded_module;
   api_base_ = api_base;
   api_ = api;
   negotiated_api_version_ = negotiated_api_version;
@@ -750,6 +1021,10 @@ bool OrtDynamicLoader::Load(const std::string& dll_path,
                                   requested_api_version_,
                                   negotiated_api_version_,
                                   std::string());
+  if (!load_note.empty()) {
+    diagnostics_.append(", note=");
+    diagnostics_.append(load_note);
+  }
   if (error != nullptr) {
     error->clear();
   }

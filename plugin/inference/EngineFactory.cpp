@@ -124,6 +124,11 @@ std::shared_ptr<IInferenceEngine> CreateDefaultEngine() {
     return engine;
   }
 
+  // Log why the managed engine failed so the user can diagnose DA3 issues.
+  std::fprintf(stderr,
+               "[Z-Soda] ManagedInferenceEngine init failed, falling back to DummyInferenceEngine: %s\n",
+               error.empty() ? "<no error detail>" : error.c_str());
+
   auto fallback = std::make_shared<DummyInferenceEngine>();
   if (!fallback->Initialize("dummy", &error)) {
     return nullptr;
