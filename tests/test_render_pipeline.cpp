@@ -1,4 +1,5 @@
 #include <cassert>
+#include <cmath>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -119,6 +120,72 @@ class ScriptedInferenceEngine final : public zsoda::inference::IInferenceEngine 
   mutable std::vector<int> run_qualities_;
   Rule default_rule_{};
   std::unordered_map<int, Rule> width_rules_;
+  std::string active_model_id_ = "depth-anything-v3-small";
+};
+
+class SequenceInferenceEngine final : public zsoda::inference::IInferenceEngine {
+ public:
+  explicit SequenceInferenceEngine(std::vector<float> sequence)
+      : sequence_(std::move(sequence)) {
+    if (sequence_.empty()) {
+      sequence_.push_back(0.0F);
+    }
+  }
+
+  const char* Name() const override { return "SequenceInferenceEngine"; }
+
+  bool Initialize(const std::string& model_id, std::string* error) override {
+    active_model_id_ = model_id.empty() ? "depth-anything-v3-small" : model_id;
+    if (error != nullptr) {
+      error->clear();
+    }
+    return true;
+  }
+
+  bool SelectModel(const std::string& model_id, std::string* error) override {
+    return Initialize(model_id, error);
+  }
+
+  std::vector<std::string> ListModelIds() const override {
+    return {"depth-anything-v3-small"};
+  }
+
+  std::string ActiveModelId() const override { return active_model_id_; }
+
+  bool Run(const zsoda::inference::InferenceRequest& request,
+           zsoda::core::FrameBuffer* out_depth,
+           std::string* error) const override {
+    if (request.source == nullptr || out_depth == nullptr) {
+      if (error != nullptr) {
+        *error = "invalid inference request";
+      }
+      return false;
+    }
+
+    auto desc = request.source->desc();
+    desc.channels = 1;
+    desc.format = zsoda::core::PixelFormat::kGray32F;
+    out_depth->Resize(desc);
+
+    const std::size_t index = std::min(cursor_, sequence_.size() - 1U);
+    const float value = sequence_[index];
+    for (int y = 0; y < desc.height; ++y) {
+      for (int x = 0; x < desc.width; ++x) {
+        out_depth->at(x, y, 0) = value;
+      }
+    }
+    if (cursor_ + 1U < sequence_.size()) {
+      ++cursor_;
+    }
+    if (error != nullptr) {
+      error->clear();
+    }
+    return true;
+  }
+
+ private:
+  mutable std::size_t cursor_ = 0U;
+  std::vector<float> sequence_;
   std::string active_model_id_ = "depth-anything-v3-small";
 };
 
@@ -318,6 +385,160 @@ void TestFallbackOutputCachingSeparatedByModel() {
   assert(engine->RunCount() > run_count_after_first);
 }
 
+void TestSliceParametersInvalidateCacheKey() {
+  auto engine = std::make_shared<ScriptedInferenceEngine>();
+  std::string error;
+  assert(engine->Initialize("depth-anything-v3-small", &error));
+
+  zsoda::core::RenderPipeline pipeline(engine);
+  const auto src = MakeSourceFrame(10, 10);
+
+  zsoda::core::RenderParams params;
+  params.model_id = "depth-anything-v3-small";
+  params.frame_hash = 9001;
+  params.output_mode = zsoda::core::OutputMode::kSlicing;
+  params.min_depth = 0.2F;
+  params.max_depth = 0.8F;
+  params.softness = 0.05F;
+
+  const auto first = pipeline.Render(src, params);
+  assert(first.status == zsoda::core::RenderStatus::kInference);
+  const int run_count_after_first = engine->RunCount();
+
+  params.min_depth = 0.4F;
+  const auto second = pipeline.Render(src, params);
+  assert(second.status != zsoda::core::RenderStatus::kCacheHit);
+  assert(engine->RunCount() > run_count_after_first);
+}
+
+void TestTileParametersInvalidateCacheKey() {
+  auto engine = std::make_shared<ScriptedInferenceEngine>();
+  std::string error;
+  assert(engine->Initialize("depth-anything-v3-small", &error));
+  engine->SetBehaviorForWidth(10, ScriptedInferenceEngine::Behavior::kFail, "direct stage forced");
+
+  zsoda::core::RenderPipeline pipeline(engine);
+  const auto src = MakeSourceFrame(10, 10);
+
+  zsoda::core::RenderParams params;
+  params.model_id = "depth-anything-v3-small";
+  params.frame_hash = 9002;
+  params.tile_size = 6;
+  params.overlap = 0;
+
+  const auto first = pipeline.Render(src, params);
+  assert(first.status == zsoda::core::RenderStatus::kFallbackTiled);
+  const int run_count_after_first = engine->RunCount();
+
+  params.tile_size = 8;
+  const auto second = pipeline.Render(src, params);
+  assert(second.status != zsoda::core::RenderStatus::kCacheHit);
+  assert(engine->RunCount() > run_count_after_first);
+}
+
+void TestStatefulPostProcessDisablesCache() {
+  auto engine = std::make_shared<ScriptedInferenceEngine>();
+  std::string error;
+  assert(engine->Initialize("depth-anything-v3-small", &error));
+
+  zsoda::core::RenderPipeline pipeline(engine);
+  const auto src = MakeSourceFrame(8, 8);
+
+  zsoda::core::RenderParams params;
+  params.model_id = "depth-anything-v3-small";
+  params.frame_hash = 9003;
+  params.temporal_alpha = 0.5F;
+  params.temporal_scene_cut_threshold = 1.0F;
+
+  const auto first = pipeline.Render(src, params);
+  assert(first.status == zsoda::core::RenderStatus::kInference);
+  const int run_count_after_first = engine->RunCount();
+
+  const auto second = pipeline.Render(src, params);
+  assert(second.status == zsoda::core::RenderStatus::kInference);
+  assert(engine->RunCount() > run_count_after_first);
+}
+
+void TestZeroFrameHashDisablesCache() {
+  auto engine = std::make_shared<ScriptedInferenceEngine>();
+  std::string error;
+  assert(engine->Initialize("depth-anything-v3-small", &error));
+
+  zsoda::core::RenderPipeline pipeline(engine);
+  const auto src = MakeSourceFrame(8, 8);
+
+  zsoda::core::RenderParams params;
+  params.model_id = "depth-anything-v3-small";
+  params.frame_hash = 0;
+
+  const auto first = pipeline.Render(src, params);
+  assert(first.status == zsoda::core::RenderStatus::kInference);
+  const int run_count_after_first = engine->RunCount();
+
+  const auto second = pipeline.Render(src, params);
+  assert(second.status == zsoda::core::RenderStatus::kInference);
+  assert(engine->RunCount() > run_count_after_first);
+}
+
+void TestDepthMappingModeRawVsNormalize() {
+  auto engine = std::make_shared<ScriptedInferenceEngine>();
+  std::string error;
+  assert(engine->Initialize("depth-anything-v3-small", &error));
+
+  zsoda::core::RenderPipeline pipeline(engine);
+  const auto src = MakeSourceFrame(8, 8);
+
+  zsoda::core::RenderParams raw_params;
+  raw_params.model_id = "depth-anything-v3-small";
+  raw_params.frame_hash = 5101;
+  raw_params.cache_enabled = false;
+  raw_params.mapping_mode = zsoda::core::DepthMappingMode::kRaw;
+  raw_params.temporal_alpha = 1.0F;
+  raw_params.edge_enhancement = 0.0F;
+
+  const auto raw_output = pipeline.Render(src, raw_params);
+  assert(raw_output.status == zsoda::core::RenderStatus::kInference);
+  const float raw_value = raw_output.frame.at(0, 0, 0);
+  assert(raw_value > 0.2F && raw_value < 0.3F);
+
+  zsoda::core::RenderParams normalized_params = raw_params;
+  normalized_params.frame_hash = 5102;
+  normalized_params.mapping_mode = zsoda::core::DepthMappingMode::kNormalize;
+  const auto normalized_output = pipeline.Render(src, normalized_params);
+  assert(normalized_output.status == zsoda::core::RenderStatus::kInference);
+  const float normalized_value = normalized_output.frame.at(0, 0, 0);
+  assert(normalized_value < 1e-3F);
+}
+
+void TestTemporalSmoothingBlendsFrames() {
+  auto engine = std::make_shared<SequenceInferenceEngine>(std::vector<float>{0.2F, 0.8F});
+  std::string error;
+  assert(engine->Initialize("depth-anything-v3-small", &error));
+
+  zsoda::core::RenderPipeline pipeline(engine);
+  const auto src = MakeSourceFrame(6, 6);
+
+  zsoda::core::RenderParams params;
+  params.model_id = "depth-anything-v3-small";
+  params.cache_enabled = false;
+  params.mapping_mode = zsoda::core::DepthMappingMode::kRaw;
+  params.temporal_alpha = 0.5F;
+  params.temporal_edge_aware = false;
+  params.temporal_scene_cut_threshold = 1.0F;
+  params.edge_enhancement = 0.0F;
+
+  params.frame_hash = 6101;
+  const auto first = pipeline.Render(src, params);
+  assert(first.status == zsoda::core::RenderStatus::kInference);
+  assert(std::fabs(first.frame.at(0, 0, 0) - 0.2F) < 1e-3F);
+
+  params.frame_hash = 6102;
+  const auto second = pipeline.Render(src, params);
+  assert(second.status == zsoda::core::RenderStatus::kInference);
+  const float blended = second.frame.at(0, 0, 0);
+  assert(blended > 0.45F && blended < 0.55F);
+}
+
 void TestSafeOutputAfterAllStagesFail() {
   auto engine = std::make_shared<ScriptedInferenceEngine>();
   std::string error;
@@ -389,6 +610,12 @@ void RunRenderPipelineTests() {
   TestAdaptiveFallbackHandlesInvalidTileConfiguration();
   TestDownscaledFallbackUsesVramBudgetHint();
   TestFallbackOutputCachingSeparatedByModel();
+  TestSliceParametersInvalidateCacheKey();
+  TestTileParametersInvalidateCacheKey();
+  TestStatefulPostProcessDisablesCache();
+  TestZeroFrameHashDisablesCache();
+  TestDepthMappingModeRawVsNormalize();
+  TestTemporalSmoothingBlendsFrames();
   TestSafeOutputAfterAllStagesFail();
   TestSafeOutputOnException();
   TestEmptySourceReturnsSafeOutput();

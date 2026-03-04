@@ -1,14 +1,21 @@
 #include "core/DepthOps.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <limits>
+#include <string>
+#include <vector>
 
 namespace zsoda::core {
 namespace {
 
 float Clamp01(float v) {
   return std::clamp(v, 0.0F, 1.0F);
+}
+
+float SanitizeDepthValue(float value, float fallback = 0.0F) {
+  return std::isfinite(value) ? value : fallback;
 }
 
 float Smoothstep(float edge0, float edge1, float x) {
@@ -19,7 +26,103 @@ float Smoothstep(float edge0, float edge1, float x) {
   return t * t * (3.0F - 2.0F * t);
 }
 
+std::vector<float> CollectDepthSamples(const FrameBuffer& depth) {
+  std::vector<float> samples;
+  if (depth.empty()) {
+    return samples;
+  }
+
+  const auto& desc = depth.desc();
+  const std::size_t pixel_count =
+      static_cast<std::size_t>(desc.width) * static_cast<std::size_t>(desc.height);
+  if (pixel_count == 0U) {
+    return samples;
+  }
+
+  constexpr std::size_t kMaxSamples = 65536U;
+  const std::size_t stride = std::max<std::size_t>(1U, pixel_count / kMaxSamples);
+  samples.reserve(std::min<std::size_t>(pixel_count, kMaxSamples));
+  std::size_t linear = 0U;
+  for (int y = 0; y < desc.height; ++y) {
+    for (int x = 0; x < desc.width; ++x, ++linear) {
+      if ((linear % stride) != 0U) {
+        continue;
+      }
+      const float value = depth.at(x, y, 0);
+      if (std::isfinite(value)) {
+        samples.push_back(value);
+      }
+    }
+  }
+
+  return samples;
+}
+
+float ComputeQuantile(std::vector<float>* values, float quantile) {
+  if (values == nullptr || values->empty()) {
+    return 0.0F;
+  }
+  quantile = Clamp01(quantile);
+  const std::size_t index =
+      static_cast<std::size_t>(quantile * static_cast<float>(values->size() - 1U));
+  std::nth_element(values->begin(), values->begin() + static_cast<std::ptrdiff_t>(index),
+                   values->end());
+  return (*values)[index];
+}
+
+float Lerp(float a, float b, float t) {
+  return a + (b - a) * t;
+}
+
 }  // namespace
+
+const char* DepthMappingModeName(DepthMappingMode mode) {
+  switch (mode) {
+    case DepthMappingMode::kRaw:
+      return "raw";
+    case DepthMappingMode::kNormalize:
+      return "normalize";
+    case DepthMappingMode::kGuided:
+      return "guided";
+  }
+  return "raw";
+}
+
+DepthMappingMode ParseDepthMappingMode(std::string_view value) {
+  std::string normalized;
+  normalized.reserve(value.size());
+  for (const char ch : value) {
+    if (ch == '-' || ch == '_' || std::isspace(static_cast<unsigned char>(ch))) {
+      continue;
+    }
+    normalized.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
+  }
+
+  if (normalized == "normalize" || normalized == "norm") {
+    return DepthMappingMode::kNormalize;
+  }
+  if (normalized == "guided" || normalized == "guide") {
+    return DepthMappingMode::kGuided;
+  }
+  return DepthMappingMode::kRaw;
+}
+
+void ClampDepth(FrameBuffer* depth, bool invert) {
+  if (depth == nullptr || depth->empty()) {
+    return;
+  }
+
+  const auto& desc = depth->desc();
+  for (int y = 0; y < desc.height; ++y) {
+    for (int x = 0; x < desc.width; ++x) {
+      float value = Clamp01(SanitizeDepthValue(depth->at(x, y, 0)));
+      if (invert) {
+        value = 1.0F - value;
+      }
+      depth->at(x, y, 0) = value;
+    }
+  }
+}
 
 void NormalizeDepth(FrameBuffer* depth, bool invert) {
   if (depth == nullptr || depth->empty()) {
@@ -33,17 +136,100 @@ void NormalizeDepth(FrameBuffer* depth, bool invert) {
   for (int y = 0; y < desc.height; ++y) {
     for (int x = 0; x < desc.width; ++x) {
       const float value = depth->at(x, y, 0);
+      if (!std::isfinite(value)) {
+        continue;
+      }
       min_value = std::min(min_value, value);
       max_value = std::max(max_value, value);
     }
   }
 
+  if (!std::isfinite(min_value) || !std::isfinite(max_value)) {
+    const float fallback = invert ? 1.0F : 0.0F;
+    for (int y = 0; y < desc.height; ++y) {
+      for (int x = 0; x < desc.width; ++x) {
+        depth->at(x, y, 0) = fallback;
+      }
+    }
+    return;
+  }
+
   const float range = std::max(max_value - min_value, 1e-6F);
   for (int y = 0; y < desc.height; ++y) {
     for (int x = 0; x < desc.width; ++x) {
-      float normalized = (depth->at(x, y, 0) - min_value) / range;
+      const float sanitized = SanitizeDepthValue(depth->at(x, y, 0), min_value);
+      float normalized = (sanitized - min_value) / range;
       normalized = Clamp01(normalized);
       depth->at(x, y, 0) = invert ? (1.0F - normalized) : normalized;
+    }
+  }
+}
+
+void ApplyDepthMapping(FrameBuffer* depth,
+                       const DepthMappingParams& params,
+                       GuidedDepthMappingState* guided_state) {
+  if (depth == nullptr || depth->empty()) {
+    return;
+  }
+
+  if (params.mode == DepthMappingMode::kRaw) {
+    ClampDepth(depth, params.invert);
+    return;
+  }
+
+  if (params.mode == DepthMappingMode::kNormalize) {
+    NormalizeDepth(depth, params.invert);
+    return;
+  }
+
+  std::vector<float> samples = CollectDepthSamples(*depth);
+  if (samples.empty()) {
+    NormalizeDepth(depth, params.invert);
+    return;
+  }
+
+  const float low_q = std::clamp(params.guided_low_percentile, 0.0F, 1.0F);
+  const float high_q = std::clamp(params.guided_high_percentile, 0.0F, 1.0F);
+  const float quantile_low = std::min(low_q, high_q);
+  const float quantile_high = std::max(low_q, high_q);
+
+  float near_value = ComputeQuantile(&samples, quantile_low);
+  float far_value = ComputeQuantile(&samples, quantile_high);
+  if (!std::isfinite(near_value) || !std::isfinite(far_value)) {
+    NormalizeDepth(depth, params.invert);
+    return;
+  }
+  if (far_value <= near_value + 1e-6F) {
+    far_value = near_value + 1e-6F;
+  }
+
+  if (guided_state != nullptr) {
+    const float alpha = Clamp01(params.guided_update_alpha);
+    if (!guided_state->initialized || !std::isfinite(guided_state->near_value) ||
+        !std::isfinite(guided_state->far_value) ||
+        guided_state->far_value <= guided_state->near_value + 1e-6F) {
+      guided_state->near_value = near_value;
+      guided_state->far_value = far_value;
+      guided_state->initialized = true;
+    } else {
+      guided_state->near_value = Lerp(guided_state->near_value, near_value, alpha);
+      guided_state->far_value = Lerp(guided_state->far_value, far_value, alpha);
+      if (guided_state->far_value <= guided_state->near_value + 1e-6F) {
+        guided_state->far_value = guided_state->near_value + 1e-6F;
+      }
+    }
+    near_value = guided_state->near_value;
+    far_value = guided_state->far_value;
+  }
+
+  const float range = std::max(far_value - near_value, 1e-6F);
+  const auto& desc = depth->desc();
+  for (int y = 0; y < desc.height; ++y) {
+    for (int x = 0; x < desc.width; ++x) {
+      const float sanitized = SanitizeDepthValue(depth->at(x, y, 0), near_value);
+      float normalized = (sanitized - near_value) / range;
+      normalized = Clamp01(normalized);
+      depth->at(x, y, 0) = params.invert ? (1.0F - normalized) : normalized;
     }
   }
 }

@@ -31,6 +31,11 @@ void TestRenderParamConversion() {
   assert(render.tile_size == 64);
   assert(render.overlap == 32);
   assert(render.vram_budget_mb == 0);
+  assert(render.mapping_mode == zsoda::core::DepthMappingMode::kRaw);
+  assert(render.temporal_alpha > 0.0F && render.temporal_alpha < 1.0F);
+  assert(render.temporal_edge_aware);
+  assert(render.edge_enhancement > 0.0F);
+  assert(render.edge_aware_upsample);
 }
 
 void TestModelMenu() {

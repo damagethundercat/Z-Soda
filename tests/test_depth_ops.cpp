@@ -70,6 +70,105 @@ void TestNormalizeDepthInvertAndFlatInput() {
   assert(inverted.at(1, 0, 0) == 1.0F);
 }
 
+void TestApplyDepthMappingRawAndNormalizeModes() {
+  zsoda::core::FrameDesc desc;
+  desc.width = 2;
+  desc.height = 1;
+  desc.channels = 1;
+  desc.format = zsoda::core::PixelFormat::kGray32F;
+
+  zsoda::core::FrameBuffer raw(desc);
+  raw.at(0, 0, 0) = 0.2F;
+  raw.at(1, 0, 0) = 0.8F;
+
+  zsoda::core::DepthMappingParams raw_params;
+  raw_params.mode = zsoda::core::DepthMappingMode::kRaw;
+  raw_params.invert = false;
+  zsoda::core::ApplyDepthMapping(&raw, raw_params, nullptr);
+  assert(NearlyEqual(raw.at(0, 0, 0), 0.2F));
+  assert(NearlyEqual(raw.at(1, 0, 0), 0.8F));
+
+  zsoda::core::FrameBuffer normalized(desc);
+  normalized.at(0, 0, 0) = 0.2F;
+  normalized.at(1, 0, 0) = 0.8F;
+
+  zsoda::core::DepthMappingParams norm_params;
+  norm_params.mode = zsoda::core::DepthMappingMode::kNormalize;
+  zsoda::core::ApplyDepthMapping(&normalized, norm_params, nullptr);
+  assert(NearlyEqual(normalized.at(0, 0, 0), 0.0F));
+  assert(NearlyEqual(normalized.at(1, 0, 0), 1.0F));
+}
+
+void TestApplyDepthMappingGuidedModeWithState() {
+  zsoda::core::FrameDesc desc;
+  desc.width = 4;
+  desc.height = 1;
+  desc.channels = 1;
+  desc.format = zsoda::core::PixelFormat::kGray32F;
+
+  zsoda::core::DepthMappingParams guided_params;
+  guided_params.mode = zsoda::core::DepthMappingMode::kGuided;
+  guided_params.guided_low_percentile = 0.0F;
+  guided_params.guided_high_percentile = 1.0F;
+  guided_params.guided_update_alpha = 0.5F;
+  zsoda::core::GuidedDepthMappingState state;
+
+  zsoda::core::FrameBuffer first(desc);
+  first.at(0, 0, 0) = 0.0F;
+  first.at(1, 0, 0) = 1.0F;
+  first.at(2, 0, 0) = 2.0F;
+  first.at(3, 0, 0) = 3.0F;
+  zsoda::core::ApplyDepthMapping(&first, guided_params, &state);
+  assert(NearlyEqual(first.at(0, 0, 0), 0.0F));
+  assert(NearlyEqual(first.at(3, 0, 0), 1.0F));
+  assert(state.initialized);
+
+  zsoda::core::FrameBuffer second(desc);
+  second.at(0, 0, 0) = 1.0F;
+  second.at(1, 0, 0) = 2.0F;
+  second.at(2, 0, 0) = 3.0F;
+  second.at(3, 0, 0) = 4.0F;
+  zsoda::core::ApplyDepthMapping(&second, guided_params, &state);
+  // With guided state smoothing, first value should not collapse to exact zero.
+  assert(second.at(0, 0, 0) > 0.1F);
+  assert(second.at(0, 0, 0) < 0.3F);
+}
+
+void TestApplyDepthMappingSanitizesNonFiniteInputs() {
+  zsoda::core::FrameDesc desc;
+  desc.width = 3;
+  desc.height = 1;
+  desc.channels = 1;
+  desc.format = zsoda::core::PixelFormat::kGray32F;
+
+  zsoda::core::FrameBuffer raw(desc);
+  raw.at(0, 0, 0) = std::numeric_limits<float>::quiet_NaN();
+  raw.at(1, 0, 0) = 0.5F;
+  raw.at(2, 0, 0) = std::numeric_limits<float>::infinity();
+  zsoda::core::DepthMappingParams raw_params;
+  raw_params.mode = zsoda::core::DepthMappingMode::kRaw;
+  zsoda::core::ApplyDepthMapping(&raw, raw_params, nullptr);
+  assert(std::isfinite(raw.at(0, 0, 0)));
+  assert(std::isfinite(raw.at(1, 0, 0)));
+  assert(std::isfinite(raw.at(2, 0, 0)));
+  assert(raw.at(0, 0, 0) == 0.0F);
+  assert(NearlyEqual(raw.at(1, 0, 0), 0.5F));
+  assert(raw.at(2, 0, 0) == 1.0F);
+
+  zsoda::core::FrameBuffer normalized(desc);
+  normalized.at(0, 0, 0) = std::numeric_limits<float>::quiet_NaN();
+  normalized.at(1, 0, 0) = 2.0F;
+  normalized.at(2, 0, 0) = 4.0F;
+  zsoda::core::DepthMappingParams norm_params;
+  norm_params.mode = zsoda::core::DepthMappingMode::kNormalize;
+  zsoda::core::ApplyDepthMapping(&normalized, norm_params, nullptr);
+  assert(std::isfinite(normalized.at(0, 0, 0)));
+  assert(std::isfinite(normalized.at(1, 0, 0)));
+  assert(std::isfinite(normalized.at(2, 0, 0)));
+  assert(NearlyEqual(normalized.at(1, 0, 0), 0.0F));
+  assert(NearlyEqual(normalized.at(2, 0, 0), 1.0F));
+}
+
 void TestSliceMatte() {
   zsoda::core::FrameDesc desc;
   desc.width = 3;
@@ -423,6 +522,9 @@ void TestConvertGray32FToHostValidation() {
 void RunDepthOpsTests() {
   TestNormalizeDepth();
   TestNormalizeDepthInvertAndFlatInput();
+  TestApplyDepthMappingRawAndNormalizeModes();
+  TestApplyDepthMappingGuidedModeWithState();
+  TestApplyDepthMappingSanitizesNonFiniteInputs();
   TestSliceMatte();
   TestPixelConversionStatusStrings();
   TestConvertHostToGray32FRgba8WithStridePadding();

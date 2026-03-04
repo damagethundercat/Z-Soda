@@ -17,7 +17,23 @@ std::size_t RenderCacheKeyHash::operator()(const RenderCacheKey& key) const {
   h = HashCombine(h, std::hash<int>{}(key.height));
   h = HashCombine(h, std::hash<int>{}(key.quality));
   h = HashCombine(h, std::hash<bool>{}(key.invert));
+  h = HashCombine(h, std::hash<int>{}(key.mapping_mode));
+  h = HashCombine(h, std::hash<int>{}(key.guided_low_permille));
+  h = HashCombine(h, std::hash<int>{}(key.guided_high_permille));
+  h = HashCombine(h, std::hash<int>{}(key.guided_alpha_permille));
+  h = HashCombine(h, std::hash<int>{}(key.temporal_alpha_permille));
+  h = HashCombine(h, std::hash<bool>{}(key.temporal_edge_aware));
+  h = HashCombine(h, std::hash<int>{}(key.temporal_edge_threshold_permille));
+  h = HashCombine(h, std::hash<int>{}(key.temporal_scene_cut_threshold_permille));
+  h = HashCombine(h, std::hash<int>{}(key.edge_enhancement_permille));
+  h = HashCombine(h, std::hash<int>{}(key.edge_guidance_sigma_permille));
+  h = HashCombine(h, std::hash<bool>{}(key.edge_aware_upsample));
   h = HashCombine(h, std::hash<bool>{}(key.slice_mode));
+  h = HashCombine(h, std::hash<int>{}(key.slice_min_permille));
+  h = HashCombine(h, std::hash<int>{}(key.slice_max_permille));
+  h = HashCombine(h, std::hash<int>{}(key.slice_softness_permille));
+  h = HashCombine(h, std::hash<int>{}(key.tile_size));
+  h = HashCombine(h, std::hash<int>{}(key.overlap));
   h = HashCombine(h, std::hash<int>{}(key.vram_budget_mb));
   h = HashCombine(h, std::hash<std::uint64_t>{}(key.model_hash));
   h = HashCombine(h, std::hash<std::uint64_t>{}(key.frame_hash));
@@ -36,6 +52,7 @@ bool DepthCache::Find(const RenderCacheKey& key, FrameBuffer* out) const {
     return false;
   }
   *out = it->second;
+  Touch(key);
   return true;
 }
 
@@ -63,7 +80,7 @@ std::size_t DepthCache::size() const {
   return entries_.size();
 }
 
-void DepthCache::Touch(const RenderCacheKey& key) {
+void DepthCache::Touch(const RenderCacheKey& key) const {
   auto it = std::find(lru_.begin(), lru_.end(), key);
   if (it != lru_.end()) {
     lru_.erase(it);
