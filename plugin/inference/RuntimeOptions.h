@@ -16,8 +16,14 @@ enum class RuntimeBackend {
   kRemote,
 };
 
+enum class PreprocessResizeMode {
+  kUpperBoundLetterbox,
+  kLowerBoundCenterCrop,
+};
+
 struct RuntimeOptions {
   RuntimeBackend preferred_backend = RuntimeBackend::kAuto;
+  PreprocessResizeMode preprocess_resize_mode = PreprocessResizeMode::kUpperBoundLetterbox;
   std::string model_manifest_path;
   std::string onnxruntime_library_path;
   std::string onnxruntime_library_dir;
@@ -78,6 +84,38 @@ struct RuntimeOptions {
     return RuntimeBackend::kRemote;
   }
   return RuntimeBackend::kAuto;
+}
+
+[[nodiscard]] inline const char* PreprocessResizeModeName(PreprocessResizeMode mode) {
+  switch (mode) {
+    case PreprocessResizeMode::kUpperBoundLetterbox:
+      return "upper_bound_letterbox";
+    case PreprocessResizeMode::kLowerBoundCenterCrop:
+      return "lower_bound_center_crop";
+  }
+  return "upper_bound_letterbox";
+}
+
+[[nodiscard]] inline PreprocessResizeMode ParsePreprocessResizeMode(std::string_view value) {
+  std::string normalized;
+  normalized.reserve(value.size());
+  for (const char ch : value) {
+    if (ch == '-' || ch == '_' || ch == '+' || std::isspace(static_cast<unsigned char>(ch))) {
+      continue;
+    }
+    normalized.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
+  }
+
+  if (normalized == "upperboundletterbox" || normalized == "upperbound" ||
+      normalized == "letterbox" || normalized == "upper") {
+    return PreprocessResizeMode::kUpperBoundLetterbox;
+  }
+  if (normalized == "lowerboundcentercrop" || normalized == "lowerboundcrop" ||
+      normalized == "lowerbound" || normalized == "lower" ||
+      normalized == "centercrop" || normalized == "crop") {
+    return PreprocessResizeMode::kLowerBoundCenterCrop;
+  }
+  return PreprocessResizeMode::kUpperBoundLetterbox;
 }
 
 }  // namespace zsoda::inference

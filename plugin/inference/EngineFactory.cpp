@@ -84,6 +84,10 @@ std::shared_ptr<IInferenceEngine> CreateDefaultEngine() {
   if (!env_backend.empty()) {
     options.preferred_backend = ParseRuntimeBackend(env_backend);
   }
+  const std::string env_preprocess_resize_mode = ReadEnvOrEmpty("ZSODA_PREPROCESS_RESIZE_MODE");
+  if (!env_preprocess_resize_mode.empty()) {
+    options.preprocess_resize_mode = ParsePreprocessResizeMode(env_preprocess_resize_mode);
+  }
 
   options.remote_endpoint =
       ReadEnvWithFallback("ZSODA_REMOTE_INFERENCE_ENDPOINT", "ZSODA_REMOTE_INFERENCE_URL");

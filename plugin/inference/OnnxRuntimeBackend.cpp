@@ -63,6 +63,10 @@ struct PreparedModelInput {
   int tensor_width = 0;
   int tensor_height = 0;
   int tensor_channels = 3;
+  float resize_scale = 1.0F;
+  float resize_offset_x = 0.0F;
+  float resize_offset_y = 0.0F;
+  PreprocessResizeMode resize_mode = PreprocessResizeMode::kUpperBoundLetterbox;
   float normalized_min = 0.0F;
   float normalized_max = 0.0F;
   float normalized_mean = 0.0F;
@@ -454,6 +458,7 @@ bool PrepareInputForModel(const InferenceRequest& request,
                           const ModelPipelineProfile& profile,
                           int preferred_tensor_width,
                           int preferred_tensor_height,
+                          PreprocessResizeMode resize_mode,
                           PreparedModelInput* prepared_input,
                           std::string* error) {
   if (prepared_input == nullptr) {
@@ -465,6 +470,12 @@ bool PrepareInputForModel(const InferenceRequest& request,
 
   const auto& source = *request.source;
   const auto& src_desc = source.desc();
+  if (src_desc.width <= 0 || src_desc.height <= 0 || src_desc.channels <= 0) {
+    if (error != nullptr) {
+      *error = "invalid inference request: source frame descriptor is invalid";
+    }
+    return false;
+  }
   prepared_input->source_width = src_desc.width;
   prepared_input->source_height = src_desc.height;
 
@@ -477,6 +488,10 @@ bool PrepareInputForModel(const InferenceRequest& request,
       std::max(kMinimumModelInputSize,
                preferred_tensor_height > 0 ? preferred_tensor_height : fallback_height);
   prepared_input->tensor_channels = 3;
+  prepared_input->resize_mode = resize_mode;
+  prepared_input->resize_scale = 1.0F;
+  prepared_input->resize_offset_x = 0.0F;
+  prepared_input->resize_offset_y = 0.0F;
 
   const int tensor_width = prepared_input->tensor_width;
   const int tensor_height = prepared_input->tensor_height;
@@ -491,6 +506,46 @@ bool PrepareInputForModel(const InferenceRequest& request,
 
   prepared_input->nchw_values.assign(pixel_count * 3U, 0.0F);
   const float normalize_denom = (profile.normalize_scale == 0.0F) ? 1.0F : profile.normalize_scale;
+  constexpr float kPaddingNormalizedValue = 0.0F;
+
+  const float src_width = static_cast<float>(src_desc.width);
+  const float src_height = static_cast<float>(src_desc.height);
+  const float tensor_width_f = static_cast<float>(tensor_width);
+  const float tensor_height_f = static_cast<float>(tensor_height);
+  const float scale_x = tensor_width_f / src_width;
+  const float scale_y = tensor_height_f / src_height;
+  const bool use_letterbox = resize_mode != PreprocessResizeMode::kLowerBoundCenterCrop;
+  const float resize_scale = use_letterbox ? std::min(scale_x, scale_y) : std::max(scale_x, scale_y);
+  const float safe_resize_scale = resize_scale > 0.0F ? resize_scale : 1.0F;
+  const float resized_width = src_width * safe_resize_scale;
+  const float resized_height = src_height * safe_resize_scale;
+
+  float transform_offset_x = 0.0F;
+  float transform_offset_y = 0.0F;
+  float letterbox_min_x = 0.0F;
+  float letterbox_max_x = tensor_width_f;
+  float letterbox_min_y = 0.0F;
+  float letterbox_max_y = tensor_height_f;
+  bool apply_letterbox_padding = false;
+  if (use_letterbox) {
+    const float pad_x = (tensor_width_f - resized_width) * 0.5F;
+    const float pad_y = (tensor_height_f - resized_height) * 0.5F;
+    transform_offset_x = -pad_x;
+    transform_offset_y = -pad_y;
+    letterbox_min_x = pad_x;
+    letterbox_max_x = pad_x + resized_width;
+    letterbox_min_y = pad_y;
+    letterbox_max_y = pad_y + resized_height;
+    apply_letterbox_padding = true;
+  } else {
+    const float crop_x = (resized_width - tensor_width_f) * 0.5F;
+    const float crop_y = (resized_height - tensor_height_f) * 0.5F;
+    transform_offset_x = crop_x;
+    transform_offset_y = crop_y;
+  }
+  prepared_input->resize_scale = safe_resize_scale;
+  prepared_input->resize_offset_x = transform_offset_x;
+  prepared_input->resize_offset_y = transform_offset_y;
 
   const auto sample_channel = [&](float fx, float fy, int channel) -> float {
     const float clamped_x =
@@ -519,22 +574,28 @@ bool PrepareInputForModel(const InferenceRequest& request,
   float running_sum = 0.0F;
 
   for (int y = 0; y < tensor_height; ++y) {
-    const float src_y = (static_cast<float>(y) + 0.5F) *
-                            (static_cast<float>(src_desc.height) /
-                             static_cast<float>(tensor_height)) -
-                        0.5F;
+    const float target_y = static_cast<float>(y) + 0.5F;
+    const bool inside_y =
+        !apply_letterbox_padding ||
+        (target_y >= letterbox_min_y && target_y < letterbox_max_y);
+    const float src_y = ((target_y + transform_offset_y) / safe_resize_scale) - 0.5F;
     for (int x = 0; x < tensor_width; ++x) {
-      const float src_x = (static_cast<float>(x) + 0.5F) *
-                              (static_cast<float>(src_desc.width) /
-                               static_cast<float>(tensor_width)) -
-                          0.5F;
+      const float target_x = static_cast<float>(x) + 0.5F;
+      const bool inside_x =
+          !apply_letterbox_padding ||
+          (target_x >= letterbox_min_x && target_x < letterbox_max_x);
+      const bool use_padding_value = apply_letterbox_padding && (!inside_x || !inside_y);
+      const float src_x = ((target_x + transform_offset_x) / safe_resize_scale) - 0.5F;
       const std::size_t output_index =
           static_cast<std::size_t>(y) * static_cast<std::size_t>(tensor_width) + x;
 
       float normalized_channels[3] = {};
       for (int channel = 0; channel < 3; ++channel) {
-        const float sampled = std::clamp(sample_channel(src_x, src_y, channel), 0.0F, 1.0F);
-        const float normalized = (sampled - profile.normalize_bias) / normalize_denom;
+        float normalized = kPaddingNormalizedValue;
+        if (!use_padding_value) {
+          const float sampled = std::clamp(sample_channel(src_x, src_y, channel), 0.0F, 1.0F);
+          normalized = (sampled - profile.normalize_bias) / normalize_denom;
+        }
         prepared_input->nchw_values[static_cast<std::size_t>(channel) * pixel_count + output_index] =
             normalized;
         normalized_channels[channel] = normalized;
@@ -587,6 +648,7 @@ bool RunPlaceholderInference(const std::string& backend_name,
 
 bool PostprocessDepthForModel(const RawDepthOutput& raw_output,
                               const ModelPipelineProfile& profile,
+                              const PreparedModelInput* prepared_input,
                               const zsoda::core::FrameDesc& target_desc,
                               zsoda::core::FrameBuffer* out_depth,
                               std::string* error) {
@@ -625,16 +687,61 @@ bool PostprocessDepthForModel(const RawDepthOutput& raw_output,
     return raw_output.depth_values[index];
   };
 
+  const bool has_preprocess_mapping =
+      prepared_input != nullptr &&
+      prepared_input->source_width > 0 &&
+      prepared_input->source_height > 0 &&
+      prepared_input->tensor_width > 0 &&
+      prepared_input->tensor_height > 0 &&
+      prepared_input->resize_scale > 0.0F;
+
+  const float source_scale_x =
+      has_preprocess_mapping
+          ? static_cast<float>(prepared_input->source_width) /
+                static_cast<float>(std::max(1, output_desc.width))
+          : 1.0F;
+  const float source_scale_y =
+      has_preprocess_mapping
+          ? static_cast<float>(prepared_input->source_height) /
+                static_cast<float>(std::max(1, output_desc.height))
+          : 1.0F;
+  const float tensor_to_raw_scale_x =
+      has_preprocess_mapping
+          ? static_cast<float>(raw_output.width) /
+                static_cast<float>(std::max(1, prepared_input->tensor_width))
+          : 1.0F;
+  const float tensor_to_raw_scale_y =
+      has_preprocess_mapping
+          ? static_cast<float>(raw_output.height) /
+                static_cast<float>(std::max(1, prepared_input->tensor_height))
+          : 1.0F;
+
   for (int y = 0; y < output_desc.height; ++y) {
-    const float src_y = (static_cast<float>(y) + 0.5F) *
-                            (static_cast<float>(raw_output.height) /
-                             static_cast<float>(output_desc.height)) -
-                        0.5F;
+    float src_y = 0.0F;
+    if (has_preprocess_mapping) {
+      const float source_center_y = (static_cast<float>(y) + 0.5F) * source_scale_y;
+      const float tensor_center_y = source_center_y * prepared_input->resize_scale -
+                                    prepared_input->resize_offset_y;
+      src_y = tensor_center_y * tensor_to_raw_scale_y - 0.5F;
+    } else {
+      src_y = (static_cast<float>(y) + 0.5F) *
+                  (static_cast<float>(raw_output.height) /
+                   static_cast<float>(output_desc.height)) -
+              0.5F;
+    }
     for (int x = 0; x < output_desc.width; ++x) {
-      const float src_x = (static_cast<float>(x) + 0.5F) *
-                              (static_cast<float>(raw_output.width) /
-                               static_cast<float>(output_desc.width)) -
-                          0.5F;
+      float src_x = 0.0F;
+      if (has_preprocess_mapping) {
+        const float source_center_x = (static_cast<float>(x) + 0.5F) * source_scale_x;
+        const float tensor_center_x = source_center_x * prepared_input->resize_scale -
+                                      prepared_input->resize_offset_x;
+        src_x = tensor_center_x * tensor_to_raw_scale_x - 0.5F;
+      } else {
+        src_x = (static_cast<float>(x) + 0.5F) *
+                    (static_cast<float>(raw_output.width) /
+                     static_cast<float>(output_desc.width)) -
+                0.5F;
+      }
 
       const float clamped_x =
           std::clamp(src_x, 0.0F, static_cast<float>(std::max(0, raw_output.width - 1)));
@@ -1410,6 +1517,7 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
                               active_model_profile_,
                               model_input_width_,
                               model_input_height_,
+                              options_.preprocess_resize_mode,
                               &prepared_input,
                               error)) {
       AppendOrtTrace("run_prepare_input_failed",
@@ -1426,7 +1534,8 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
           "tensor=" + std::to_string(prepared_input.tensor_width) + "x" +
           std::to_string(prepared_input.tensor_height) + "x" +
           std::to_string(prepared_input.tensor_channels) +
-          ", image_dim=" + std::string(has_image_dimension ? "1" : "0");
+          ", image_dim=" + std::string(has_image_dimension ? "1" : "0") +
+          ", preprocess_resize_mode=" + std::string(PreprocessResizeModeName(options_.preprocess_resize_mode));
       AppendOrtTrace("run_prepare_input_ok", prepared_detail.c_str());
     }
 
@@ -1629,6 +1738,7 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
 
     if (!PostprocessDepthForModel(raw_output,
                                   active_model_profile_,
+                                  &prepared_input,
                                   request.source->desc(),
                                   out_depth,
                                   error)) {

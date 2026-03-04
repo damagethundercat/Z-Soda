@@ -1,6 +1,8 @@
+#include <algorithm>
 #include <atomic>
 #include <cassert>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -20,6 +22,12 @@
 #include "inference/OnnxRuntimeBackend.h"
 #endif
 #include "inference/RuntimeOptions.h"
+
+#if defined(ZSODA_WITH_ONNX_RUNTIME)
+#define CreateOnnxRuntimeBackend CreateOnnxRuntimeBackend_TestOnly
+#include "inference/OnnxRuntimeBackend.cpp"
+#undef CreateOnnxRuntimeBackend
+#endif
 
 namespace {
 
@@ -102,6 +110,18 @@ bool HasOrtInitializationDiagnostic(std::string_view message) {
          HasOrtLoadOrVersionMismatchDiagnostic(message);
 }
 
+bool HasOrtBootstrapDiagnostic(std::string_view message) {
+  return HasOrtInitializationDiagnostic(message) ||
+         ContainsAny(message,
+                     {
+                         "onnx runtime dynamic loader failed",
+                         "requested_api_version=",
+                         "runtime_version=",
+                         "candidates=",
+                         "loaded_path=",
+                     });
+}
+
 bool HasOrtRunOrExecutionDiagnostic(std::string_view message) {
   return ContainsAny(message,
                      {
@@ -178,6 +198,83 @@ zsoda::core::FrameBuffer MakeSource() {
   return frame;
 }
 
+#if defined(ZSODA_WITH_ONNX_RUNTIME)
+zsoda::core::FrameBuffer MakeRgbCenteredSquareSource(int width, int height, int square_size) {
+  zsoda::core::FrameDesc desc;
+  desc.width = width;
+  desc.height = height;
+  desc.channels = 3;
+  desc.format = zsoda::core::PixelFormat::kRGBA32F;
+  zsoda::core::FrameBuffer frame(desc);
+
+  const int clamped_square = std::clamp(square_size, 1, std::min(width, height));
+  const int start_x = (width - clamped_square) / 2;
+  const int start_y = (height - clamped_square) / 2;
+  const int end_x = start_x + clamped_square;
+  const int end_y = start_y + clamped_square;
+  for (int y = 0; y < height; ++y) {
+    for (int x = 0; x < width; ++x) {
+      const float value = (x >= start_x && x < end_x && y >= start_y && y < end_y) ? 1.0F : 0.0F;
+      for (int channel = 0; channel < 3; ++channel) {
+        frame.at(x, y, channel) = value;
+      }
+    }
+  }
+  return frame;
+}
+
+float MeasureChannelSpreadAspectRatio(const zsoda::inference::PreparedModelInput& prepared,
+                                      int channel) {
+  const int width = prepared.tensor_width;
+  const int height = prepared.tensor_height;
+  const std::size_t plane_size =
+      static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+  const std::size_t channel_offset = static_cast<std::size_t>(channel) * plane_size;
+  if (width <= 0 || height <= 0 || channel < 0 || channel >= prepared.tensor_channels ||
+      prepared.nchw_values.size() < channel_offset + plane_size) {
+    return 0.0F;
+  }
+
+  float sum_weight = 0.0F;
+  float mean_x = 0.0F;
+  float mean_y = 0.0F;
+  for (int y = 0; y < height; ++y) {
+    for (int x = 0; x < width; ++x) {
+      const std::size_t index =
+          channel_offset + static_cast<std::size_t>(y) * static_cast<std::size_t>(width) + x;
+      const float weight = std::max(0.0F, prepared.nchw_values[index]);
+      sum_weight += weight;
+      mean_x += weight * static_cast<float>(x);
+      mean_y += weight * static_cast<float>(y);
+    }
+  }
+  if (sum_weight <= 1e-6F) {
+    return 0.0F;
+  }
+  mean_x /= sum_weight;
+  mean_y /= sum_weight;
+
+  float var_x = 0.0F;
+  float var_y = 0.0F;
+  for (int y = 0; y < height; ++y) {
+    for (int x = 0; x < width; ++x) {
+      const std::size_t index =
+          channel_offset + static_cast<std::size_t>(y) * static_cast<std::size_t>(width) + x;
+      const float weight = std::max(0.0F, prepared.nchw_values[index]);
+      const float dx = static_cast<float>(x) - mean_x;
+      const float dy = static_cast<float>(y) - mean_y;
+      var_x += weight * dx * dx;
+      var_y += weight * dy * dy;
+    }
+  }
+  if (var_x <= 1e-6F || var_y <= 1e-6F) {
+    return 0.0F;
+  }
+  return std::sqrt(var_x / var_y);
+}
+
+#endif
+
 void TestModelList() {
   zsoda::inference::ManagedInferenceEngine engine("models");
   const auto models = engine.ListModelIds();
@@ -215,6 +312,16 @@ void TestRuntimeBackendOptions() {
          zsoda::inference::RuntimeBackend::kRemote);
   assert(zsoda::inference::ParseRuntimeBackend("unknown-backend") ==
          zsoda::inference::RuntimeBackend::kAuto);
+  assert(zsoda::inference::ParsePreprocessResizeMode("upper_bound_letterbox") ==
+         zsoda::inference::PreprocessResizeMode::kUpperBoundLetterbox);
+  assert(zsoda::inference::ParsePreprocessResizeMode("letterbox") ==
+         zsoda::inference::PreprocessResizeMode::kUpperBoundLetterbox);
+  assert(zsoda::inference::ParsePreprocessResizeMode("lower_bound_center_crop") ==
+         zsoda::inference::PreprocessResizeMode::kLowerBoundCenterCrop);
+  assert(zsoda::inference::ParsePreprocessResizeMode("lower_bound") ==
+         zsoda::inference::PreprocessResizeMode::kLowerBoundCenterCrop);
+  assert(zsoda::inference::ParsePreprocessResizeMode("crop") ==
+         zsoda::inference::PreprocessResizeMode::kLowerBoundCenterCrop);
 
   zsoda::inference::RuntimeOptions options;
   options.preferred_backend = zsoda::inference::RuntimeBackend::kCuda;
@@ -523,6 +630,41 @@ void TestMissingModelFileDiagnostics() {
 }
 
 #if defined(ZSODA_WITH_ONNX_RUNTIME)
+void TestOnnxPreprocessAspectRatioForNonSquareInput() {
+  const auto run_case = [](int source_width,
+                           int source_height,
+                           zsoda::inference::PreprocessResizeMode resize_mode) {
+    const auto source = MakeRgbCenteredSquareSource(source_width, source_height, 4);
+    zsoda::inference::InferenceRequest request;
+    request.source = &source;
+    request.quality = 1;
+
+    zsoda::inference::ModelPipelineProfile profile;
+    profile.input_width = 12;
+    profile.input_height = 12;
+    profile.normalize_bias = 0.0F;
+    profile.normalize_scale = 1.0F;
+    profile.invert_depth = false;
+
+    zsoda::inference::PreparedModelInput prepared;
+    std::string error;
+    assert(zsoda::inference::PrepareInputForModel(
+        request, profile, profile.input_width, profile.input_height, resize_mode, &prepared, &error));
+    assert(error.empty());
+
+    const float spread_ratio = MeasureChannelSpreadAspectRatio(prepared, 0);
+    assert(spread_ratio > 0.0F);
+    assert(spread_ratio >= 0.8F);
+    assert(spread_ratio <= 1.25F);
+  };
+
+  for (const auto mode : {zsoda::inference::PreprocessResizeMode::kUpperBoundLetterbox,
+                          zsoda::inference::PreprocessResizeMode::kLowerBoundCenterCrop}) {
+    run_case(16, 8, mode);
+    run_case(8, 16, mode);
+  }
+}
+
 void TestOnnxBackendValidationScaffold() {
   zsoda::inference::RuntimeOptions options;
   options.preferred_backend = zsoda::inference::RuntimeBackend::kCuda;
@@ -532,7 +674,7 @@ void TestOnnxBackendValidationScaffold() {
   if (backend == nullptr) {
     assert(!error.empty());
     assert(Contains(error, "onnx runtime"));
-    assert(HasOrtInitializationDiagnostic(error));
+    assert(HasOrtBootstrapDiagnostic(error));
     return;
   }
   assert(error.empty());
@@ -628,6 +770,7 @@ void RunInferenceEngineTests() {
   TestManifestModelSelectionRunPath();
   TestMissingModelFileDiagnostics();
 #if defined(ZSODA_WITH_ONNX_RUNTIME)
+  TestOnnxPreprocessAspectRatioForNonSquareInput();
   TestOnnxBackendValidationScaffold();
 #endif
   TestModelAutoDownloaderValidation();
