@@ -801,3 +801,53 @@ artifacts/diagnostics/ae_loader_diag_YYYYMMDD_HHMMSS/
      - `EngineStatus` no longer reporting `DummyDepthEngine`
      - `loaded_path=<actual onnxruntime dll path>`
      - no `code=1114`.
+
+### Session update (2026-03-04 13:45, native crash repro after remote-backend merge)
+- Native update/build verification:
+  - `git pull --ff-only origin main` -> `2c6e196`
+  - clean rebuild/deploy succeeded (`tools/build_aex.ps1 -Clean -CopyToMediaCore`)
+  - `ZSoda.aex` hash parity confirmed:
+    - build: `bd865eff17f45cbc391ffacc899e694da8a1be7f42bb521197c7986aa6d895e0`
+    - MediaCore: same
+- Remote MVP smoke check on native host:
+  - `python3 tools/remote_inference_worker.py <request> <response>` success (`ok=true`)
+  - stdin/stdout mode success (`ok=true`)
+- CI note:
+  - `tools/run_local_ci.sh` fails directly under WSL bash when using repo copy due CRLF (`set: pipefail\r: invalid option name`).
+  - Temporary LF-only copy of the same script passes all stages (default/ONNX/perf).
+- AE crash repro (user-confirmed):
+  - Applying `Z-Soda` terminates AE process immediately.
+  - Latest `%TEMP%\\ZSoda_AE_Runtime.log` boundary:
+    - `... session_run_end, outputs=1`
+    - `... extract_output_begin`
+    - `... extract_fn_enter`
+    - `... extract_after_raw_check`
+    - `... extract_after_is_tensor`
+    - `... extract_after_tensor_info`
+    - `... extract_after_element_type`
+    - `... extract_after_shape, detail=rank=4`
+    - no further log after `extract_after_shape`.
+  - Last timestamp observed at boundary: `2026-03-04 13:31:08.079`.
+- Runtime identity at crash run:
+  - `EngineStatus`: `requested=auto, active=cpu, engine=OnnxRuntimeBackend[cpu] (runtime=1.17.1, library=C:\Program Files\Common Files\Adobe\Plug-Ins\CC\File Formats\onnxruntime.dll)`
+  - This repro is **not** on remote backend route; local ORT path was active.
+- Artifact availability:
+  - `%TEMP%\Adobe\After Effects\25.0\SentryIO-db\reports` had only `session.json` update during this repro (no fresh dump in that folder).
+  - `%TEMP%\Adobe\After Effects\25.0\logs\Plugin Loading.log` was not present in this run.
+
+#### Current read (for WSL next pass)
+1. Crash point remains tightly bounded to output extraction after ORT `Run` completes and shape is read.
+2. Most suspicious line is right after shape logging in `ExtractDepthOutput`, i.e. `output.GetTensorData<float>()` and/or first data access path.
+3. Because Adobe-bundled ORT `1.17.1` is loaded, ABI/layout assumptions may differ from current extraction expectations.
+
+#### Recommended next actions (WSL)
+1. Force explicit remote route A/B split and verify logs:
+   - `ZSODA_INFERENCE_BACKEND=remote`
+   - `ZSODA_REMOTE_INFERENCE_ENABLED=1`
+   - `ZSODA_REMOTE_INFERENCE_COMMAND='python3 tools/remote_inference_worker.py {request} {response}'`
+2. Add one more extraction guard tier:
+   - trace before/after `GetTensorData<float>()`
+   - trace before first dereference/read loop
+   - log full dims (`shape[0..3]`) and computed element count
+3. If crash reproduces only on local ORT path, add conservative copy path (SEH-guarded pointer acquisition + bounded memcpy into temp buffer) before normalization.
+4. If a new dump is emitted, map exact offset with `build-win\plugin\Release\ZSoda.pdb` + `ZSoda.map`.
