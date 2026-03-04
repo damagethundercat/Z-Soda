@@ -4,7 +4,7 @@
 
 ## 1. 전체 진행률
 - 전체 진행률: **99%** (`PLAN.md`의 `P1`~`P5` 기준, `P3/P4/P5`는 마무리 단계)
-- 마지막 업데이트: **2026-03-03** (`D105`: remote backend 실제 라우팅 연결 + 워커 파일-인자 프로토콜 호환 보강)
+- 마지막 업데이트: **2026-03-04** (`D107`: ORT 출력 추출 경계 안전화(포인터 접근 가드 + SEH 방어 copy)`)
 - 갱신 원칙: **작업 단위 완료 시 즉시 업데이트**
 
 ## 2. 현재 작업 상태
@@ -148,3 +148,4 @@
 - [x] `D104` remote backend 실제 엔진 라우팅 연결: `ManagedInferenceEngine`이 `preferred_backend=remote` 또는 `ZSODA_REMOTE_INFERENCE_ENABLED=1`일 때 `CreateRemoteInferenceBackend`를 우선 선택하도록 통합하고, backend 상태/run/select 경로를 ONNX 전용 매크로 의존 없이 공통 인터페이스(`IOnnxRuntimeBackend`)로 동작하도록 조정. 또한 remote 모드에서는 로컬 모델 자산 강제 검사를 비활성화해 외부 워커 중심 운용 시 불필요한 `model asset missing` 경고를 줄임 (`plugin/inference/ManagedInferenceEngine.*`).
 - [x] `D105` 워커 프로토콜 호환 보강 + 문서 반영: Python MVP 워커를 `stdin/stdout` + `file-arg(request,response)` 양쪽 모드로 확장해 현재 `RemoteInferenceBackend`의 파일 기반 호출 템플릿과 즉시 호환되도록 정리하고, 원격 MVP 문서/README 예시 명령을 실제 템플릿(`python3 tools/remote_inference_worker.py {request} {response}`) 기준으로 동기화. 로컬 CI(`tools/run_local_ci.sh`) 재통과로 회귀 없음 확인 (`tools/remote_inference_worker.py`, `docs/build/REMOTE_INFERENCE_MVP.md`, `README.md`, `tools/run_local_ci.sh`).
 - [x] `D106` 네이티브 재검증/핸드오프 갱신(2026-03-04): WSL 대규모 반영본(`2c6e196`) pull 후 `tools/build_aex.ps1 -Clean -CopyToMediaCore` 재빌드/재배포 성공 및 `ZSoda.aex` 해시 일치(`bd865eff17f45cbc391ffacc899e694da8a1be7f42bb521197c7986aa6d895e0`) 확인. `remote_inference_worker.py`는 file-arg/stdin 양쪽 스모크 성공했지만, AE 적용 즉시 종료 재현에서 `%TEMP%\ZSoda_AE_Runtime.log`가 `OrtTrace ... extract_after_shape (rank=4)` 직후 끊기며 동일 크래시 축 재확인. 동시 `EngineStatus`는 Adobe ORT `1.17.1` (`C:\Program Files\Common Files\Adobe\Plug-Ins\CC\File Formats\onnxruntime.dll`) 로드로 기록되어 이번 재현이 remote 경로가 아니라 local ORT 추출 경로임을 확정. 관련 증거/다음 액션을 `LOCAL_AGENT_HANDOFF.md`에 반영.
+- [x] `D107` ORT 출력 추출 경계 안전화: 네이티브 크래시 경계(`extract_after_shape`) 직후 구간을 중심으로 `OnnxRuntimeBackend::ExtractDepthOutput`에 추가 진단/가드 계층을 도입. shape 로그를 `rank + full dims + tensor_elements`로 확장하고, `GetTensorData<float>()` 전/후 트레이스를 분리했으며, 첫 메모리 접근은 `CopyTensorPrefixWithGuards` 경유의 bounded `memcpy`(Windows/MSVC에선 SEH 가드 포함)로 통일해 포인터 직접 순회 루프를 제거. 비정상 치수/요소수/오버플로우 검증을 강화하고 로컬 CI(`tools/run_local_ci.sh`) 재통과 확인 (`plugin/inference/OnnxRuntimeBackend.cpp`, `tools/run_local_ci.sh`).

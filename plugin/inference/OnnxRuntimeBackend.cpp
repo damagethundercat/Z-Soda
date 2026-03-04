@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cstring>
 #include <cstdio>
 #include <cstdint>
 #include <filesystem>
@@ -699,6 +700,100 @@ bool ResolveSessionIo(const Ort::Session& session,
   return true;
 }
 
+std::string BuildTensorShapeString(const std::vector<int64_t>& shape) {
+  std::ostringstream oss;
+  oss << "[";
+  for (std::size_t i = 0; i < shape.size(); ++i) {
+    if (i != 0U) {
+      oss << ", ";
+    }
+    oss << shape[i];
+  }
+  oss << "]";
+  return oss.str();
+}
+
+bool CheckedMultiplySize(std::size_t lhs, std::size_t rhs, std::size_t* out_value) {
+  if (out_value == nullptr) {
+    return false;
+  }
+  if (lhs == 0U || rhs == 0U) {
+    *out_value = 0U;
+    return true;
+  }
+  if (lhs > (std::numeric_limits<std::size_t>::max() / rhs)) {
+    return false;
+  }
+  *out_value = lhs * rhs;
+  return true;
+}
+
+bool CopyTensorPrefixWithGuards(const float* data,
+                                std::size_t value_count,
+                                std::vector<float>* out_values,
+                                std::string* error) {
+  if (out_values == nullptr) {
+    if (error != nullptr) {
+      *error = "internal error: output vector for tensor copy is null";
+    }
+    return false;
+  }
+  if (data == nullptr) {
+    if (error != nullptr) {
+      *error = "onnx runtime output tensor data pointer is null";
+    }
+    return false;
+  }
+
+  out_values->assign(value_count, 0.0F);
+  if (value_count == 0U) {
+    if (error != nullptr) {
+      error->clear();
+    }
+    return true;
+  }
+
+  std::size_t byte_count = 0U;
+  if (!CheckedMultiplySize(value_count, sizeof(float), &byte_count)) {
+    if (error != nullptr) {
+      *error = "onnx runtime output tensor byte count overflow";
+    }
+    return false;
+  }
+
+  {
+    const std::string detail =
+        "values=" + std::to_string(value_count) + ", bytes=" + std::to_string(byte_count);
+    AppendOrtTrace("extract_before_first_access", detail.c_str());
+  }
+
+#if defined(_WIN32) && defined(_MSC_VER)
+  __try {
+    std::memcpy(out_values->data(), data, byte_count);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    const unsigned int seh_code = static_cast<unsigned int>(::GetExceptionCode());
+    char seh_message[160] = {};
+    std::snprintf(seh_message,
+                  sizeof(seh_message),
+                  "tensor copy SEH 0x%08X",
+                  static_cast<unsigned int>(seh_code));
+    AppendOrtTrace("extract_first_access_seh", seh_message);
+    if (error != nullptr) {
+      *error = std::string("onnx runtime tensor copy failed: ") + seh_message;
+    }
+    return false;
+  }
+#else
+  std::memcpy(out_values->data(), data, byte_count);
+#endif
+
+  AppendOrtTrace("extract_after_first_access");
+  if (error != nullptr) {
+    error->clear();
+  }
+  return true;
+}
+
 bool ExtractDepthOutput(const Ort::Value& output, RawDepthOutput* raw_output, std::string* error) {
   AppendOrtTrace("extract_fn_enter");
   if (raw_output == nullptr) {
@@ -730,12 +825,25 @@ bool ExtractDepthOutput(const Ort::Value& output, RawDepthOutput* raw_output, st
   AppendOrtTrace("extract_after_element_type");
 
   const std::vector<int64_t> shape = tensor_info.GetShape();
+  std::size_t tensor_element_count = 0U;
+  try {
+    tensor_element_count = tensor_info.GetElementCount();
+  } catch (const Ort::Exception& ex) {
+    if (error != nullptr) {
+      *error = std::string("onnx runtime output element count query failed: ") + SafeCStr(ex.what());
+    }
+    AppendOrtTrace("extract_element_count_failed", SafeCStr(ex.what()));
+    return false;
+  }
   {
-    std::string shape_detail = "rank=" + std::to_string(shape.size());
+    std::string shape_detail = "rank=" + std::to_string(shape.size()) +
+                               ", dims=" + BuildTensorShapeString(shape) +
+                               ", tensor_elements=" + std::to_string(tensor_element_count);
     AppendOrtTrace("extract_after_shape", shape_detail.c_str());
   }
+  AppendOrtTrace("extract_before_tensor_data");
   const float* data = output.GetTensorData<float>();
-  AppendOrtTrace("extract_after_tensor_data");
+  AppendOrtTrace("extract_after_tensor_data", data != nullptr ? "ptr=non_null" : "ptr=null");
   if (data == nullptr) {
     if (error != nullptr) {
       *error = "onnx runtime output tensor data pointer is null";
@@ -759,26 +867,33 @@ bool ExtractDepthOutput(const Ort::Value& output, RawDepthOutput* raw_output, st
       }
       return false;
     }
+    if (output_height > std::numeric_limits<int>::max() ||
+        output_width > std::numeric_limits<int>::max()) {
+      if (error != nullptr) {
+        *error = "onnx runtime output tensor shape exceeds supported dimensions";
+      }
+      return false;
+    }
 
     width = static_cast<int>(output_width);
     height = static_cast<int>(output_height);
-    const std::size_t pixel_count =
-        static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
-    raw_output->depth_values.assign(pixel_count, 0.0F);
-
-    const std::size_t channel_stride = pixel_count;
-    const std::size_t batch_stride =
-        static_cast<std::size_t>(channels) * static_cast<std::size_t>(height) *
-        static_cast<std::size_t>(width);
-    const std::size_t base_index = 0U * batch_stride + 0U * channel_stride;
-
-    for (int y = 0; y < height; ++y) {
-      for (int x = 0; x < width; ++x) {
-        const std::size_t output_index =
-            static_cast<std::size_t>(y) * static_cast<std::size_t>(width) + x;
-        raw_output->depth_values[output_index] =
-            data[base_index + static_cast<std::size_t>(y) * static_cast<std::size_t>(width) + x];
+    std::size_t pixel_count = 0U;
+    if (!CheckedMultiplySize(static_cast<std::size_t>(width),
+                             static_cast<std::size_t>(height),
+                             &pixel_count)) {
+      if (error != nullptr) {
+        *error = "onnx runtime output tensor pixel count overflow";
       }
+      return false;
+    }
+    if (tensor_element_count < pixel_count) {
+      if (error != nullptr) {
+        *error = "onnx runtime output tensor element count is smaller than required depth pixels";
+      }
+      return false;
+    }
+    if (!CopyTensorPrefixWithGuards(data, pixel_count, &raw_output->depth_values, error)) {
+      return false;
     }
   } else if (shape.size() == 3U) {
     const int64_t batch = shape[0];
@@ -790,19 +905,33 @@ bool ExtractDepthOutput(const Ort::Value& output, RawDepthOutput* raw_output, st
       }
       return false;
     }
+    if (output_height > std::numeric_limits<int>::max() ||
+        output_width > std::numeric_limits<int>::max()) {
+      if (error != nullptr) {
+        *error = "onnx runtime output tensor shape exceeds supported dimensions";
+      }
+      return false;
+    }
 
     width = static_cast<int>(output_width);
     height = static_cast<int>(output_height);
-    const std::size_t pixel_count =
-        static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
-    raw_output->depth_values.assign(pixel_count, 0.0F);
-
-    for (int y = 0; y < height; ++y) {
-      for (int x = 0; x < width; ++x) {
-        const std::size_t output_index =
-            static_cast<std::size_t>(y) * static_cast<std::size_t>(width) + x;
-        raw_output->depth_values[output_index] = data[output_index];
+    std::size_t pixel_count = 0U;
+    if (!CheckedMultiplySize(static_cast<std::size_t>(width),
+                             static_cast<std::size_t>(height),
+                             &pixel_count)) {
+      if (error != nullptr) {
+        *error = "onnx runtime output tensor pixel count overflow";
       }
+      return false;
+    }
+    if (tensor_element_count < pixel_count) {
+      if (error != nullptr) {
+        *error = "onnx runtime output tensor element count is smaller than required depth pixels";
+      }
+      return false;
+    }
+    if (!CopyTensorPrefixWithGuards(data, pixel_count, &raw_output->depth_values, error)) {
+      return false;
     }
   } else if (shape.size() == 2U) {
     const int64_t output_height = shape[0];
@@ -813,19 +942,33 @@ bool ExtractDepthOutput(const Ort::Value& output, RawDepthOutput* raw_output, st
       }
       return false;
     }
+    if (output_height > std::numeric_limits<int>::max() ||
+        output_width > std::numeric_limits<int>::max()) {
+      if (error != nullptr) {
+        *error = "onnx runtime output tensor shape exceeds supported dimensions";
+      }
+      return false;
+    }
 
     width = static_cast<int>(output_width);
     height = static_cast<int>(output_height);
-    const std::size_t pixel_count =
-        static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
-    raw_output->depth_values.assign(pixel_count, 0.0F);
-
-    for (int y = 0; y < height; ++y) {
-      for (int x = 0; x < width; ++x) {
-        const std::size_t output_index =
-            static_cast<std::size_t>(y) * static_cast<std::size_t>(width) + x;
-        raw_output->depth_values[output_index] = data[output_index];
+    std::size_t pixel_count = 0U;
+    if (!CheckedMultiplySize(static_cast<std::size_t>(width),
+                             static_cast<std::size_t>(height),
+                             &pixel_count)) {
+      if (error != nullptr) {
+        *error = "onnx runtime output tensor pixel count overflow";
       }
+      return false;
+    }
+    if (tensor_element_count < pixel_count) {
+      if (error != nullptr) {
+        *error = "onnx runtime output tensor element count is smaller than required depth pixels";
+      }
+      return false;
+    }
+    if (!CopyTensorPrefixWithGuards(data, pixel_count, &raw_output->depth_values, error)) {
+      return false;
     }
   } else {
     if (error != nullptr) {

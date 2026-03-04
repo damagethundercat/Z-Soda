@@ -851,3 +851,27 @@ artifacts/diagnostics/ae_loader_diag_YYYYMMDD_HHMMSS/
    - log full dims (`shape[0..3]`) and computed element count
 3. If crash reproduces only on local ORT path, add conservative copy path (SEH-guarded pointer acquisition + bounded memcpy into temp buffer) before normalization.
 4. If a new dump is emitted, map exact offset with `build-win\plugin\Release\ZSoda.pdb` + `ZSoda.map`.
+
+### Session update (2026-03-04 16:20, WSL extraction safety patch for local ORT crash boundary)
+- WSL changes applied on top of `c432dbf`:
+  - `plugin/inference/OnnxRuntimeBackend.cpp`
+    - `ExtractDepthOutput` diagnostics extended:
+      - `extract_after_shape` now logs `rank + full dims + tensor_elements`.
+      - Added explicit `extract_before_tensor_data` and `extract_after_tensor_data(ptr=...)`.
+    - Added `CopyTensorPrefixWithGuards`:
+      - Bounded copy count/byte overflow checks.
+      - First memory read path uses guarded `memcpy`.
+      - Windows/MSVC path adds local SEH guard and logs `extract_first_access_seh`.
+    - Removed direct pointer read loops from extraction path and normalized to copied prefix buffer path.
+    - Added shape dimension upper-bound checks (`int` range) and element-count guards before copy.
+- Validation:
+  - `bash tools/run_local_ci.sh` passed all stages (`default`, `ONNX scaffold`, `ORT loader compile`, `perf smoke`).
+- Native side next check:
+  1. `git pull --ff-only origin main`
+  2. clean rebuild/deploy (`tools\build_aex.ps1 -Clean -CopyToMediaCore ...`)
+  3. reproduce once with local ORT path and collect `%TEMP%\ZSoda_AE_Runtime.log`
+  4. verify whether logs advance past `extract_after_shape` into:
+     - `extract_before_tensor_data`
+     - `extract_after_tensor_data`
+     - `extract_before_first_access`
+     - `extract_after_first_access` (or `extract_first_access_seh`)
