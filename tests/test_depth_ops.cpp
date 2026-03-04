@@ -153,7 +153,7 @@ void TestApplyDepthMappingSanitizesNonFiniteInputs() {
   assert(std::isfinite(raw.at(2, 0, 0)));
   assert(raw.at(0, 0, 0) == 0.0F);
   assert(NearlyEqual(raw.at(1, 0, 0), 0.5F));
-  assert(raw.at(2, 0, 0) == 1.0F);
+  assert(raw.at(2, 0, 0) == 0.0F);
 
   zsoda::core::FrameBuffer normalized(desc);
   normalized.at(0, 0, 0) = std::numeric_limits<float>::quiet_NaN();

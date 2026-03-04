@@ -44,6 +44,8 @@ struct RenderParams {
   int tile_size = 512;
   int overlap = 32;
   int vram_budget_mb = 0;
+  bool freeze_enabled = false;
+  int extract_token = 0;
   std::uint64_t frame_hash = 0;
 };
 
@@ -85,6 +87,15 @@ class RenderPipeline {
                               const RenderParams& params,
                               FrameBuffer* depth,
                               std::string* error) const;
+  bool TryGetFrozenOutput(const FrameBuffer& source,
+                          const RenderParams& params,
+                          FrameBuffer* output) const;
+  void StoreFrozenOutput(const FrameBuffer& source,
+                         const RenderParams& params,
+                         const FrameBuffer& output) const;
+  void ClearFrozenOutput() const;
+  std::uint64_t BuildFrozenStateHash(const FrameBuffer& source,
+                                     const RenderParams& params) const;
   void ApplyPostProcess(FrameBuffer* depth, const FrameBuffer& source, const RenderParams& params) const;
   void ApplyTemporalSmoothing(FrameBuffer* depth,
                               const FrameBuffer& source_luma,
@@ -106,6 +117,10 @@ class RenderPipeline {
   mutable std::uint64_t postprocess_state_hash_ = 0;
   mutable bool postprocess_initialized_ = false;
   mutable bool temporal_has_state_ = false;
+  mutable CompatMutex frozen_mutex_;
+  mutable FrameBuffer frozen_output_;
+  mutable std::uint64_t frozen_state_hash_ = 0;
+  mutable bool frozen_has_output_ = false;
 };
 
 }  // namespace zsoda::core

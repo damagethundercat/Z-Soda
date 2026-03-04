@@ -177,14 +177,18 @@ class SequenceInferenceEngine final : public zsoda::inference::IInferenceEngine 
     if (cursor_ + 1U < sequence_.size()) {
       ++cursor_;
     }
+    ++run_count_;
     if (error != nullptr) {
       error->clear();
     }
     return true;
   }
 
+  [[nodiscard]] int RunCount() const { return run_count_; }
+
  private:
   mutable std::size_t cursor_ = 0U;
+  mutable int run_count_ = 0;
   std::vector<float> sequence_;
   std::string active_model_id_ = "depth-anything-v3-small";
 };
@@ -539,6 +543,81 @@ void TestTemporalSmoothingBlendsFrames() {
   assert(blended > 0.45F && blended < 0.55F);
 }
 
+void TestFreezeModeReusesCapturedDepthUntilTokenChanges() {
+  auto engine = std::make_shared<SequenceInferenceEngine>(std::vector<float>{0.2F, 0.8F, 0.9F});
+  std::string error;
+  assert(engine->Initialize("depth-anything-v3-small", &error));
+
+  zsoda::core::RenderPipeline pipeline(engine);
+  const auto src = MakeSourceFrame(6, 6);
+
+  zsoda::core::RenderParams params;
+  params.model_id = "depth-anything-v3-small";
+  params.cache_enabled = false;
+  params.freeze_enabled = true;
+  params.extract_token = 0;
+  params.mapping_mode = zsoda::core::DepthMappingMode::kRaw;
+  params.temporal_alpha = 1.0F;
+  params.edge_enhancement = 0.0F;
+  params.temporal_scene_cut_threshold = 1.0F;
+
+  const auto first = pipeline.Render(src, params);
+  assert(first.status == zsoda::core::RenderStatus::kInference);
+  const float first_value = first.frame.at(0, 0, 0);
+  assert(std::fabs(first_value - 0.2F) < 1e-3F);
+  assert(engine->RunCount() == 1);
+
+  const auto second = pipeline.Render(src, params);
+  assert(second.status == zsoda::core::RenderStatus::kCacheHit);
+  const float second_value = second.frame.at(0, 0, 0);
+  assert(std::fabs(second_value - first_value) < 1e-5F);
+  assert(engine->RunCount() == 1);
+
+  params.extract_token = 1;
+  const auto third = pipeline.Render(src, params);
+  assert(third.status == zsoda::core::RenderStatus::kInference);
+  const float third_value = third.frame.at(0, 0, 0);
+  assert(std::fabs(third_value - 0.8F) < 1e-3F);
+  assert(engine->RunCount() == 2);
+}
+
+void TestFreezeModeBypassesFrameCacheAndTracksFrameHashChanges() {
+  auto engine = std::make_shared<SequenceInferenceEngine>(std::vector<float>{0.3F, 0.7F, 0.9F});
+  std::string error;
+  assert(engine->Initialize("depth-anything-v3-small", &error));
+
+  zsoda::core::RenderPipeline pipeline(engine);
+  const auto src = MakeSourceFrame(6, 6);
+
+  zsoda::core::RenderParams params;
+  params.model_id = "depth-anything-v3-small";
+  params.cache_enabled = true;
+  params.freeze_enabled = true;
+  params.extract_token = 0;
+  params.mapping_mode = zsoda::core::DepthMappingMode::kRaw;
+  params.temporal_alpha = 1.0F;
+  params.edge_enhancement = 0.0F;
+  params.temporal_scene_cut_threshold = 1.0F;
+
+  params.frame_hash = 7101;
+  const auto first = pipeline.Render(src, params);
+  assert(first.status == zsoda::core::RenderStatus::kInference);
+  assert(std::fabs(first.frame.at(0, 0, 0) - 0.3F) < 1e-3F);
+  assert(engine->RunCount() == 1);
+
+  params.frame_hash = 7102;
+  const auto second = pipeline.Render(src, params);
+  assert(second.status == zsoda::core::RenderStatus::kCacheHit);
+  assert(std::fabs(second.frame.at(0, 0, 0) - 0.3F) < 1e-3F);
+  assert(engine->RunCount() == 1);
+
+  params.extract_token = 1;
+  const auto third = pipeline.Render(src, params);
+  assert(third.status == zsoda::core::RenderStatus::kInference);
+  assert(std::fabs(third.frame.at(0, 0, 0) - 0.7F) < 1e-3F);
+  assert(engine->RunCount() == 2);
+}
+
 void TestSafeOutputAfterAllStagesFail() {
   auto engine = std::make_shared<ScriptedInferenceEngine>();
   std::string error;
@@ -616,6 +695,8 @@ void RunRenderPipelineTests() {
   TestZeroFrameHashDisablesCache();
   TestDepthMappingModeRawVsNormalize();
   TestTemporalSmoothingBlendsFrames();
+  TestFreezeModeReusesCapturedDepthUntilTokenChanges();
+  TestFreezeModeBypassesFrameCacheAndTracksFrameHashChanges();
   TestSafeOutputAfterAllStagesFail();
   TestSafeOutputOnException();
   TestEmptySourceReturnsSafeOutput();

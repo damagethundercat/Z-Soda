@@ -1,6 +1,7 @@
 #include <array>
 #include <cassert>
 #include <cstdint>
+#include <cstdlib>
 #include <memory>
 #include <optional>
 #include <string>
@@ -54,6 +55,47 @@ zsoda::core::FrameBuffer MakeFrame() {
   }
   return frame;
 }
+
+bool SetEnvironmentValue(const std::string& name, const std::string& value) {
+#if defined(_WIN32)
+  return _putenv_s(name.c_str(), value.c_str()) == 0;
+#else
+  return setenv(name.c_str(), value.c_str(), 1) == 0;
+#endif
+}
+
+bool UnsetEnvironmentValue(const std::string& name) {
+#if defined(_WIN32)
+  return _putenv_s(name.c_str(), "") == 0;
+#else
+  return unsetenv(name.c_str()) == 0;
+#endif
+}
+
+class ScopedEnvironmentOverride {
+ public:
+  ScopedEnvironmentOverride(std::string key, std::string value) : key_(std::move(key)) {
+    const char* existing = std::getenv(key_.c_str());
+    if (existing != nullptr) {
+      had_existing_value_ = true;
+      existing_value_ = existing;
+    }
+    assert(SetEnvironmentValue(key_, value));
+  }
+
+  ~ScopedEnvironmentOverride() {
+    if (had_existing_value_) {
+      assert(SetEnvironmentValue(key_, existing_value_));
+    } else {
+      assert(UnsetEnvironmentValue(key_));
+    }
+  }
+
+ private:
+  std::string key_;
+  bool had_existing_value_ = false;
+  std::string existing_value_;
+};
 
 void TestStubCommandAndDispatchMapping() {
   assert(zsoda::ae::MapStubCommandId(0) == zsoda::ae::AeCommand::kAbout);
@@ -256,6 +298,8 @@ void TestRenderUsesCurrentAndOverrideParams() {
 }
 
 void TestRenderBridgeFrameHashCacheBehavior() {
+  ScopedEnvironmentOverride force_temporal_alpha("ZSODA_TEMPORAL_ALPHA", "1");
+
   auto engine = std::make_shared<zsoda::inference::ManagedInferenceEngine>("models");
   std::string error;
   assert(engine->Initialize("depth-anything-v3-small", &error));
@@ -370,6 +414,8 @@ void TestHostBufferRenderDispatchValidation() {
 }
 
 void TestExecuteHostBufferRenderBridge() {
+  ScopedEnvironmentOverride force_temporal_alpha("ZSODA_TEMPORAL_ALPHA", "1");
+
   auto engine = std::make_shared<zsoda::inference::ManagedInferenceEngine>("models");
   std::string error;
   assert(engine->Initialize("depth-anything-v3-small", &error));

@@ -20,6 +20,8 @@ enum class AeParamId {
   kTileSize = 9,
   kOverlap = 10,
   kVramBudgetMb = 11,
+  kFreezeEnable = 12,
+  kExtractDepthMap = 13,
 };
 
 enum class AeOutputMode {
@@ -39,6 +41,8 @@ struct AeParamValues {
   int tile_size = 512;
   int overlap = 32;
   int vram_budget_mb = 0;
+  bool freeze_enabled = false;
+  int extract_token = 0;
 };
 
 AeParamValues DefaultAeParams();

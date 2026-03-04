@@ -83,7 +83,7 @@ void InitializeDefaultPixelFormatCandidates(
 #define AE_OS_WIN 1
 #endif
 #include "Param_Utils.h"
-constexpr int kAeSdkNumParams = static_cast<int>(AeParamId::kVramBudgetMb) + 1;
+constexpr int kAeSdkNumParams = static_cast<int>(AeParamId::kExtractDepthMap) + 1;
 constexpr int kModelPopupChoices = 4;
 constexpr int kQualityPopupChoices = 3;
 constexpr int kOutputModePopupChoices = 2;
@@ -352,6 +352,28 @@ PF_Err RegisterParamsSetupScaffold(const AeSdkEntryPayload& payload) {
                        0,
                        static_cast<int>(AeParamId::kVramBudgetMb));
 
+  clear_def();
+#if defined(PF_ADD_CHECKBOXX)
+  PF_ADD_CHECKBOXX("Freeze Depth", 0, 0, static_cast<int>(AeParamId::kFreezeEnable));
+#else
+  PF_ADD_CHECKBOX("Freeze Depth", "Freeze Depth", 0, 0, static_cast<int>(AeParamId::kFreezeEnable));
+#endif
+
+  clear_def();
+#if defined(PF_ADD_BUTTON)
+  const int extract_button_param_flags =
+#if defined(PF_ParamFlag_SUPERVISE)
+      PF_ParamFlag_SUPERVISE;
+#else
+      0;
+#endif
+  PF_ADD_BUTTON("Extract Depth Map",
+                "Extract",
+                0,
+                extract_button_param_flags,
+                static_cast<int>(AeParamId::kExtractDepthMap));
+#endif
+
   return err;
 #else
   (void)payload;
@@ -561,6 +583,19 @@ bool TryReadIntegerSliderValue(const PF_ParamDef* param, int* value_out) {
   return true;
 }
 
+std::optional<int> TryGetUserChangedParamIndex(const AeSdkEntryPayload& payload) {
+#if defined(PF_Cmd_USER_CHANGED_PARAM)
+  if (payload.command != PF_Cmd_USER_CHANGED_PARAM || payload.extra == nullptr) {
+    return std::nullopt;
+  }
+  const auto* extra = reinterpret_cast<const PF_UserChangedParamExtra*>(payload.extra);
+  return static_cast<int>(extra->param_index);
+#else
+  (void)payload;
+  return std::nullopt;
+#endif
+}
+
 bool TryExtractPfCmdParamValues(const AeSdkEntryPayload& payload,
                                 AeParamValues* values_out,
                                 std::string* error) {
@@ -603,6 +638,10 @@ bool TryExtractPfCmdParamValues(const AeSdkEntryPayload& payload,
     any_param_read = true;
     values.cache_enabled = checkbox_value;
   }
+  if (TryReadCheckboxValue(GetParam(payload, AeParamId::kFreezeEnable), &checkbox_value)) {
+    any_param_read = true;
+    values.freeze_enabled = checkbox_value;
+  }
 
   float float_value = 0.0F;
   if (TryReadFloatSliderValue(GetParam(payload, AeParamId::kMinDepth), &float_value)) {
@@ -630,6 +669,16 @@ bool TryExtractPfCmdParamValues(const AeSdkEntryPayload& payload,
   if (TryReadIntegerSliderValue(GetParam(payload, AeParamId::kVramBudgetMb), &int_value)) {
     any_param_read = true;
     values.vram_budget_mb = int_value;
+  }
+  const auto user_changed_param = TryGetUserChangedParamIndex(payload);
+  if (user_changed_param.has_value() &&
+      user_changed_param.value() == static_cast<int>(AeParamId::kExtractDepthMap)) {
+    any_param_read = true;
+    if (values.extract_token < std::numeric_limits<int>::max()) {
+      values.extract_token += 1;
+    } else {
+      values.extract_token = 0;
+    }
   }
 
   if (!any_param_read) {

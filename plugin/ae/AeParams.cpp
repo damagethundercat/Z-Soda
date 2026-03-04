@@ -171,6 +171,8 @@ zsoda::core::RenderParams ToRenderParams(const AeParamValues& input) {
   params.tile_size = std::max(64, input.tile_size);
   params.overlap = std::clamp(input.overlap, 0, params.tile_size / 2);
   params.vram_budget_mb = std::max(0, input.vram_budget_mb);
+  params.freeze_enabled = input.freeze_enabled;
+  params.extract_token = std::max(0, input.extract_token);
   ApplyQualityDefaults(&params);
   ApplyEnvironmentOverrides(&params);
   return params;

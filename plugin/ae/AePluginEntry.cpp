@@ -221,6 +221,25 @@ int ZSodaSetParamsStubImpl(const char* model_id,
   return zsoda::ae::GetRouter().Handle(context) ? 0 : -1;
 }
 
+int ZSodaSetFreezeStubImpl(int freeze_enabled, int request_extract) {
+  auto params = zsoda::ae::GetRouter().CurrentParams();
+  params.freeze_enabled = freeze_enabled != 0;
+  if (request_extract != 0) {
+    if (params.extract_token < std::numeric_limits<int>::max()) {
+      params.extract_token += 1;
+    } else {
+      params.extract_token = 0;
+    }
+  }
+
+  std::string error;
+  zsoda::ae::AeCommandContext context;
+  context.command = zsoda::ae::AeCommand::kUpdateParams;
+  context.params_update = &params;
+  context.error = &error;
+  return zsoda::ae::GetRouter().Handle(context) ? 0 : -1;
+}
+
 int ZSodaRenderGrayFrameStubImpl(const float* src,
                                  int width,
                                  int height,
@@ -372,6 +391,11 @@ extern "C" int ZSodaRenderHostBufferStub(const void* src,
   ZSODA_CPP_GUARD("ZSodaRenderHostBufferStub", -1,
                   ZSodaRenderHostBufferStubImpl(src, width, height, src_row_bytes, pixel_format,
                                                 frame_hash, out, out_row_bytes))
+}
+
+extern "C" int ZSodaSetFreezeStub(int freeze_enabled, int request_extract) {
+  ZSODA_CPP_GUARD("ZSodaSetFreezeStub", -1,
+                  ZSodaSetFreezeStubImpl(freeze_enabled, request_extract))
 }
 
 // ---------------------------------------------------------------------------

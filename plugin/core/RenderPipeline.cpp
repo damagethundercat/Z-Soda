@@ -31,6 +31,23 @@ constexpr int kMaxDownscaleDivisor = 8;
 constexpr std::size_t kFallbackWorkingSetBytesPerPixelEstimate = 16U;
 constexpr float kEdgeAwareUpsampleGuidanceSigma = 0.12F;
 
+std::uint64_t HashCombine64(std::uint64_t lhs, std::uint64_t rhs) {
+  return lhs ^ (rhs + 0x9e3779b97f4a7c15ULL + (lhs << 6ULL) + (lhs >> 2ULL));
+}
+
+std::uint64_t HashFromBool(bool value) {
+  return value ? 1ULL : 0ULL;
+}
+
+std::uint64_t HashFromInt(int value) {
+  return static_cast<std::uint64_t>(static_cast<std::uint32_t>(value));
+}
+
+std::uint64_t HashFromPermille(float value) {
+  const int clipped = static_cast<int>(std::lround(std::clamp(value, 0.0F, 1.0F) * 1000.0F));
+  return HashFromInt(std::max(0, clipped));
+}
+
 const char* SafeCStr(const char* value, const char* fallback = "<null>") {
   return value != nullptr ? value : fallback;
 }
@@ -390,6 +407,10 @@ RenderOutput RenderPipeline::Render(const FrameBuffer& source, const RenderParam
       return SafeOutput(source, "missing inference engine");
     }
 
+    if (!params.freeze_enabled) {
+      ClearFrozenOutput();
+    }
+
     AppendPipelineTrace("select_model_begin");
     std::string model_selection_error;
     if (!engine_->SelectModel(params.model_id, &model_selection_error)) {
@@ -409,6 +430,15 @@ RenderOutput RenderPipeline::Render(const FrameBuffer& source, const RenderParam
       }
     }
 
+    if (params.freeze_enabled) {
+      FrameBuffer frozen;
+      if (TryGetFrozenOutput(source, params, &frozen)) {
+        AppendPipelineTrace("freeze_hit");
+        return {RenderStatus::kCacheHit, std::move(frozen), "frozen depth hit (" + engine_->ActiveModelId() +
+                                                        ")"};
+      }
+    }
+
     FrameDesc depth_desc = source.desc();
     depth_desc.channels = 1;
     depth_desc.format = PixelFormat::kGray32F;
@@ -421,6 +451,9 @@ RenderOutput RenderPipeline::Render(const FrameBuffer& source, const RenderParam
       FrameBuffer output = BuildOutput(*depth.get(), params);
       if (use_cache) {
         cache_.Insert(key, output);
+      }
+      if (params.freeze_enabled) {
+        StoreFrozenOutput(source, params, output);
       }
       if (!model_selection_error.empty()) {
         message += " - " + model_selection_error;
@@ -522,10 +555,14 @@ void RenderPipeline::SetCacheLimit(std::size_t limit) {
 
 void RenderPipeline::PurgeCache() {
   cache_.Clear();
+  ClearFrozenOutput();
 }
 
 bool RenderPipeline::ShouldUseCache(const RenderParams& params) const {
   if (!params.cache_enabled) {
+    return false;
+  }
+  if (params.freeze_enabled) {
     return false;
   }
   if (params.frame_hash == 0) {
@@ -564,6 +601,8 @@ std::uint64_t RenderPipeline::BuildPostprocessStateHash(const RenderParams& para
   h = mix(h, to_permille(params.edge_enhancement));
   h = mix(h, to_permille(params.edge_guidance_sigma));
   h = mix(h, static_cast<std::uint64_t>(params.edge_aware_upsample ? 1 : 0));
+  h = mix(h, static_cast<std::uint64_t>(params.freeze_enabled ? 1 : 0));
+  h = mix(h, static_cast<std::uint64_t>(std::max(0, params.extract_token)));
   return h;
 }
 
@@ -719,6 +758,80 @@ bool RenderPipeline::RunDownscaledInference(const FrameBuffer& source,
     error->clear();
   }
   return true;
+}
+
+bool RenderPipeline::TryGetFrozenOutput(const FrameBuffer& source,
+                                        const RenderParams& params,
+                                        FrameBuffer* output) const {
+  if (output == nullptr) {
+    return false;
+  }
+  const std::uint64_t requested_hash = BuildFrozenStateHash(source, params);
+  CompatLockGuard lock(frozen_mutex_);
+  if (!frozen_has_output_ || frozen_output_.empty() || requested_hash != frozen_state_hash_) {
+    return false;
+  }
+  *output = frozen_output_;
+  return true;
+}
+
+void RenderPipeline::StoreFrozenOutput(const FrameBuffer& source,
+                                       const RenderParams& params,
+                                       const FrameBuffer& output) const {
+  if (output.empty()) {
+    return;
+  }
+  const std::uint64_t state_hash = BuildFrozenStateHash(source, params);
+  CompatLockGuard lock(frozen_mutex_);
+  frozen_output_ = output;
+  frozen_state_hash_ = state_hash;
+  frozen_has_output_ = true;
+}
+
+void RenderPipeline::ClearFrozenOutput() const {
+  CompatLockGuard lock(frozen_mutex_);
+  if (!frozen_has_output_ && frozen_output_.empty()) {
+    return;
+  }
+  frozen_output_ = FrameBuffer();
+  frozen_state_hash_ = 0;
+  frozen_has_output_ = false;
+}
+
+std::uint64_t RenderPipeline::BuildFrozenStateHash(const FrameBuffer& source,
+                                                   const RenderParams& params) const {
+  std::uint64_t hash = HashFromInt(source.desc().width);
+  hash = HashCombine64(hash, HashFromInt(source.desc().height));
+  hash = HashCombine64(hash, HashFromInt(source.desc().channels));
+  hash = HashCombine64(hash, HashFromInt(static_cast<int>(source.desc().format)));
+
+  hash = HashCombine64(hash, HashFromInt(params.quality));
+  hash = HashCombine64(hash, HashFromBool(params.invert));
+  hash = HashCombine64(hash, HashFromInt(static_cast<int>(params.mapping_mode)));
+  hash = HashCombine64(hash, HashFromPermille(params.guided_low_percentile));
+  hash = HashCombine64(hash, HashFromPermille(params.guided_high_percentile));
+  hash = HashCombine64(hash, HashFromPermille(params.guided_update_alpha));
+  hash = HashCombine64(hash, HashFromPermille(params.temporal_alpha));
+  hash = HashCombine64(hash, HashFromBool(params.temporal_edge_aware));
+  hash = HashCombine64(hash, HashFromPermille(params.temporal_edge_threshold));
+  hash = HashCombine64(hash, HashFromPermille(params.temporal_scene_cut_threshold));
+  hash = HashCombine64(hash, HashFromPermille(params.edge_enhancement));
+  hash = HashCombine64(hash, HashFromPermille(params.edge_guidance_sigma));
+  hash = HashCombine64(hash, HashFromBool(params.edge_aware_upsample));
+  hash = HashCombine64(hash, HashFromInt(static_cast<int>(params.output_mode)));
+  hash = HashCombine64(hash, HashFromPermille(params.min_depth));
+  hash = HashCombine64(hash, HashFromPermille(params.max_depth));
+  hash = HashCombine64(hash, HashFromPermille(params.softness));
+  hash = HashCombine64(hash, HashFromInt(std::max(1, params.tile_size)));
+  hash = HashCombine64(
+      hash,
+      HashFromInt(std::max(0, std::min(params.overlap, std::max(1, params.tile_size) / 2))));
+  hash = HashCombine64(hash, HashFromInt(std::max(0, params.vram_budget_mb)));
+  hash = HashCombine64(hash, HashFromInt(std::max(0, params.extract_token)));
+  hash = HashCombine64(
+      hash,
+      static_cast<std::uint64_t>(std::hash<std::string>{}(params.model_id)));
+  return hash;
 }
 
 void RenderPipeline::ApplyPostProcess(FrameBuffer* depth,
