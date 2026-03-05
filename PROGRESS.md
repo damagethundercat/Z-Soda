@@ -1,174 +1,54 @@
 # 진행 현황 (PROGRESS)
 
-이 문서는 작업 진행도와 남은 작업을 공유하기 위한 운영 문서입니다.
+이 문서는 Z-Soda(After Effects 플러그인) 개발의 현재 상태를 요약합니다.  
+깨진 인코딩(모지바케) 이슈를 정리하여 UTF-8 한글 기준으로 재작성했습니다.
 
-## 1. 전체 진행률
-- 전체 진행률: **99%** (`PLAN.md`의 `P1`~`P5` 기준, `P3/P4/P5`는 마무리 단계)
-- 마지막 업데이트: **2026-03-04** (`D107`: ORT 출력 추출 경계 안전화(포인터 접근 가드 + SEH 방어 copy)`)
-- 갱신 원칙: **작업 단위 완료 시 즉시 업데이트**
+## 1) 전체 진행률
+- 전체 진행률: **92%**
+- 기준 시점: **2026-03-05**
+- 현재 포커스:  
+  1. 멀티뷰 선택값이 실제 렌더 경로에 반영되지 않는 문제  
+  2. AE 로더에서 `ZSoda.aex`가 `Ignore`로 분류되는 간헐 이슈
 
-## 2. 현재 작업 상태
-- [x] `P1` 플러그인 기본 구조 및 AE SDK 핸들러 스캐폴딩 — 상태: `완료`
-- [x] `P2` 모델/세션 생명주기 + 캐시 우선 렌더 파이프라인 — 상태: `완료`
-- [ ] `P3` Depth Map/Slicing 모드 + 8/16/32 bpc 경계 변환 — 상태: `진행중 (95%)` (완료: `PF_Cmd_USER_CHANGED_PARAM` 매핑+`params[]` 추출/렌더 override, `PARAM_SETUP` `PF_ADD_*` 등록 스캐폴드, SDK 픽셀 힌트+stride 결합 포맷 추론, AE SDK 25.6 헤더 호환 컴파일 수정 / 남은 핵심: 실제 AE 호스트에서 파라미터 UI 등록/렌더 연동 실검증)
-- [ ] `P4` OOM/백엔드 실패 대비 타일링·다운스케일 폴백 — 상태: `진행중 (88%)` (완료: `직접->타일->다운스케일->안전 출력` 폴백 체인, 적응형 타일 재시도+VRAM budget 기반 비율 조정 / 남은 핵심: SDK/OS 메모리 신호 연계, OOM/백엔드 실패 원인별 정책 세분화)
-- [ ] `P5` 테스트/벤치마크/안정성 검증 + 패키징 스크립트 — 상태: `진행중 (97%)` (완료: perf harness+CTest 등록, 로컬/CI 공용 검증 스크립트·워크플로, Windows `.aex` 빌드 헬퍼(`tools/build_aex.ps1`), ORT 런타임 배포 노트/AE 스모크 테스트 체크리스트 추가, ORT API ON + SDK ON 테스트 빌드/단위 테스트 검증, MediaCore 배치 및 산출물 해시 일치 검증, `package_plugin.ps1` Windows 패키지/manifest/ORT DLL/SHA256 산출 확인, dump 기반 예외/레지스터 컨텍스트 추출 검토 및 예외 메시지 경로 `nullptr` 방어 패치 적용, AE 엔트리/스텁 예외 방어층(SEH + C++ 예외 로그) 추가, ORT DLL 기본 로드를 side-by-side 절대경로 우선으로 강화, `std::mutex` 의존 경로를 호환 락(`SRWLOCK`)으로 치환, CMake/빌드 스크립트에 `MSVC_RUNTIME_LIBRARY` 고정 옵션 추가 / 남은 핵심: 네이티브 host 기준 AE 스모크/렌더 큐 실검증)
+## 2) 단계별 상태 (PLAN.md 기준)
+- [x] `P1` 플러그인 기본 구조 및 AE SDK 핸들러
+- [x] `P2` 모델/세션 생명주기 + 캐시 기반 렌더 파이프라인
+- [~] `P3` Depth Map/Slicing + 8/16/32bpc 경계 처리 (대부분 완료, 호스트 파라미터 반영 안정화 진행 중)
+- [~] `P4` 실패 대응 체인(OOM/백엔드 실패/다운스케일/안전 출력) (운영 안정화 단계)
+- [~] `P5` 테스트/성능/패키징/배포 자동화 (Windows 경로 고도화 완료, AE 실전 시나리오 QA 진행 중)
 
-## 3. 최근 완료 작업
-- [x] `D1` 문서 역할 분리 완료 (`AGENTS.md` 필수 지침, `PLAN.md` 실행 계획, `PROGRESS.md` 진행 현황)
-- [x] `D2` 진행 추적 규칙 확정 (작업 단위마다 갱신, 체크리스트+퍼센트 형식)
-- [x] `D3` `plugin/` 스캐폴드 생성 (AE 라우터, 코어 파이프라인, 추론 엔진 인터페이스)
-- [x] `D4` 기본 단위 테스트 추가 및 `g++` 기준 컴파일/실행 검증 완료
-- [x] `D5` 모델 카탈로그/모델 선택 엔진 추가 (기본: `depth-anything-v3-small`)
-- [x] `D6` 모델별 캐시 분리(`model_id` 기반 키 해시) 및 전환 테스트 추가
-- [x] `D7` 모델 다운로드 보조 스크립트/가이드 추가 (`tools/download_model.sh`, `models/README.md`)
-- [x] `D8` AE 파라미터 스키마/매핑 추가 (`model_id`, quality, output mode, depth range, tiling)
-- [x] `D9` 파라미터/렌더 파이프라인/모델 전환 테스트 추가 및 `g++` 통합 검증 재완료
-- [x] `D10` `AeCommandRouter`에 파라미터 업데이트/모델 메뉴/렌더 바인딩 연결
-- [x] `D11` AE 스텁 엔트리에 모델 설정/그레이 프레임 렌더 테스트 API 추가
-- [x] `D12` 팀 운영 문서(`TEAM.md`) 및 리서치 노트(`docs/research/*`) 추가
-- [x] `D13` 체크포인트 커밋/원격 푸시 완료 (`main` -> `origin/main`, commit: `348fec7`)
-- [x] `D14` 리서치 실무 노트 추가 (`docs/research/2026-03-02-ae-pfcmd-depthanything-notes.md`)
-- [x] `D15` `RenderPipeline` 단계별 폴백 체인 구현 (`직접 -> 타일 -> 다운스케일 -> 안전 출력`) 및 캐시/폴백/예외 경로 테스트 추가
-- [x] `D16` 추론 런타임 백엔드 선택 옵션/모델 매니페스트 로더/카탈로그 등록 확장 및 관련 테스트 추가 (`plugin/inference/*`, `models/models.manifest`, `tools/download_model.sh`, `tests/test_inference_engine.cpp`)
-- [x] `D17` AE 커맨드 브리지 컨텍스트(`AeCommandContext`) 도입 및 엔트리 스텁 경유 업데이트/렌더 경로 검증
-- [x] `D18` 성능/안정성 하네스 추가 (`tests/perf_harness.cpp`, `docs/perf/README.md`, CTest 등록)
-- [x] `D19` 멀티 에이전트 통합 체크리스트 문서화 (`docs/research/2026-03-02-integration-checklist.md`)
-- [x] `D20` 멀티 에이전트 결과 리드 통합 검증 완료 (`/tmp/zsoda_tests`, perf benchmark/stability 통과)
-- [x] `D21` `.aex/.plugin` 최종 패키징 경로 문서화 (사전 요구사항, CMake 옵션, Windows/macOS 명령 예시, 환경 제약 정리) (`docs/build/README.md`, `README.md`)
-- [x] `D22` AE SDK 조건부 엔트리 어댑터 추가 (`AeHostAdapter`, `EffectMain` 스켈레톤) 및 라우팅 테스트 보강
-- [x] `D23` 8/16/32 bpc 경계 변환 유틸 추가 (`PixelConversion`) 및 변환/유효성 테스트 보강
-- [x] `D24` ORT 옵션 경로 2차 통합 검증 (`ZSODA_WITH_ONNX_RUNTIME=1` 테스트 빌드 통과)
-- [x] `D25` 리더 리뷰 노트 추가: 이번 라운드 수용 기준 요약 + Windows/macOS AE SDK 환경의 실 `.aex/.plugin` 산출 전 필수 잔여 조건 정리 (`docs/build/2026-03-02-leader-review-note.md`)
-- [x] `D26` 호스트 버퍼 렌더 브리지(입출력 픽셀 변환 경로), 적응형 타일 재시도 폴백, 추론 백엔드 상태 진단 추가 + 관련 테스트 확장 후 재검증 완료 (`plugin/ae/*`, `plugin/core/RenderPipeline.cpp`, `plugin/inference/ManagedInferenceEngine*`, `tests/*`)
-- [x] `D27` ONNX Runtime 스캐폴드의 모델 경로 검증/전처리 준비/진단 문자열 확장 + `PF_Cmd_RENDER` 추출 스캐폴드(안전 프레임 해시/픽셀 포맷 후보 계산) 고도화 및 회귀 테스트 통과 (`plugin/inference/OnnxRuntimeBackend.cpp`, `plugin/inference/ManagedInferenceEngine.cpp`, `plugin/ae/AeHostAdapter*`, `tests/test_inference_engine.cpp`, `tests/test_ae_router.cpp`)
-- [x] `D28` ORT API 옵션 경로 추가(`ZSODA_WITH_ONNX_RUNTIME_API`) 및 실제 세션 생성/실행 파이프라인(전처리 NCHW + 출력 정규화/리사이즈) 통합, CMake 옵션/문서 확장, 비-API 회귀 테스트 재통과 (`plugin/inference/OnnxRuntimeBackend.cpp`, `plugin/CMakeLists.txt`, `README.md`, `docs/build/README.md`, `tests/test_inference_engine.cpp`)
-- [x] `D29` CMake에 AE SDK 기반 패키징 타깃 정의 추가(Windows `zsoda_aex`, macOS `zsoda_plugin_bundle`) 및 빌드 문서 동기화 (`plugin/CMakeLists.txt`, `README.md`, `docs/build/README.md`)
-- [x] `D30` macOS `zsoda_plugin_bundle`에 `.plugin` 번들 속성/`Info.plist` 템플릿 연결 및 패키징 문서 반영 (`plugin/CMakeLists.txt`, `plugin/ae/Info.plist.in`, `README.md`, `docs/build/README.md`)
-- [x] `D31` `PF_Cmd_RENDER` 스캐폴드의 호스트 픽셀 포맷 선택 로직 고도화(Stride 기반 8/16/32 추론 + source/output 힌트 충돌 검증) 및 단위 테스트 추가 (`plugin/ae/AeHostAdapter.*`, `tests/test_ae_router.cpp`)
-- [x] `D32` `RenderParams.vram_budget_mb` 도입 + 다운스케일 fallback에서 VRAM budget 기반 축소 비율 선택 로직 추가(캐시 키 반영 포함) 및 회귀 테스트 통과 (`plugin/core/RenderPipeline.*`, `plugin/core/Cache.*`, `plugin/ae/AeParams.*`, `tests/test_render_pipeline.cpp`, `tests/test_ae_params.cpp`)
-- [x] `D33` 네이티브 빌드 산출물 수집용 패키징 스크립트 추가(`tools/package_plugin.sh`, `tools/package_plugin.ps1`) 및 빌드 문서/README 동기화 (`docs/build/README.md`, `README.md`)
-- [x] `D34` 로컬/CI 공용 검증 스크립트(`tools/run_local_ci.sh`) 및 GitHub Actions 워크플로(`.github/workflows/ci.yml`) 추가, 로컬 실행 통과
-- [x] `D35` AE SDK 경로에 `PF_Cmd_USER_CHANGED_PARAM` -> `AeCommand::kUpdateParams` 매핑 추가, `params[]` 기반 `AeParamValues` 추출/렌더 override 연결, 스텁 파라미터 설정 API(`ZSodaSetParamsStub`) 및 회귀 테스트 보강 (`plugin/ae/AeHostAdapter.*`, `plugin/ae/AePluginEntry.cpp`, `tests/test_ae_router.cpp`)
-- [x] `D36` AE SDK `PARAM_SETUP`에 `PF_ADD_*` 기반 파라미터 등록 스캐폴드 추가, `SEQUENCE_*`/`SMART_*` 안전 no-op 매핑 확장, `PF_Cmd_RENDER` 포맷 선택 시 SDK 픽셀 힌트(in_data/world/accessor) 결합 반영 (`plugin/ae/AeHostAdapter.cpp`)
-- [x] `D37` 문서 동기화: 문서 인덱스에 새 문서/스크립트 참조 링크 추가 + `사용자 테스트 가능 시점` 섹션 반영 (`README.md`, `docs/build/README.md`, `PROGRESS.md`)
-- [x] `D38` Windows 빌드/검증 고도화: `tools/build_aex.ps1` 추가(설정/빌드/산출물 SHA256/MediaCore 복사 옵션), `tools/package_plugin.ps1`에 `-OrtRuntimeDllPath` 옵션 추가, ORT 런타임 배포 노트/AE 스모크 테스트 체크리스트 추가 (`tools/build_aex.ps1`, `tools/package_plugin.ps1`, `docs/build/ORT_RUNTIME_DEPLOY.md`, `docs/build/AE_SMOKE_TEST.md`, `README.md`, `docs/build/README.md`)
-- [x] `D39` Windows 실제 실행 이슈 수정: `tools/build_aex.ps1`의 `Write-Host "$Label:"`를 `Write-Host "$($Label):"`로 변경해 PowerShell 파서 오류 제거 (`tools/build_aex.ps1`)
-- [x] `D40` 로컬 Windows 에이전트 인수인계 문서 추가: 동기화/환경변수/빌드/배치/스모크 테스트/실패 보고 템플릿 정리 (`docs/build/LOCAL_AGENT_HANDOFF.md`, `docs/build/README.md`)
-- [x] `D41` 로컬 Windows 실빌드 검증: AE SDK 25.6에서 `PF_InData/PF_LayerDef` 멤버 호환(`pixel_format/pix_format`) 컴파일 수정 후 `tools/build_aex.ps1`로 `ZSoda.aex` 산출 확인, `ZSODA_WITH_ONNX_RUNTIME_API=ON` + `ZSODA_WITH_AE_SDK=ON` 테스트 빌드 및 `zsoda_tests` 통과 검증 (`plugin/ae/AeHostAdapter.cpp`, `build-win/*`, `build-win-tests/*`)
-- [x] `D42` 로컬 핸드오프 문서 보강: MediaCore 배치 권한 이슈(`Access is denied`) 및 ORT DLL 선로딩(System32 구버전) 충돌 대응 가이드 추가 (`docs/build/LOCAL_AGENT_HANDOFF.md`)
-- [x] `D43` 관리자 권한 배치 검증: `ZSoda.aex`/`onnxruntime.dll`를 `C:\Program Files\Adobe\Common\Plug-ins\7.0\MediaCore`에 복사 완료 및 소스-대상 SHA256 일치 검증
-- [x] `D44` Windows 배포 패키징 검증: `tools/package_plugin.ps1`로 `dist/windows-release`에 `.aex`/`models.manifest`/`onnxruntime.dll`/`.sha256` 산출 확인
-- [x] `D45` AE 로더 인식 이슈 수정: `ZSoda.aex`가 `No loaders recognized`로 Ignore 되던 문제를 `EffectMain` export 강제(`__declspec(dllexport)`)로 수정, 재빌드 후 export 테이블(`EffectMain`) 및 MediaCore 재배치 해시 검증 (`plugin/ae/AePluginEntry.cpp`, `build-win/plugin/Release/ZSoda.aex`)
-- [x] `D46` Windows PiPL 경로 연결: `ZSodaPiPL.r` 추가 + CMake에 `cl -> PiPLtool -> rc` 생성 파이프라인 연결해 `.aex` 빌드 시 PiPL 리소스 포함, MediaCore 최신 빌드 재배치 (`plugin/ae/ZSodaPiPL.r`, `plugin/CMakeLists.txt`, `build-win/plugin/pipl/*`)
-- [x] `D47` AE 적용 크래시 대응: Sentry breadcrumb의 `global outflags mismatch (code 4008120 vs PiPL 4008020)` 원인 확인 후 `PF_Cmd_GLOBAL_SETUP`에서 `my_version/out_flags/out_flags2` 명시 세팅 및 PiPL outflags 동기화, 재빌드/재배치/단위 테스트 통과 (`plugin/ae/AeHostAdapter.cpp`, `plugin/ae/ZSodaPiPL.r`, `build-win/plugin/Release/ZSoda.aex`)
+## 3) 최근 완료 작업
+- [x] `D139` DA3 Multi-View 전환: VDA 옵션 정리, DA3 멀티뷰 입력 경로 추가
+- [x] `D140` ORT 출력 텐서 선택 안정화: depth 출력 인덱스/이름 선택 및 진단 로그 강화
+- [x] `D141` 실제 멀티뷰 모델 항목(`depth-anything-v3-small-multiview`) 추가 및 진단 확장
+- [x] `D142` 빌드/배포 완료: MediaCore 배포 + ORT/모델 자산 동기화
+- [x] `D143` Extract 강제 재추론 경로 보강: `extract_token`을 캐시 키에 반영
+- [x] `D144` 멀티뷰 파라미터 전파 보강: `num_params=1` 같은 축소 힌트에서도 파라미터 테이블 fallback 읽기
+- [x] `D145` AE 파라미터 감시 강화: 주요 파라미터에 `PF_ParamFlag_SUPERVISE` 적용
+- [x] PROGRESS 문서 인코딩 복구: 깨진 한글 문서 전면 정리
 
-## 4. 남은 작업
-1. `P3` 구현: AE 파라미터와 모델 선택 UI(`model_id`)를 실제 `PARAM_SETUP` 등록 코드와 AE 호스트에서 실검증
-2. `P3` 구현: AE SDK 실제 `PF_Cmd_*` 경로에 라우터/파라미터 연결(현재 USER_CHANGED/RENDER/SEQUENCE/SMART no-op 매핑 반영, 호스트 통합 검증 남음)
-3. `P3` 구현: `PF_Cmd_RENDER` payload에서 SDK 픽셀 타입 힌트 결합 경로의 16/32 bpc 실호스트 검증
-4. `P4` 잔여: OOM/백엔드 실패 원인별 정책 세분화(타일 자동 축소 + VRAM 힌트 기반 다운스케일 비율은 반영 완료, SDK/OS별 메모리 신호 연계 남음)
-5. `P5` 구축: 성능/회귀/장시간 안정성 테스트 파이프라인 정리(로컬/CI 기본 자동화 완료, 네이티브 host 검증 파이프라인 추가 필요)
-6. `P5` 구축: 문서화된 최종 패키징 경로를 실제 CMake 타깃(`.aex/.plugin`) 및 배포 스크립트로 연결 (Windows 빌드/패키징/배치 검증 완료, AE 스모크/렌더 큐 실검증 남음)
-7. ORT 백엔드 GPU 프로바이더(CUDA/DirectML/Metal/CoreML) 분기 연결 및 OS별 fallback 정책 문서화
-8. macOS 코드서명/노타리 최종 경로 마감 및 배포용 번들 검증
+## 4) 현재 확인된 이슈
+1. 멀티뷰가 사용자 기대대로 동작하지 않음  
+   - 최신 로그에서 반복적으로 `model=depth-anything-v3-small`, `frames=1`, `requested_multiview=0` 확인
+2. AE 플러그인 로더 이슈  
+   - `Plugin Loading.log`에 `No loaders recognized this plugin, so the plugin is set to Ignore` 기록
+   - 이 경우 최신 빌드가 실제 렌더링에 반영되지 않음
 
-## 5. 이슈 및 리스크
-- 플러그인 스캐폴드는 구축되었고 SDK 바인딩 경로를 확장했지만, AE 호스트 실환경에서의 최종 검증이 남아 있음.
-- ONNX Runtime/CUDA/DirectML/Metal/CoreML 실추론 경로가 아직 연결되지 않음.
-- Windows 환경에서 `C:\Windows\System32\onnxruntime.dll`(구버전)이 우선 로드되면 ORT API 버전 충돌이 발생할 수 있어, 실행 폴더 기준 런타임 DLL 버전 고정 전략이 필요함.
-- AE가 플러그인을 스캔해도 로더가 인식하지 못하면 `Plugin Loading.log`에 `No loaders recognized ... Ignore`로 남으므로, 배치 후에는 export/PiPL 인식 여부를 로그로 재확인해야 함.
-- 리스크 대응:
-  - 모델 선택/캐시/폴백 경로를 먼저 안정화해 AE 크래시 리스크를 최소화
-  - ORT 연동은 CPU 경로부터 시작 후 GPU 백엔드를 OS별로 점진 확장
+## 5) 다음 작업 우선순위
+1. AE 로더 Ignore 상태 재현/해결  
+   - 로더 캐시/플러그인 메타 검증 루틴 강화
+2. 멀티뷰 활성화 강제 검증  
+   - `small-multiview` 선택 시 런타임에서 `requested_multiview=1`, `frames>=5`가 아니면 명시 경고
+3. 품질 격차(Quick Depth 3 대비) 축소용 HQ 경로 설계  
+   - 클립 단위 정규화/temporal 안정화/edge-aware 정제 강화
 
-## 6. 다음 공유 예정
-- 다음 공유 시점: `P3`의 다음 작업 단위(`PF_Cmd_RENDER` payload 디코딩 + `PixelConversion` 실제 연결) 완료 직후
-- 다음 공유 내용: SDK payload->내부 프레임 변환 코드, 테스트/벤치 상태, GitHub 반영 상태
+## 6) 배포 기준 정보(최근)
+- 최근 배포 AEX: `C:\Program Files\Adobe\Common\Plug-ins\7.0\MediaCore\ZSoda.aex`
+- 최근 배포 해시(SHA256): `5ba56896b828f028da80e31e9d1ab11478a0adc93b59ec48dc3eada9bb48ac55`
 
-## 7. Local Troubleshooting Notes (2026-03-02)
-- [x] `D48` Cleared AE crash-blocklist state for `ZSoda Depth` by removing `Effect Crashed.txt` and deleting the `ZSoda Depth 65536` `lastCrashedDate` entry in `Adobe After Effects 25.0 Prefs-effects.txt` before retest.
-- [x] `D49` 로컬 크래시 재분석 결과(최신 Sentry `0ea8ab30-95ac-4967-8688-90ef01782626`)에서 `global outflags mismatch (code 4008120 vs PiPL 4008020)` 재확인 후, 플러그인 `GlobalSetup`/PiPL outflags를 `0x04008020`으로 통일하고 재빌드/MediaCore 재배포(SHA256 `9773ec07b6247ce86273253dddfcb3a2d3760798772aceec6fc1cd4c9fcd3b7d`) 완료.
-- [x] `D50` 반복 크래시 UUID(`471fec5f-fa20-4dc7-a552-f44ef1074861`) 재분석에서 동일 outflags mismatch(`code 4008120 vs PiPL 4008020`) 확인 후, ZSoda outflags를 `0x04008120`으로 재통일 재빌드하고 MediaCore 재배포(SHA256 `fcb5f1538885131cc7e4e84054ba3140e9b98be07f8f55da77047991f572d446`) 완료. 추가로 AE 레지스트리 캐시의 `PluginCache\en_US\ZSoda.aex_*` Ignore 키를 삭제해 구캐시 강제 참조 상태를 해제.
-- [x] `D51` Session wrap-up for WSL handoff: pushed `main` to `origin` with commits `320e0c7` (AE PiPL/outflags sync fixes) and `6ce6329` (Windows `ZSoda.aex` artifact). Current blocker remains runtime DLL conflict risk (`onnxruntime.dll` version/load path) and intermittent AE PluginCache `Ignore` state for `ZSoda.aex`.
-- [x] `D52` ORT 크래시 재분석 결과를 기반으로 구조적 해결 전략 확정: Adobe ORT(1.17)와 플러그인 ORT(1.24.2) 충돌 가능성을 핵심 원인으로 기록하고, 명시적 ORT 로딩/버전 협상/폴백 보장을 위한 멀티 에이전트 병렬 작업 착수 (`docs/research/2026-03-03-ort-runtime-collision-analysis.md`)
-- [x] `D53` 구조적 해결 1차 통합: ORT 명시적 동적 로더(`OrtDynamicLoader`) 추가, OnnxRuntimeBackend 초기화 경로 리팩터링(로더 협상 실패 시 fallback reason 반환), CMake에 direct-link 모드/런타임 DLL 경로 힌트 추가, 빌드/패키징 스크립트의 ORT DLL 누락 검증 강화, ORT 충돌 대응 운영 문서/테스트 보강 (`plugin/inference/OrtDynamicLoader.*`, `plugin/inference/OnnxRuntimeBackend.cpp`, `plugin/CMakeLists.txt`, `tools/build_aex.ps1`, `tools/package_plugin.ps1`, `docs/build/ORT_RUNTIME_ISOLATION_PLAN.md`, `tests/test_inference_engine.cpp`)
-- [x] `D54` 덤프 역추적성 강화: Windows `.aex` 타깃에 `/Zi + /DEBUG:FULL + /MAP` 적용, `build_aex.ps1`에서 `ZSoda.pdb`/`ZSoda.map` 산출 검사 및 해시 출력, 핸드오프 문서에 PDB/MAP 필수 수집 절차 반영 (`plugin/CMakeLists.txt`, `tools/build_aex.ps1`, `docs/build/LOCAL_AGENT_HANDOFF.md`, `docs/build/README.md`)
-- [x] `D55` 신규 크래시 덤프(`dump/29584863-ffbd-4e6d-b845-be901ba33605.dmp`) 재분석: `ExceptionCode=0xC0000005`, `MSVCP140.dll+0x126a0`, `ExceptionInformation=[0,0]`, `RDX=0x0` 확인 및 ZSoda 리턴 오프셋 후보(`+0x2017d`, `+0x1ba3a`, `+0xb4ea` 등) 추출
-- [x] `D56` 구조적 안정화 패치: `ex.what()`/`Name()`/DLL path hint 문자열 변환 경로에 `nullptr C-string` 방어 적용, ORT 로더 메서드명 불일치(`LoadedLibraryPath` -> `LoadedDllPath`) 정정 후 로컬 CI 재통과 (`plugin/core/RenderPipeline.cpp`, `plugin/inference/OnnxRuntimeBackend.cpp`, `plugin/inference/ManagedInferenceEngine.cpp`)
-- [x] `D57` 외부 참조 심화 분석: `NevermindNilas/TheAnimeScripter` 내부 코드 기반으로 AE 연동/모델 운영/provider fallback 패턴을 조사하고 Z-Soda 적용 항목 정리 (`docs/research/2026-03-03-theanimescripter-reference.md`)
-- [x] `D58` ORT 경로 충돌 구조 개선: DLL 경로 미지정 시 `onnxruntime.dll` bare name 로드 대신 플러그인 모듈 인접(side-by-side) 경로를 우선 탐색하고, 미발견 시 명시 오류로 fallback 전환 (`plugin/inference/OrtDynamicLoader.cpp`)
-- [x] `D59` 호스트 크래시 완화층 추가: `EffectMain`/스텁 엔트리 함수에 C++ 예외 가드 + Windows SEH 가드 및 `%TEMP%\\ZSoda_AE_Runtime.log` 진단 로그 경로 추가 (`plugin/ae/AePluginEntry.cpp`)
-- [x] `D60` CRT 경로 의존 완화: `ManagedInferenceEngine`/`DepthCache`/`BufferPool`의 `std::mutex` + `std::scoped_lock` 사용을 `CompatMutex/CompatLockGuard`로 치환해 Windows에서 `MSVCP _Mtx_lock` 경유를 제거 (`plugin/core/CompatMutex.h`, `plugin/core/Cache.*`, `plugin/core/BufferPool.*`, `plugin/inference/ManagedInferenceEngine.*`)
-- [x] `D61` 빌드 런타임 제어 강화: CMake `CMP0091 NEW` + `ZSODA_MSVC_RUNTIME_LIBRARY`(기본 `/MT`) 옵션 추가, Windows 빌드 스크립트/핸드오프 문서 동기화 (`CMakeLists.txt`, `tools/build_aex.ps1`, `docs/build/README.md`, `docs/build/LOCAL_AGENT_HANDOFF.md`)
-- [x] `D62` Context7 기반 버전 검증: ONNX Runtime `OrtApiBase::GetApi()` 미지원 버전 시 `nullptr` 반환 규칙 및 CMake `MSVC_RUNTIME_LIBRARY` 적용 조건(CMP0091) 확인
-- [x] `D63` AE 초기화 복원력 강화: `EffectMain`에서 `BuildSdkDispatch/Dispatch` 실패 시 명령별 정책 적용(`RENDER`만 치명 반환, 나머지 명령은 `PF_Err_NONE`) 및 `%TEMP%\\ZSoda_AE_Runtime.log`에 상세 진단(`cmd/mapped/error`) 기록 (`plugin/ae/AePluginEntry.cpp`)
-- [x] `D64` 로더 인식 실패(Plugin Ignore) 구조 대응: PiPL 리소스의 Windows 코드 엔트리를 `CodeWin64X86 {"EffectMain"}`로 단순 고정하고, `build_aex.ps1`에 생성 PiPL RC 시그니처 검증(`CodeWin64X86/EffectMain/outflags`)을 강제해 비정상 `.aex` 배포를 차단 (`plugin/ae/ZSodaPiPL.r`, `plugin/CMakeLists.txt`, `tools/build_aex.ps1`, `docs/build/LOCAL_AGENT_HANDOFF.md`)
-- [x] `D65` 로컬 재현 로그 재확인 및 WSL 재위임 준비: 최신 `main(73464a4)` pull 후 `tools/build_aex.ps1` 재빌드 시 `Assert-PiPLSignature`가 `.rc`에서 `CodeWin64X86` 토큰 미검출로 실패(동일 시점 `.rr`에는 토큰 존재)함을 확인. AE 재실행 후에도 `Plugin Loading.log`에 `No loaders recognized ... set to Ignore`가 반복되고 `PluginCache\\en_US\\ZSoda.aex_*`가 `Ignore=1`로 재생성됨을 확인해 핸드오프 문서에 증적/다음 액션 반영 (`docs/build/LOCAL_AGENT_HANDOFF.md`)
-- [x] `D80` Ignore 오염 runbook: 단일 정리→배치→테스트→수집→판정 절차를 `docs/build/LOCAL_AGENT_HANDOFF.md`에 명령 중심으로 추가해 Ignore 상태 재현과 증거 확보를 일관되게 안내
-- [x] `D81` 로더 분리 실험 경로 추가: `ZSoda` 본체를 최소 엔트리(pass-through)로 빌드하는 `ZSODA_AE_LOADER_ONLY_MODE` 옵션과 `tools/build_aex.ps1 -LoaderOnlyMain` 스위치를 도입해, `No loaders recognized`가 본체 로직과 무관한지 즉시 판별 가능한 A/B 실험 경로를 구축 (`plugin/ae/AePluginEntry.cpp`, `plugin/CMakeLists.txt`, `tools/build_aex.ps1`, `docs/build/LOCAL_AGENT_HANDOFF.md`)
-- [x] `D66` 빌드 로더 게이트 구조 개선: `tools/build_aex.ps1`를 `.rc` 토큰 검사 방식에서 `.rr` literal 시그니처 + 최종 `ZSoda.aex`(export/`.rsrc`/machine) 검증으로 전환하고, `ZSoda.loader_check.txt` 요약 산출 및 `LOCAL_AGENT_HANDOFF.md` 절차를 동기화 (`tools/build_aex.ps1`, `docs/build/LOCAL_AGENT_HANDOFF.md`)
-- [x] `D67` 듀얼 경로 로더 재현 고정: `MediaCore`/`Effects` 두 위치에 동일 SHA256 `ZSoda.aex`를 배치해 재현해도 양쪽 모두 `No loaders recognized ... set to Ignore`로 실패하고, `PluginCache\\en_US`에 경로별 `ZSoda.aex_*` 2개 키가 `Ignore=1`로 동시 생성됨을 확인. `%TEMP%\\ZSoda_AE_Runtime.log` 미생성과 `LoadLibraryW` 단독 성공/`dumpbin /dependents` 정상 결과를 함께 기록해 실패 지점을 AE 내부 로더 단계로 한정 (`docs/build/LOCAL_AGENT_HANDOFF.md`)
-- [x] `D68` 네이티브 진단 자동화 추가: `tools/collect_ae_loader_diagnostics.ps1`를 추가해 `PluginCache`(ZSoda 키/값), `Plugin Loading.log` 컨텍스트, 대상 `.aex`의 `dumpbin` 증거(`exports/headers/dependents/.rsrc`) + SHA256 + `LoadLibraryW` probe를 세션 폴더로 일괄 수집하도록 구현하고 핸드오프 문서에 실행법/산출물 구조를 반영 (`tools/collect_ae_loader_diagnostics.ps1`, `docs/build/LOCAL_AGENT_HANDOFF.md`)
-- [x] `D69` 신규 진단 스크립트 실증: 네이티브에서 `collect_ae_loader_diagnostics.ps1` 실행(`artifacts/diagnostics/ae_loader_diag_20260303_173409`)해 `summary.txt`/컨텍스트 로그/PluginCache JSON/AEX dumpbin 증거를 수집했고, 양쪽 경로(`MediaCore`, `Effects`) 모두 `No loaders recognized ... Ignore` + `PluginCache` 2키 `Ignore=1` 재생성 + `EffectMain export`/`LoadLibraryW success` 동시 관찰을 핸드오프 문서에 반영 (`docs/build/LOCAL_AGENT_HANDOFF.md`)
-- [x] `D70` 최신 pull 후 재빌드/재현 상태 handoff 갱신: `21678b1` 기준 일반 빌드(`-CopyToMediaCore`)는 성공하지만 AE 로더 거부(`No loaders recognized ... Ignore`)는 지속되며, probe 경로(`-BuildLoaderProbe`)는 `plugin/ae/LoaderProbeEntry.cpp` 컴파일 오류(`in_data` undeclared, `PF_PixelPtr` cast 오류)로 실패함을 handoff 문서에 명시하고 WSL 다음 액션(Probe 빌드 복구 + 로더 분리 재검증)을 추가 (`docs/build/LOCAL_AGENT_HANDOFF.md`)
-- [x] `D70` 로더 원인 분리용 최소 AEX 타깃 추가: AE SDK 최소 엔트리(`LoaderProbeEntry.cpp`) + 독립 PiPL(`ZSodaLoaderProbePiPL.r`) + CMake `zsoda_loader_probe_aex` 타깃 및 `build_aex.ps1 -BuildLoaderProbe` 옵션을 도입해 동일 환경에서 `ZSoda.aex` 대비 로더 인식 여부를 즉시 A/B 판별할 수 있도록 구성 (`plugin/ae/LoaderProbeEntry.cpp`, `plugin/ae/ZSodaLoaderProbePiPL.r`, `plugin/CMakeLists.txt`, `tools/build_aex.ps1`, `docs/build/LOCAL_AGENT_HANDOFF.md`)
-- [x] `D71` probe 빌드 복구: `LoaderProbeEntry.cpp`의 AE SDK 헤더 호환 오류(`PF_SPRINTF`의 `in_data` 의존, `PF_PixelPtr` 캐스팅 타입 불일치)를 수정해 `-BuildLoaderProbe` 경로가 다시 컴파일 가능하도록 조정하고, Adobe community 리서치 기반 다음 재현 체크포인트(`-Clean` 재생성/리소스 트리 정합성/probe 결과 분기)를 handoff에 반영 (`plugin/ae/LoaderProbeEntry.cpp`, `docs/build/LOCAL_AGENT_HANDOFF.md`)
-- [x] `D72` Probe 버전 경고 제거 준비: 네이티브 재현에서 보고된 `After Effects 25::16 version mismatch`(code 1.0 vs PiPL 0.2) 해소를 위해 코드(`my_version`)와 PiPL(`AE_Effect_Version`)을 공용 상수 `ZSODA_EFFECT_VERSION_HEX`로 통일하고, 본 플러그인/Probe 양쪽 모두 동일 버전 소스를 사용하도록 정리 (`plugin/ae/ZSodaVersion.h`, `plugin/ae/AeHostAdapter.cpp`, `plugin/ae/LoaderProbeEntry.cpp`, `plugin/ae/ZSodaPiPL.r`, `plugin/ae/ZSodaLoaderProbePiPL.r`, `docs/build/LOCAL_AGENT_HANDOFF.md`)
-- [x] `D73` 실추론 기본 경로 전환: Windows 빌드 스크립트 `build_aex.ps1`의 기본 동작을 ORT API ON으로 전환(`-DisableOrtApi`로만 OFF)해 기본 빌드가 실제 ONNX Runtime 실행 경로를 타도록 조정하고 README/핸드오프 문서에 운영 기준 반영 (`tools/build_aex.ps1`, `README.md`, `docs/build/LOCAL_AGENT_HANDOFF.md`, `models/README.md`)
-- [x] `D74` MFR 경고 대응 기반 정리: 코드/PiPL outflags를 공용 헤더(`ZSodaAeFlags.h`)로 통합해 `PF_OutFlag2_SUPPORTS_THREADED_RENDERING` 반영을 단일 소스로 맞추고, `EffectMain` 최초 진입 시 엔진 백엔드 상태를 `%TEMP%\\ZSoda_AE_Runtime.log`에 남겨 실추론/폴백 여부를 즉시 진단 가능하게 개선 (`plugin/ae/ZSodaAeFlags.h`, `plugin/ae/AeHostAdapter.cpp`, `plugin/ae/LoaderProbeEntry.cpp`, `plugin/ae/ZSodaPiPL.r`, `plugin/ae/ZSodaLoaderProbePiPL.r`, `plugin/ae/AePluginEntry.cpp`, `docs/build/LOCAL_AGENT_HANDOFF.md`)
-- [x] `D75` 초기화 실패 복원력 강화: `EffectMain` 예외/SEH 처리 시 `PF_Cmd_RENDER`만 치명 에러를 반환하고 나머지 초기화/설정 명령은 `PF_Err_NONE`로 비치명 처리해 `25::3 cannot be initialized` 재발을 완화하고, 원인 추적은 런타임 로그(`EngineStatus`, `EffectMain`)로 이어지도록 조정 (`plugin/ae/AePluginEntry.cpp`, `docs/build/LOCAL_AGENT_HANDOFF.md`)
-- [x] `D76` ZSoda 본체 적용 우선 복구: 네이티브 재현에서 `ZSoda`만 `25::3`가 지속된 문제를 기준으로 `EffectMain`의 실패 반환 정책을 전면 비치명(`PF_Err_NONE`)으로 완화(`BuildSdkDispatch/Dispatch 실패 + C++/SEH 예외`)해 AE가 이펙트 적용 자체를 거부하지 않도록 조정하고, 진단은 로그 기반으로 계속 추적하도록 문서 반영 (`plugin/ae/AePluginEntry.cpp`, `docs/build/LOCAL_AGENT_HANDOFF.md`)
-- [x] `D77` 동일 오류 재현 로그 분석: `%TEMP%\ZSoda_AE_Runtime.log` 최신 기준 `EngineStatus`만 반복 기록되고 `EffectMain` 항목은 없으며, ORT 초기화가 `LoadLibraryW failed`로 매회 실패(`requested_path=C:\onnxruntime-win-x64-1.24.2\lib\onnxruntime.dll`, `loaded_path=<none>`, `negotiated_api_version=0`)함을 확인. handoff에 증거와 다음 분기(ORT 종속 DLL/런타임 초기화 실패 축)를 반영 (`docs/build/LOCAL_AGENT_HANDOFF.md`, `PROGRESS.md`)
-- [x] `D78` 구조적 복원력 보강: `OrtDynamicLoader`에 `LoadLibrary` 다중 시도 체인(`LOAD_LIBRARY_SEARCH_*` -> `LOAD_WITH_ALTERED_SEARCH_PATH` -> `LoadLibraryW`)과 Win32 오류코드 포함 진단 문자열을 추가하고, 해석된 ORT DLL 경로 존재성 검증을 강화. 동시에 `PARAMS_SETUP` 등록 실패 시 `num_params=1`(input-only)로 안전 폴백하도록 조정하고, `EffectMain` 비-렌더 명령 진단 로그(`EffectMainCmd`)를 추가해 `25::3` 원인 추적성을 높임 (`plugin/inference/OrtDynamicLoader.cpp`, `plugin/ae/AeHostAdapter.cpp`, `plugin/ae/AePluginEntry.cpp`)
-- [x] `D79` 클린 재빌드 후 동일 오류 재현 재확인: `Plugin Loading.log` 최신 구간에서 `MediaCore\ZSoda.aex`는 `No loaders recognized`, `MediaCore\ZSodaLoaderProbe.aex`/`Effects\ZSoda.aex`는 `plugin is marked as Ignore`가 지속되고, `PluginCache\en_US`에 `ZSoda.aex_*` 2키 + `ZSodaLoaderProbe.aex_*` 1키 모두 `Ignore=1`임을 확인. 동시에 `%TEMP%\ZSoda_AE_Runtime.log`의 ORT `LoadLibraryW` 실패 패턴도 재확인하여 handoff에 동시 블로커로 기록 (`docs/build/LOCAL_AGENT_HANDOFF.md`, `PROGRESS.md`)
-- [x] `D82` 상태 판정 업데이트(WSL 기준 적용): 최신 재현에서 이펙트 적용 자체는 가능(대화상자 에러 없음)하나 레이어가 투명해지며, `%TEMP%\ZSoda_AE_Runtime.log`에 `EngineStatus`(ORT `all attempts exhausted`, Win32 `code=1114`)와 반복 `EffectMain | SEH exception code=0xC0000005`가 관찰됨. `EffectMainCmd` 기록 존재로 로더 단계를 통과한 것이 확인되어 현재 축을 case 2(본체 초기화/라우터/ORT 축)로 분류하고 handoff에 근거 로그 반영 (`docs/build/LOCAL_AGENT_HANDOFF.md`, `PROGRESS.md`)
-- [x] `D83` case 2 안정화 1차: `PARAMS_SETUP`에서 `num_params`를 입력 전용 baseline(1)으로 시작해 등록 성공 시에만 확장하도록 정리하고, `PF_Cmd_RENDER` 추출/포맷 결정 실패 시 안전 no-op 대신 source→output pass-through 복사를 수행하도록 조정. 픽셀 포맷 후보 우선순위를 `RGBA8 -> RGBA16 -> RGBA32F`로 재정렬하고 모호한 경우 첫 후보 fallback을 허용해 투명 출력 가능성을 낮춤. 또한 `EffectMain`의 엔진 상태 초기화를 `GLOBAL_SETUP/PARAMS_SETUP/RENDER`에만 제한해 비렌더 명령(SEH) 노이즈를 줄임 (`plugin/ae/AeHostAdapter.cpp`, `plugin/ae/AePluginEntry.cpp`, `tests/test_ae_router.cpp`)
-- [x] `D84` DA3 런타임 경로 구조 보강: `EngineFactory`에 런타임 경로 해석 계층(`RuntimePathResolver`)을 추가해 `ZSODA_MODEL_ROOT`/`ZSODA_ONNXRUNTIME_LIBRARY` 미설정 시 `.aex` 인접 `models/`, `runtime/onnxruntime.dll`(없으면 인접 `onnxruntime.dll`)을 우선 탐색하도록 개선. Windows 네이티브용 모델 설치 스크립트(`tools/download_model.ps1`)를 추가하고, 경로 해석 단위 테스트(`tests/test_runtime_path_resolver.cpp`) 및 로컬 CI 스크립트/문서를 동기화해 회귀를 방지 (`plugin/inference/EngineFactory.cpp`, `plugin/inference/RuntimePathResolver.*`, `tests/*`, `tools/run_local_ci.sh`, `tools/download_model.ps1`, `README.md`, `models/README.md`, `docs/build/LOCAL_AGENT_HANDOFF.md`)
-- [x] `D85` 적용 후 자동 다운로드 경로 추가: 모델 파일이 없을 때 `ManagedInferenceEngine`이 모델 매니페스트 URL을 기반으로 백그라운드 다운로드를 1회 큐잉하도록 `ModelAutoDownloader`를 도입(기본 활성, `ZSODA_AUTO_DOWNLOAD_MODELS=0`으로 비활성화 가능). 동일 모델 파일이 생성되면 이후 선택 경로에서 ONNX 백엔드 재승격을 시도해 폴백에서 실추론으로 전환되도록 개선. 관련 옵션/문서/로컬 CI 컴파일 목록/다운로더 검증 테스트를 동기화 (`plugin/inference/ModelAutoDownloader.*`, `plugin/inference/ManagedInferenceEngine.*`, `plugin/inference/RuntimeOptions.h`, `plugin/inference/EngineFactory.cpp`, `plugin/CMakeLists.txt`, `tests/test_inference_engine.cpp`, `tools/run_local_ci.sh`, `README.md`, `models/README.md`, `docs/build/README.md`, `docs/build/LOCAL_AGENT_HANDOFF.md`)
-- [x] `D86` `25::3` 재현 로그 재분석 및 handoff 동기화: 네이티브 재현 직후 `%TEMP%\\ZSoda_AE_Runtime.log`/`Plugin Loading.log`/`PluginCache`를 재확인해 최신 블로커를 문서화. `EngineStatus` 최신 2회(`2026-03-03 21:20:10.133`, `21:20:51.030`)에서 `MediaCore\\onnxruntime.dll` 로딩이 3단계 모두 `code=1114`로 실패(`loaded_path=<none>`, `negotiated_api_version=0`)함을 확인했고, 동시에 `PluginCache\\en_US`의 `ZSoda*.aex_*` 키가 여전히 `Ignore=1`인 상태를 확인해 ORT 초기화 실패 축과 Ignore 캐시 축이 공존하는 것으로 handoff에 반영 (`docs/build/LOCAL_AGENT_HANDOFF.md`, `PROGRESS.md`)
-- [x] `D87` 네이티브 빌드 재현 차단 2건 정식 반영: `tools/build_aex.ps1`의 CMake 플래그 생성 시 `SwitchParameter`를 직접 `[int]` 캐스팅하던 경로를 `IsPresent` 기반 `0/1` 값으로 변경하고, `EffectMainImpl`에서 `LogEngineStatusOnce()` 호출을 `zsoda::ae::LogEngineStatusOnce()`로 정규화해 네이티브에서 보고된 컴파일/실행 블로커를 제거. 로컬 CI(`tools/run_local_ci.sh`) 재통과로 회귀 없음 확인 (`tools/build_aex.ps1`, `plugin/ae/AePluginEntry.cpp`)
-- [x] `D88` `25::16 -> 25::3` 재발 차단 보강: `tools/build_aex.ps1`에 `MediaCore` 배치 후 `Effects` 경로의 `ZSoda.aex` 중복본 해시를 점검하는 가드를 추가해, 서로 다른 해시의 중복 설치가 감지되면 빌드를 실패시키고 정리 액션을 강제. 동시에 PiPL 생성 커맨드의 `DEPENDS`에 `ZSodaAeFlags.h`/`ZSodaVersion.h`를 명시해 outflags/버전 헤더 변경 시 리소스 재생성이 누락되지 않도록 강화 (`tools/build_aex.ps1`, `plugin/CMakeLists.txt`, `docs/build/LOCAL_AGENT_HANDOFF.md`)
-- [x] `D89` 로더 안정화 정책 상향: AE가 `duplicated effect plug-ins installed`를 선행 경고로 기록하는 재현 패턴을 반영해 `build_aex.ps1`의 중복 점검을 단일 설치 강제 정책으로 상향(해시가 같아도 실패), `ZSodaLoaderProbe.aex`까지 동일 검출을 적용. 운영 문서에 `중복 자체 금지` 규칙을 반영해 `25::16/25::3` 재발 가능성을 낮춤 (`tools/build_aex.ps1`, `docs/build/LOCAL_AGENT_HANDOFF.md`)
-- [x] `D90` 네이티브 강제 재검증(정리 -> 클린 빌드 -> 재현) 결과 동기화: `Effects` 중복 경로 제거 + `PluginCache\en_US\ZSoda*` 삭제 후 최신 `main`에서 재빌드/재배치했지만, AE 재실행 시 다시 `25::16(outflags mismatch 4008120 vs 4008020) -> 25::3` 순서로 재발하고 `Plugin Loading.log`의 `No loaders recognized ... Ignore` 및 `PluginCache` `Ignore=1` 재생성이 지속됨을 확인. 동시에 같은 세션의 `build-win\plugin\pipl\ZSodaPiPL.rr`에는 `AE_Effect_Global_OutFlags=0x04008120`이 기록되어 있어, `소스/rr 값`과 `AE가 판정한 PiPL 값`의 불일치가 핵심 블로커로 남음. 최신 전달 증거를 diagnostics 번들(`ae_loader_diag_20260303_220840`)로 고정 (`docs/build/LOCAL_AGENT_HANDOFF.md`, `PROGRESS.md`)
-- [x] `D91` `EffectMain` 안정화 2차: `BuildSdkDispatch`/`kUnknown`/`Dispatch` 실패 및 C++ 예외 경로에서 `PF_Cmd_RENDER`일 때 source→output pass-through를 강제 적용해 투명 출력 리스크를 낮추고, 실패 원인을 런타임 로그(`EffectMain`)에 남기도록 보강 (`plugin/ae/AePluginEntry.cpp`)
-- [x] `D92` ORT/PiPL 진단 신뢰도 보강: `RuntimePathResolver`에 `onnxruntime_library_dir` 해석을 추가해 런타임 옵션으로 전달하고, `OrtDynamicLoader`에서 `SetDefaultDllDirectories`+`AddDllDirectory` 기반 탐색 디렉터리 힌트를 로딩 전에 주입하도록 개선. 동시에 `build_aex.ps1`의 PiPL outflags 검증을 `ZSodaAeFlags.h` 파싱 기반으로 동기화해 하드코딩 토큰(`0x04008120`) 의존을 제거하고 loader summary에도 실제 기대값을 기록하도록 수정. 관련 경로 해석 테스트를 확장하고 로컬 CI 재통과 확인 (`plugin/inference/RuntimePathResolver.*`, `plugin/inference/RuntimeOptions.h`, `plugin/inference/EngineFactory.cpp`, `plugin/inference/OrtDynamicLoader.cpp`, `tools/build_aex.ps1`, `tests/test_runtime_path_resolver.cpp`, `tools/run_local_ci.sh`)
+## 7) 리스크
+- AE 호스트의 로더/캐시 정책 변화에 따라 동일 빌드라도 로드 여부가 달라질 수 있음
+- ORT 공존 환경(Adobe 내장 ORT + 플러그인 ORT)에서 초기화/선택 정책 불안정 시 품질/안정성 이슈 재발 가능
 
-- [x] `D93` PiPL spec-version compatibility pin for AE 25.0 loader path: set `AE_Effect_Spec_Version` to `13,28` in both `ZSodaPiPL.r` and `ZSodaLoaderProbePiPL.r`, then ran clean native rebuild/deploy (`tools/build_aex.ps1 -Clean -CopyToMediaCore`) with hash match between build output and `MediaCore` (`71E0E63533AF3129F35C1C4066685137D6F3FA8D5BDA3FFD95C064C2A8CC5290`). Verified from built binary PiPL that `RVSe=0x001C000D` and cleared `PluginCache\en_US\ZSoda*` keys before next AE relaunch verification.
-- [x] `D94` Broke the `25::3 <-> no-params` loop by making `PARAMS_SETUP` deterministic in full mode: keep `num_params=12`, block `PF_Cmd_UPDATE_PARAMS_UI` from re-entering parameter registration, scope param-count hint usage to setup command, and retain ARGB host channel-order wiring for render output. Rebuilt/deployed with `tools/build_aex.ps1 -Clean -CopyToMediaCore` and verified `ZSoda.aex` hash parity between build output and MediaCore (`55E0527453E0DC365FA8733E7C03819C65E6AB8C0E0D136C464DF73643861187`), then removed `PluginCache\en_US\ZSoda*` keys and removed stale `ZSodaLoaderProbe.aex` from MediaCore before next repro.
-- [x] `D95` Transparent-output follow-up: observed frequent `PF_Cmd_UPDATE_PARAMS_UI (cmd=14)` without effective param propagation. Updated command mapping so `UPDATE_PARAMS_UI` routes to param update (not param re-registration), expanded safe param-count hint usage for update commands, and added render-path diagnostics (`BuildSdkDispatch` warnings for render + `EffectMainRender` status/message on change). Rebuilt/deployed clean (`tools/build_aex.ps1 -Clean -CopyToMediaCore`) and verified deployed `ZSoda.aex` hash parity (`9D223DFA85634013B26AAB34652B7173C4B5964599CA99FA9E85A9794B898149`), then reset `PluginCache\en_US\ZSoda*` and `%TEMP%\ZSoda_AE_Runtime.log` for next repro capture.
-- [x] `D96` Transparent-output root fix: identified missing SDK render write-back path (render ran, but depth result was not committed to AE output world). Added `CommitSdkRenderOutput` bridge to convert `render_response.output` (Gray32F) into host output buffer and wired it in `EffectMain` after successful dispatch; on commit failure, logs diagnostics and falls back to input pass-through. Rebuilt/deployed clean (`tools/build_aex.ps1 -Clean -CopyToMediaCore`) and verified deployed hash parity (`8775C6038E4A09C4A6DD1CBD958DAB67D6435BF5408C169CACEF24B5A5F478F3`), then cleared `PluginCache\en_US\ZSoda*` and `%TEMP%\ZSoda_AE_Runtime.log` for next repro.
-- [x] `D97` ORT runtime activation hardening for AE host conflicts: updated `OrtDynamicLoader` to (1) try preloaded process `onnxruntime.dll` first, (2) negotiate ORT API version downward when requested version is unavailable, and (3) track module ownership to avoid freeing preloaded host modules. This targets repeated `LoadLibraryW code=1114` / API mismatch loops in AE host processes that preload Adobe ORT.
-- [x] `D98` Windows deploy/runtime completeness improvements: `tools/build_aex.ps1` now stages/copies `onnxruntime_providers_shared.dll` alongside `onnxruntime.dll` and syncs local `models/` assets (manifest + any `.onnx`) into MediaCore `models/`; `tools/package_plugin.ps1` now packages/hashes `onnxruntime_providers_shared.dll`; `ModelAutoDownloader` now writes `%TEMP%\\ZSoda_ModelDownload.log` with `URLDownloadToFileA` HRESULT and cleanup status. Native clean rebuild/deploy completed with matching `ZSoda.aex` hash `190B51CD017EB6331850F9ABBDB39AE98639339763244BEE4967961AF1C3D4C5` in build output and MediaCore.
-- [x] `D99` Native network constraint confirmed: both `tools/download_model.ps1 -ModelId depth-anything-v3-small` (HuggingFace) and `-ModelId midas-dpt-large` (GitHub) failed in this environment (`Invalid username or password` / `connection closed unexpectedly`). Model auto-fetch cannot be relied on until authenticated/proxy-safe artifact delivery is provided.
-- [x] `D100` DA3 ONNX 자산 스키마/기본 URL 전환: `ModelCatalog`/`models.manifest`를 `onnx-community/depth-anything-v3-{small,base,large}` 기준으로 갱신하고, 매니페스트 6열(`auxiliary_assets`)을 도입해 `.onnx_data` 동반 자산을 모델별 필수 항목으로 선언. 기본 카탈로그/매니페스트/문서를 동일 스키마로 동기화 (`plugin/inference/ModelCatalog.*`, `models/models.manifest`, `models/README.md`, `README.md`).
-- [x] `D101` DA3 실로딩 복구 경로 보강: 런타임에서 `모델 필수 자산 전체 존재 여부`를 검사하도록 `ManagedInferenceEngine`을 확장하고, 누락 시 자산별 백그라운드 다운로드 큐잉/진단을 수행하도록 개선. 다운로드 스크립트(`sh/ps1`)를 다중 자산 다운로드 + HF 토큰 헤더 지원으로 확장하고, Windows 배치 스크립트의 모델 동기화 범위를 `.onnx_data`까지 포함하도록 수정. 관련 단위 테스트 확장 후 `tools/run_local_ci.sh` 재통과 확인 (`plugin/inference/ManagedInferenceEngine.*`, `plugin/inference/ModelAutoDownloader.*`, `tools/download_model.sh`, `tools/download_model.ps1`, `tools/build_aex.ps1`, `tests/test_inference_engine.cpp`).
-- [x] `D102` 원격 추론 백엔드 코어 1차 구현: `RemoteInferenceBackend`를 추가해 구성된 외부 명령을 실행하고, 요청 payload(JSON) 파일 전달 + 응답 depth-map(JSON) 파싱 + 출력 정규화/리사이즈를 수행하도록 구현. 실패 경로(명령 미설정/실행 실패/응답 형식 오류/치수 불일치)에서 명확한 에러 문자열을 반환해 기존 fallback 체인이 동작하도록 정리하고, 플러그인 빌드 소스 및 공용 백엔드 팩토리 선언을 연결 (`plugin/inference/RemoteInferenceBackend.h`, `plugin/inference/RemoteInferenceBackend.cpp`, `plugin/inference/OnnxRuntimeBackend.h`, `plugin/CMakeLists.txt`).
-- [x] `D103` Agent D 테스트/CI 문서 동기화: 원격 백엔드 옵션 선택(`remote`)과 안전 폴백 동작을 검증하는 단위 테스트를 추가하고(미설정/실행 실패 경로 포함), 로컬 CI `g++` 소스 목록과 README fallback 빌드 예시를 `RemoteInferenceBackend.cpp` 포함 형태로 정렬. 또한 README에 원격 추론 MVP 환경변수/실패 시 fallback 동작을 명시해 Python worker 미실행 환경에서도 검증 경로가 유지되도록 정리 (`tests/test_inference_engine.cpp`, `tools/run_local_ci.sh`, `README.md`, `PROGRESS.md`).
-- [x] `D104` remote backend 실제 엔진 라우팅 연결: `ManagedInferenceEngine`이 `preferred_backend=remote` 또는 `ZSODA_REMOTE_INFERENCE_ENABLED=1`일 때 `CreateRemoteInferenceBackend`를 우선 선택하도록 통합하고, backend 상태/run/select 경로를 ONNX 전용 매크로 의존 없이 공통 인터페이스(`IOnnxRuntimeBackend`)로 동작하도록 조정. 또한 remote 모드에서는 로컬 모델 자산 강제 검사를 비활성화해 외부 워커 중심 운용 시 불필요한 `model asset missing` 경고를 줄임 (`plugin/inference/ManagedInferenceEngine.*`).
-- [x] `D105` 워커 프로토콜 호환 보강 + 문서 반영: Python MVP 워커를 `stdin/stdout` + `file-arg(request,response)` 양쪽 모드로 확장해 현재 `RemoteInferenceBackend`의 파일 기반 호출 템플릿과 즉시 호환되도록 정리하고, 원격 MVP 문서/README 예시 명령을 실제 템플릿(`python3 tools/remote_inference_worker.py {request} {response}`) 기준으로 동기화. 로컬 CI(`tools/run_local_ci.sh`) 재통과로 회귀 없음 확인 (`tools/remote_inference_worker.py`, `docs/build/REMOTE_INFERENCE_MVP.md`, `README.md`, `tools/run_local_ci.sh`).
-- [x] `D106` 네이티브 재검증/핸드오프 갱신(2026-03-04): WSL 대규모 반영본(`2c6e196`) pull 후 `tools/build_aex.ps1 -Clean -CopyToMediaCore` 재빌드/재배포 성공 및 `ZSoda.aex` 해시 일치(`bd865eff17f45cbc391ffacc899e694da8a1be7f42bb521197c7986aa6d895e0`) 확인. `remote_inference_worker.py`는 file-arg/stdin 양쪽 스모크 성공했지만, AE 적용 즉시 종료 재현에서 `%TEMP%\ZSoda_AE_Runtime.log`가 `OrtTrace ... extract_after_shape (rank=4)` 직후 끊기며 동일 크래시 축 재확인. 동시 `EngineStatus`는 Adobe ORT `1.17.1` (`C:\Program Files\Common Files\Adobe\Plug-Ins\CC\File Formats\onnxruntime.dll`) 로드로 기록되어 이번 재현이 remote 경로가 아니라 local ORT 추출 경로임을 확정. 관련 증거/다음 액션을 `LOCAL_AGENT_HANDOFF.md`에 반영.
-- [x] `D107` ORT 출력 추출 경계 안전화: 네이티브 크래시 경계(`extract_after_shape`) 직후 구간을 중심으로 `OnnxRuntimeBackend::ExtractDepthOutput`에 추가 진단/가드 계층을 도입. shape 로그를 `rank + full dims + tensor_elements`로 확장하고, `GetTensorData<float>()` 전/후 트레이스를 분리했으며, 첫 메모리 접근은 `CopyTensorPrefixWithGuards` 경유의 bounded `memcpy`(Windows/MSVC에선 SEH 가드 포함)로 통일해 포인터 직접 순회 루프를 제거. 비정상 치수/요소수/오버플로우 검증을 강화하고 로컬 CI(`tools/run_local_ci.sh`) 재통과 확인 (`plugin/inference/OnnxRuntimeBackend.cpp`, `tools/run_local_ci.sh`).
-- [x] `D108` `AePluginEntry.cpp` 안정화 리팩토링: SDK 진입 가드/예외 처리 경계를 단순화하고, 명령 처리 실패 시 진단 로그가 누락되지 않도록 정리.
-- [x] `D109` Adobe host ORT 충돌 원인 재확인: 프로세스 preloaded ORT(1.17.x)와 플러그인 ORT(1.24.x) 공존 시 API/초기화 충돌 가능성을 구조 이슈로 고정.
-- [x] `D110` 렌더 커밋 경로 정리: `PF_Cmd_RENDER` 출력 경로에서 불필요한 중복 변환/복사를 줄여 write-back 안정성을 보강.
-- [x] `D111` MSVC `C2712` 컴파일 이슈 수정: `__try`(SEH)와 C++ 객체(try/catch) 공존 경로를 분리(`EffectMain` SEH wrapper + C++ guard)해 네이티브 빌드 복구.
-- [x] `D112` `ERROR_DLL_INIT_FAILED (1114)` 분석 정리: ORT DLL 이름/의존성 해석 충돌 가능성을 문서화하고 로더 격리 경로로 대응 방향 확정.
-- [x] `D113` ORT 서브디렉터리 격리 전략 적용: `zsoda_ort/onnxruntime.dll` 우선 로드 + `AddDllDirectory`/`LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR` 조합으로 host DLL 충돌 완화.
-- [x] `D114` 런타임 경로 해석 우선순위 보강: `RuntimePathResolver`가 플러그인 인접 `zsoda_ort` 경로를 우선 선택하도록 수정 및 테스트 동기화.
-- [x] `D115` 네이티브 빌드/배포 재검증: `tools/build_aex.ps1 -Clean -CopyToMediaCore`로 `.aex`/ORT 런타임/모델 자산 배포 및 SHA256 일치 확인.
-- [x] `D116` ORT loader fallback 1차: isolated `zsoda_ort\onnxruntime.dll` 로드 실패(예: 1114) 시 preloaded `onnxruntime.dll` 재사용 경로 추가, module ownership 추적으로 host DLL `FreeLibrary` 방지.
-- [x] `D117` preloaded 후보 선택 결정성 강화: 프로세스의 `onnxruntime.dll` 모듈 목록을 열거해 경로 우선순위 + tie-break 규칙으로 안정 선택, capability note를 backend 상태 문자열에 반영.
-- [x] `D118` `large` 모델 전환 크래시 대응: API downgrade(`24 -> 17`) 바인딩 경로를 차단하고, Windows DLL search 플래그에 `LOAD_LIBRARY_SEARCH_USER_DIRS`를 반영해 격리 로드 성공률 보강.
-- [x] `D119` 그라데이션-only 회귀 분석: 로그 기준 모든 프레임이 `fallback_run_*` 경로에 머무는 원인을 `requested_api_version=24` vs preloaded ORT `17` 불일치로 확정하고, 로더 search flags를 실제 로드 경로에 적용.
-- [x] `D120` ORT fallback 안정화 2차: `OnnxRuntimeBackend`의 기본 ORT API 요청 버전을 `17`로 조정(환경변수 `ZSODA_ONNXRUNTIME_API_VERSION`로 override 가능)해 isolated 로드 실패 시 Adobe preloaded ORT 1.17 경로가 더미엔진으로 떨어지지 않도록 복구. `OrtDynamicLoader`는 preloaded `onnxruntime.dll` 후보 전체를 API 바인딩/런타임 버전/경로 우선순위 기준으로 평가해 최적 후보를 결정하도록 보강. `zsoda_tests` 기본 실행 + host ORT 강제(`ZSODA_ONNXRUNTIME_LIBRARY=...Support Files\\onnxruntime.dll`) 실행 모두 통과 확인 후 `tools/build_aex.ps1 -Clean -CopyToMediaCore` 재배포 완료 (`ZSoda.aex` SHA256 `acab2848f53a336265d2acb1432745f73f238d00db2ab8f63d2ec6de45204dbd`).
-- [x] D121 large 전환 시 즉시 종료되는 크래시 재현 로그(session_run_end -> extract_output_begin -> extract_fn_enter 후 중단)를 기준으로 ONNX 출력 추출/실행 경로를 C++ Ort::Value wrapper 중심에서 C API 직접 호출(CreateTensorWithDataAsOrtValue/Run/GetTensorTypeAndShape/GetTensorMutableData)로 전환. 출력 shape/type을 진단 로그로 남기고, 추출 실패 시 프로세스 종료 대신 안전하게 에러 반환→fallback 되도록 경계 처리 강화. zsoda_aex/zsoda_tests 빌드 및 zsoda_tests 실행 통과 후 MediaCore·Effects에 재배포 완료, 배포 해시 일치 확인(3c45ba22f7da2919ee7d2f2f86410ca36cf117e59454b867f19bb40aa8a044c2).
-- [x] D122 Gradient-only 원인 재확인: 최신 로그(2026-03-04 21:19:53)에서 EngineStatus가 DummyDepthEngine (fallback_from=OnnxRuntimeBackend...)로 고정되고 allback_reason=model path does not exist: models\depth-anything-v3\depth_anything_v3_small.onnx를 기록. 원인을 Effects 경로 로드 시 상대 모델 루트(models) 해석 실패로 확정하고, RuntimePathResolver에 Adobe 설치 구조 fallback(...\Common\Plug-ins\7.0\MediaCore\models) 및 plugin-directory 기준 절대 경로 fallback을 추가. 경로 해석 회귀 테스트 2건(plugin dir without models, Effects -> MediaCore models)을 추가하고 zsoda_tests 통과 및 zsoda_aex 재빌드 완료.
-- [x] D123 After Effects 종료 상태에서 Effects/MediaCore ZSoda.aex를 최신 빌드(340ac9ad4ffa76ff8a4365e8f18e4fb43e9ba4bd0cf11c833577eba717d931d4)로 동기화 배포하고, 양 경로 해시 일치 확인.
-- [x] `D124` 안정화 스냅샷(2026-03-04): After Effects에서 크래시 없이 뎁스맵 출력이 확인되었고, 런타임 로그 기준 `run_exit_onnx` 경로로 실제 ONNX 추론이 수행됨을 재확인. 다만 최신 세션에서 `model=depth-anything-v3-small`, `quality=1`만 반복되고 품질 저하가 남아 있어, 다음 작업은 입력 브리지의 `ConvertHostToGray32F` 기반 단일채널 경로를 RGB 3채널 경로로 전환하는 구조 개선으로 진행 예정.
-- [x] `D125` 품질 개선 1차 구조개선(2026-03-04): AE 입력 브리지를 `ConvertHostToGray32F`에서 `ConvertHostToRgb32F`로 전환하여 모델 입력이 단일채널 복제가 아닌 실제 RGB 3채널(알파 언프리멀트 옵션 포함)로 전달되도록 수정. 관련 단위테스트(`test_depth_ops`, `test_ae_router`)를 보강했고 `zsoda_tests`/`zsoda_aex` 빌드 통과 후 최신 `ZSoda.aex`를 MediaCore+Effects 양 경로에 동기화 배포(해시 일치) 완료.
-- [x] `D126` 품질 개선 리서치 리뷰 문서화(2026-03-04): DA3/DS2 레퍼런스 기반 제안서를 코드 구조와 대조 검토해 우선순위(P0 RGB 입력, P1 종횡비 보존 리사이즈, P2 Raw/Normalize/Guided 매핑 분리, P3 시간 안정화, P4 엣지 가이드 업샘플) 및 실행 체크리스트를 별도 문서로 정리 (`docs/research/2026-03-04-depth-quality-improvement-review.md`).
-- [x] `D127` 품질 개선 P1(2026-03-04): 전처리 리사이즈를 `518x518` 강제 스트레치에서 종횡비 보존 방식으로 전환(`upper_bound + letterbox` 기본, `lower_bound + center_crop` 옵션)하고, 후처리에 전처리 역매핑을 연결해 원본 좌표계로 정확히 복원되도록 수정. `ZSODA_PREPROCESS_RESIZE_MODE` 환경변수 파싱(별칭 포함)을 추가했고 `tests/test_inference_engine.cpp`에 비정사각 입력 종횡비 보존 테스트/파서 테스트를 보강. `zsoda_tests`(Debug/Release) 통과 후 `tools/build_aex.ps1`로 `.aex` 재배포 및 MediaCore 해시 일치 확인(`ZSoda.aex` SHA256 `9418fb1824e21624bcb9697a427bb253174475c9441b0e0ce80d04aca3bc582b`).
-- [x] `D128` 품질 개선 P2~P4 통합(2026-03-05): 후처리 파이프라인을 `DepthMappingMode` 기반으로 재구성해 `Raw/Normalize/Guided` 매핑을 분리하고(중복 정규화 제거), Guided 모드에 프레임 간 near/far 추정치 EMA 상태를 도입. 렌더 단계에 시간 안정화(EMA + scene-cut 감지 + edge-aware alpha)와 엣지 보강(unsharp 기반 edge-aware enhancement)을 추가했으며, downscaled fallback 업샘플은 guide-luma 기반 joint upsample 경로로 교체. 캐시 키에 신규 품질 파라미터를 반영해 오염을 방지했고, `AeParams`에 품질별 기본 튜닝 + 환경변수 override(`ZSODA_DEPTH_MAPPING_MODE`, `ZSODA_TEMPORAL_ALPHA`, `ZSODA_EDGE_ENHANCEMENT` 등)를 연결. 관련 단위 테스트(`test_depth_ops`, `test_render_pipeline`, `test_ae_params`)를 보강하고 `zsoda_tests`(Debug/Release) 통과 후 `tools/build_aex.ps1 -Clean -CopyToMediaCore` 재배포 완료(`ZSoda.aex` SHA256 `81a524d22ebd1c8cbcf08bc55002a8eaa1768249b741089374fe087a2be3258e`).
-- [x] `D129` 품질 개선 P2~P4 후속 안정화(2026-03-05): 멀티에이전트 병렬 리뷰를 통해 발견된 구조 리스크를 반영해 캐시 키에 slicing/tile 파라미터(min/max/softness, tile_size/overlap)를 추가하고, stateful postprocess(temporal<1 또는 guided) 및 frame_hash=0 조건에서는 캐시를 비활성화해 비결정적 캐시 히트를 차단. postprocess 상태 리셋 조건에 파라미터 해시를 포함하고 model/size/파라미터 변경 시 `temporal_has_state`를 초기화해 첫 프레임 고스트를 제거. `DepthOps`에서 NaN/Inf 입력 정규화/매핑 시 sanitize 처리 추가. 핫패스 파일 로그는 `ZSODA_PIPELINE_TRACE=1`에서만 활성화되도록 게이트. 관련 회귀 테스트(캐시 키 무효화, stateful 캐시 비활성화, non-finite depth sanitize)를 추가해 `zsoda_tests` Debug/Release 통과 후 `tools/build_aex.ps1 -Clean -CopyToMediaCore`로 재배포 완료(`ZSoda.aex` SHA256 `bdb20ba0cddf1b733201ca7d6ff5311ecf2edbd6d66357b036bfe98bc3dc3c57`).
-- [x] `D130` Extract/Freeze 1차 UX 기반 추가(2026-03-05): AE 파라미터에 `Freeze Depth`와 `Extract Depth Map` 버튼을 추가하고, `PF_Cmd_USER_CHANGED_PARAM`의 `PF_UserChangedParamExtra::param_index`를 이용해 버튼 클릭 시 내부 `extract_token`을 증가시키는 이벤트 경로를 구현. 렌더 파이프라인에는 `freeze_enabled + extract_token` 상태를 추가해 freeze 모드에서 동일 설정/토큰일 때는 고정 depth를 재사용하고, 토큰 증가 시 현재 프레임으로 재추출하도록 확장. freeze 모드에서는 일반 프레임 캐시를 비활성화해 재추출이 캐시에 의해 무시되지 않도록 정리했으며, host-buffer/stub 자동화용 `ZSodaSetFreezeStub(freeze_enabled, request_extract)`를 추가. 스크립트 패널 초안(`docs/scripts/ZSodaDepthExtractPanel.jsx`)을 추가해 버튼형 Extract UX를 지원하고, 관련 테스트(`test_render_pipeline`, `test_ae_params`, `test_ae_router`, `test_depth_ops`)를 갱신해 `zsoda_tests` Debug/Release 통과. `tools/build_aex.ps1 -Clean -CopyToMediaCore` 재배포 완료(`ZSoda.aex` SHA256 `4d1fac7fcc8d4b12c0f93ad2b64c9b4e3273e8bf23686164313d84ceb998d607`).
+## 8) 다음 공유 시점
+- 로더 Ignore 이슈 원인 고정 + 멀티뷰 활성 로그(`requested_multiview=1`, `frames=5`) 확보 직후

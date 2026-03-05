@@ -35,6 +35,7 @@ std::size_t RenderCacheKeyHash::operator()(const RenderCacheKey& key) const {
   h = HashCombine(h, std::hash<int>{}(key.tile_size));
   h = HashCombine(h, std::hash<int>{}(key.overlap));
   h = HashCombine(h, std::hash<int>{}(key.vram_budget_mb));
+  h = HashCombine(h, std::hash<int>{}(key.extract_token));
   h = HashCombine(h, std::hash<std::uint64_t>{}(key.model_hash));
   h = HashCombine(h, std::hash<std::uint64_t>{}(key.frame_hash));
   return h;

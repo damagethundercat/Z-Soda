@@ -18,7 +18,10 @@ class OrtDynamicLoader {
   OrtDynamicLoader(OrtDynamicLoader&&) = delete;
   OrtDynamicLoader& operator=(OrtDynamicLoader&&) = delete;
 
-  bool Load(const std::string& dll_path, std::uint32_t requested_api_version, std::string* error);
+  bool Load(const std::string& dll_path,
+            std::uint32_t requested_api_version,
+            std::string* error,
+            bool prefer_preloaded = false);
   void Unload();
 
   [[nodiscard]] bool IsLoaded() const;
@@ -31,6 +34,7 @@ class OrtDynamicLoader {
   [[nodiscard]] const std::string& LoadedDllPath() const;
   [[nodiscard]] const std::string& RuntimeVersionString() const;
   [[nodiscard]] const std::string& Diagnostics() const;
+  [[nodiscard]] void* NativeModuleHandle() const;
 
  private:
   bool Fail(const std::string& reason, std::string* error);

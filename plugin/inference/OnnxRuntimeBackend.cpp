@@ -3,9 +3,11 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cmath>
 #include <cstring>
 #include <cstdio>
 #include <cstdint>
+#include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <limits>
@@ -35,26 +37,172 @@ namespace {
 
 constexpr int kMinimumModelInputSize = 32;
 constexpr std::uint32_t kDefaultOrtApiVersionFloor = 17U;
+constexpr int kDefaultGpuDeviceId = 0;
 
-RuntimeBackend ResolveActiveBackend(RuntimeBackend requested_backend) {
-#if defined(ZSODA_WITH_ONNX_RUNTIME_API) && ZSODA_WITH_ONNX_RUNTIME_API
-  // API-enabled path currently executes on CPU first.
-  (void)requested_backend;
-  return RuntimeBackend::kCpu;
-#else
-  if (requested_backend == RuntimeBackend::kAuto) {
-    return RuntimeBackend::kCpu;
+struct RuntimeProviderCapabilities {
+  std::vector<std::string> providers;
+  bool has_cpu = false;
+  bool has_cuda = false;
+  bool has_tensorrt = false;
+  bool has_directml = false;
+  bool has_coreml = false;
+};
+
+bool ParseBoolEnvOrDefault(const char* name, bool default_value) {
+  const char* raw = std::getenv(name);
+  if (raw == nullptr || raw[0] == '\0') {
+    return default_value;
   }
-  return requested_backend;
-#endif
+  std::string normalized;
+  while (*raw != '\0') {
+    const char ch = *raw++;
+    if (ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n' || ch == '-' || ch == '_') {
+      continue;
+    }
+    normalized.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
+  }
+  if (normalized == "1" || normalized == "true" || normalized == "yes" || normalized == "on") {
+    return true;
+  }
+  if (normalized == "0" || normalized == "false" || normalized == "no" || normalized == "off") {
+    return false;
+  }
+  return default_value;
+}
+
+int ParseIntEnvOrDefault(const char* name, int default_value, int min_value, int max_value) {
+  const char* raw = std::getenv(name);
+  if (raw == nullptr || raw[0] == '\0') {
+    return default_value;
+  }
+  char* end = nullptr;
+  const long parsed = std::strtol(raw, &end, 10);
+  if (end == raw || (end != nullptr && *end != '\0')) {
+    return default_value;
+  }
+  if (parsed < static_cast<long>(min_value) || parsed > static_cast<long>(max_value)) {
+    return default_value;
+  }
+  return static_cast<int>(parsed);
+}
+
+float ParseFloatEnvOrDefault(const char* name,
+                             float default_value,
+                             float min_value,
+                             float max_value) {
+  const char* raw = std::getenv(name);
+  if (raw == nullptr || raw[0] == '\0') {
+    return default_value;
+  }
+  char* end = nullptr;
+  const float parsed = std::strtof(raw, &end);
+  if (end == raw || (end != nullptr && *end != '\0')) {
+    return default_value;
+  }
+  if (!std::isfinite(parsed) || parsed < min_value || parsed > max_value) {
+    return default_value;
+  }
+  return parsed;
+}
+
+bool ShouldPreferPreloadedOrt(RuntimeBackend requested_backend) {
+  const bool prefer_gpu_when_auto = true;
+  const bool default_prefer_preloaded =
+      (requested_backend != RuntimeBackend::kCpu) ||
+      (requested_backend == RuntimeBackend::kAuto && prefer_gpu_when_auto);
+  return ParseBoolEnvOrDefault("ZSODA_ORT_PREFER_PRELOADED", default_prefer_preloaded);
+}
+
+std::string NormalizeProviderName(std::string_view provider_name) {
+  std::string normalized;
+  normalized.reserve(provider_name.size());
+  for (const char ch : provider_name) {
+    if (std::isalnum(static_cast<unsigned char>(ch)) == 0) {
+      continue;
+    }
+    normalized.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
+  }
+  return normalized;
+}
+
+bool ProviderNameMatches(const std::string& normalized_name, std::string_view target) {
+  return normalized_name == NormalizeProviderName(target);
+}
+
+RuntimeBackend SelectBestBackendForAuto(const RuntimeProviderCapabilities& capabilities) {
+  if (capabilities.has_tensorrt) {
+    return RuntimeBackend::kTensorRT;
+  }
+  if (capabilities.has_cuda) {
+    return RuntimeBackend::kCuda;
+  }
+  if (capabilities.has_directml) {
+    return RuntimeBackend::kDirectML;
+  }
+  if (capabilities.has_coreml) {
+    return RuntimeBackend::kCoreML;
+  }
+  return RuntimeBackend::kCpu;
+}
+
+bool SupportsRequestedBackend(const RuntimeProviderCapabilities& capabilities,
+                              RuntimeBackend backend) {
+  switch (backend) {
+    case RuntimeBackend::kCpu:
+      return capabilities.has_cpu;
+    case RuntimeBackend::kTensorRT:
+      return capabilities.has_tensorrt;
+    case RuntimeBackend::kCuda:
+      return capabilities.has_cuda;
+    case RuntimeBackend::kDirectML:
+      return capabilities.has_directml;
+    case RuntimeBackend::kCoreML:
+      return capabilities.has_coreml;
+    case RuntimeBackend::kAuto:
+      return true;
+    case RuntimeBackend::kMetal:
+    case RuntimeBackend::kRemote:
+      return false;
+  }
+  return false;
+}
+
+RuntimeBackend SelectActiveBackend(RuntimeBackend requested_backend,
+                                   const RuntimeProviderCapabilities& capabilities,
+                                   std::string* selection_note) {
+  if (selection_note != nullptr) {
+    selection_note->clear();
+  }
+
+  if (requested_backend == RuntimeBackend::kAuto) {
+    const RuntimeBackend selected = SelectBestBackendForAuto(capabilities);
+    if (selection_note != nullptr && selected != RuntimeBackend::kCpu) {
+      *selection_note = "auto-selected provider=" + std::string(RuntimeBackendName(selected));
+    }
+    return selected;
+  }
+
+  if (SupportsRequestedBackend(capabilities, requested_backend)) {
+    return requested_backend;
+  }
+
+  const RuntimeBackend fallback = SelectBestBackendForAuto(capabilities);
+  if (selection_note != nullptr) {
+    *selection_note = "requested provider unavailable: " +
+                      std::string(RuntimeBackendName(requested_backend)) +
+                      ", fallback=" + RuntimeBackendName(fallback);
+  }
+  return fallback;
 }
 
 struct ModelPipelineProfile {
   int input_width = 384;
   int input_height = 384;
-  float normalize_bias = 0.5F;
-  float normalize_scale = 0.5F;
+  int input_frame_count = 1;
+  std::array<float, 3> normalize_mean = {0.5F, 0.5F, 0.5F};
+  std::array<float, 3> normalize_std = {0.5F, 0.5F, 0.5F};
   bool invert_depth = false;
+  bool prefer_latest_output_map = false;
 };
 
 struct PreparedModelInput {
@@ -88,6 +236,84 @@ std::string ToLowerCopy(std::string_view text) {
     lowered.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
   }
   return lowered;
+}
+
+std::string ReadEnvOrEmpty(const char* name) {
+  if (name == nullptr || name[0] == '\0') {
+    return {};
+  }
+  const char* value = std::getenv(name);
+  if (value == nullptr) {
+    return {};
+  }
+  return std::string(value);
+}
+
+int ScoreOutputNameForDepth(std::string_view output_name) {
+  const std::string lowered = ToLowerCopy(output_name);
+  int score = 0;
+  if (lowered.find("depth") != std::string::npos) {
+    score += 80;
+  }
+  if (lowered.find("pred") != std::string::npos ||
+      lowered.find("prediction") != std::string::npos) {
+    score += 30;
+  }
+  if (lowered.find("disp") != std::string::npos ||
+      lowered.find("disparity") != std::string::npos) {
+    score += 20;
+  }
+  if (lowered == "output" || lowered.find("out") != std::string::npos) {
+    score += 5;
+  }
+  if (lowered.find("conf") != std::string::npos ||
+      lowered.find("confidence") != std::string::npos ||
+      lowered.find("uncert") != std::string::npos ||
+      lowered.find("sigma") != std::string::npos ||
+      lowered.find("variance") != std::string::npos ||
+      lowered.find("var") != std::string::npos ||
+      lowered.find("mask") != std::string::npos ||
+      lowered.find("prob") != std::string::npos) {
+    score -= 120;
+  }
+  return score;
+}
+
+std::size_t SelectDepthOutputIndexByName(const std::vector<std::string>& output_names) {
+  if (output_names.empty()) {
+    return 0U;
+  }
+
+  std::size_t best_index = 0U;
+  int best_score = std::numeric_limits<int>::min();
+  for (std::size_t i = 0U; i < output_names.size(); ++i) {
+    const int score = ScoreOutputNameForDepth(output_names[i]);
+    if (score > best_score) {
+      best_score = score;
+      best_index = i;
+    }
+  }
+  return best_index;
+}
+
+std::size_t ResolveOutputMapIndex(std::size_t preferred_map_index,
+                                  std::size_t map_count,
+                                  int temporal_frame_count_hint) {
+  const int forced_output_map_index =
+      ParseIntEnvOrDefault("ZSODA_ORT_OUTPUT_MAP_INDEX", -1, -1, 4096);
+  if (forced_output_map_index >= 0) {
+    return static_cast<std::size_t>(forced_output_map_index);
+  }
+
+  if (preferred_map_index != std::numeric_limits<std::size_t>::max()) {
+    return preferred_map_index;
+  }
+
+  if (temporal_frame_count_hint > 1 &&
+      map_count == static_cast<std::size_t>(temporal_frame_count_hint)) {
+    return map_count - 1U;
+  }
+  return 0U;
 }
 
 const char* SafeCStr(const char* value, const char* fallback = "<null>") {
@@ -169,16 +395,93 @@ std::string BuildBackendName(RuntimeBackend active_backend,
   return name;
 }
 
-std::string BuildProviderNote(RuntimeBackend requested_backend, RuntimeBackend active_backend) {
-  if (requested_backend == RuntimeBackend::kAuto || requested_backend == active_backend) {
-    return {};
+std::string BuildProviderNote(RuntimeBackend requested_backend,
+                              RuntimeBackend active_backend,
+                              std::string_view selection_note = {}) {
+  std::string note;
+  if (requested_backend != RuntimeBackend::kAuto || active_backend != RuntimeBackend::kCpu) {
+    note = "provider_request=";
+    note.append(RuntimeBackendName(requested_backend));
+    note.append("->");
+    note.append(RuntimeBackendName(active_backend));
   }
-  std::string note = "provider_request=";
-  note.append(RuntimeBackendName(requested_backend));
-  note.append("->");
-  note.append(RuntimeBackendName(active_backend));
-  note.append(" (provider wiring pending)");
+  if (!selection_note.empty()) {
+    if (!note.empty()) {
+      note.append("; ");
+    }
+    note.append(selection_note);
+  }
   return note;
+}
+
+bool ModelIdIndicatesMultiview(std::string_view model_id) {
+  constexpr std::string_view kVideoDepthPrefix = "video-depth-anything";
+  return model_id.find("multiview") != std::string_view::npos ||
+         model_id.rfind(kVideoDepthPrefix, 0) == 0;
+}
+
+void AppendNoteSegment(std::string* note, std::string_view segment) {
+  if (note == nullptr || segment.empty()) {
+    return;
+  }
+  if (!note->empty()) {
+    note->append("; ");
+  }
+  note->append(segment);
+}
+
+std::string BuildMultiviewDiagnosticsNote(bool requested_multiview,
+                                          int resolved_input_frame_count,
+                                          bool multiview_active,
+                                          bool multiview_warning) {
+  std::ostringstream oss;
+  oss << "requested_multiview=" << (requested_multiview ? "1" : "0")
+      << ", resolved_input_frame_count=" << std::max(1, resolved_input_frame_count)
+      << ", multiview_active=" << (multiview_active ? "1" : "0");
+  if (multiview_warning) {
+    oss << ", warning=multiview_model_degraded_to_single_frame";
+  }
+  return oss.str();
+}
+
+float LinearToSrgb(float linear) {
+  const float clamped = std::clamp(linear, 0.0F, 1.0F);
+  if (clamped <= 0.0031308F) {
+    return clamped * 12.92F;
+  }
+  return 1.055F * std::pow(clamped, 1.0F / 2.4F) - 0.055F;
+}
+
+bool UseImagenetNormalizationForDa3() {
+  return ParseBoolEnvOrDefault("ZSODA_DA3_IMAGENET_NORM", true);
+}
+
+bool IsDa3MultiviewModelId(std::string_view model_id) {
+  return model_id.rfind("depth-anything-v3", 0) == 0 &&
+         model_id.find("multiview") != std::string_view::npos;
+}
+
+int ResolveDa3MultiviewFrameCount(std::string_view model_id) {
+  const int default_frames = IsDa3MultiviewModelId(model_id) ? 5 : 1;
+  return ParseIntEnvOrDefault("ZSODA_DA3_MULTIVIEW_FRAMES", default_frames, 1, 128);
+}
+
+float ComputeSampledMeanAbsDiff(const float* lhs, const float* rhs, std::size_t count) {
+  if (lhs == nullptr || rhs == nullptr || count == 0U) {
+    return 1.0F;
+  }
+  constexpr std::size_t kMaxSamples = 65536U;
+  const std::size_t stride = std::max<std::size_t>(1U, count / kMaxSamples);
+  std::size_t sampled = 0U;
+  float total = 0.0F;
+  for (std::size_t i = 0U; i < count; i += stride) {
+    total += std::fabs(lhs[i] - rhs[i]);
+    ++sampled;
+  }
+  if (sampled == 0U) {
+    return 0.0F;
+  }
+  return total / static_cast<float>(sampled);
 }
 
 #if defined(ZSODA_WITH_ONNX_RUNTIME_API) && ZSODA_WITH_ONNX_RUNTIME_API
@@ -209,9 +512,12 @@ std::string ConsumeOrtStatusMessage(const OrtApi* api, OrtStatus* status) {
 }
 
 bool QueryRuntimeCapabilities(const OrtApi* api,
-                              RuntimeBackend active_backend,
+                              RuntimeProviderCapabilities* capabilities,
                               std::string* capability_note,
                               std::string* error) {
+  if (capabilities != nullptr) {
+    *capabilities = {};
+  }
   if (capability_note != nullptr) {
     capability_note->clear();
   }
@@ -235,15 +541,34 @@ bool QueryRuntimeCapabilities(const OrtApi* api,
     return false;
   }
 
-  std::vector<std::string> providers;
-  providers.reserve(provider_length > 0 ? static_cast<std::size_t>(provider_length) : 0U);
-  bool has_cpu_provider = false;
+  RuntimeProviderCapabilities local_capabilities;
+  local_capabilities.providers.reserve(provider_length > 0 ? static_cast<std::size_t>(provider_length)
+                                                           : 0U);
   for (int i = 0; i < provider_length; ++i) {
     const char* provider = (providers_raw != nullptr) ? providers_raw[i] : nullptr;
     const std::string provider_name = SafeCStr(provider, "<null provider>");
-    providers.push_back(provider_name);
-    if (ToLowerCopy(provider_name) == "cpuexecutionprovider") {
-      has_cpu_provider = true;
+    local_capabilities.providers.push_back(provider_name);
+    const std::string normalized = NormalizeProviderName(provider_name);
+    if (ProviderNameMatches(normalized, "CPUExecutionProvider") || ProviderNameMatches(normalized, "CPU")) {
+      local_capabilities.has_cpu = true;
+    }
+    if (ProviderNameMatches(normalized, "CUDAExecutionProvider") || ProviderNameMatches(normalized, "CUDA")) {
+      local_capabilities.has_cuda = true;
+    }
+    if (ProviderNameMatches(normalized, "TensorrtExecutionProvider") ||
+        ProviderNameMatches(normalized, "TensorRTExecutionProvider") ||
+        ProviderNameMatches(normalized, "TensorRT") ||
+        ProviderNameMatches(normalized, "TRT")) {
+      local_capabilities.has_tensorrt = true;
+    }
+    if (ProviderNameMatches(normalized, "DmlExecutionProvider") ||
+        ProviderNameMatches(normalized, "DirectMLExecutionProvider") ||
+        ProviderNameMatches(normalized, "DML")) {
+      local_capabilities.has_directml = true;
+    }
+    if (ProviderNameMatches(normalized, "CoreMLExecutionProvider") ||
+        ProviderNameMatches(normalized, "CoreML")) {
+      local_capabilities.has_coreml = true;
     }
   }
 
@@ -251,7 +576,7 @@ bool QueryRuntimeCapabilities(const OrtApi* api,
     api->ReleaseAvailableProviders(providers_raw, provider_length);
   }
 
-  if (active_backend == RuntimeBackend::kCpu && !has_cpu_provider) {
+  if (!local_capabilities.has_cpu) {
     if (error != nullptr) {
       *error = "onnx runtime capability probe failed: CPUExecutionProvider is unavailable";
     }
@@ -259,7 +584,7 @@ bool QueryRuntimeCapabilities(const OrtApi* api,
   }
 
   std::ostringstream capability;
-  capability << "providers=" << JoinProviders(providers);
+  capability << "providers=" << JoinProviders(local_capabilities.providers);
   if (api->GetBuildInfoString != nullptr) {
     const char* build_info = api->GetBuildInfoString();
     if (build_info != nullptr && build_info[0] != '\0') {
@@ -267,6 +592,9 @@ bool QueryRuntimeCapabilities(const OrtApi* api,
     }
   }
 
+  if (capabilities != nullptr) {
+    *capabilities = std::move(local_capabilities);
+  }
   if (capability_note != nullptr) {
     *capability_note = capability.str();
   }
@@ -274,6 +602,261 @@ bool QueryRuntimeCapabilities(const OrtApi* api,
     error->clear();
   }
   return true;
+}
+
+bool AppendCudaExecutionProvider(const OrtApi* api,
+                                 OrtSessionOptions* session_options,
+                                 std::string* detail,
+                                 std::string* error) {
+  if (api == nullptr || session_options == nullptr) {
+    if (error != nullptr) {
+      *error = "internal error: CUDA EP append arguments are null";
+    }
+    return false;
+  }
+  if (api->SessionOptionsAppendExecutionProvider_CUDA == nullptr) {
+    if (error != nullptr) {
+      *error = "CUDA execution provider append API is unavailable in this runtime";
+    }
+    return false;
+  }
+
+  OrtCUDAProviderOptions options;
+  options.device_id = ParseIntEnvOrDefault("ZSODA_ORT_CUDA_DEVICE_ID", kDefaultGpuDeviceId, 0, 64);
+  OrtStatus* status = api->SessionOptionsAppendExecutionProvider_CUDA(session_options, &options);
+  if (status != nullptr) {
+    if (error != nullptr) {
+      *error = "CUDA EP append failed: " + ConsumeOrtStatusMessage(api, status);
+    }
+    return false;
+  }
+  if (detail != nullptr) {
+    *detail = "cuda(device_id=" + std::to_string(options.device_id) + ")";
+  }
+  if (error != nullptr) {
+    error->clear();
+  }
+  return true;
+}
+
+bool AppendTensorRtExecutionProvider(const OrtApi* api,
+                                     OrtSessionOptions* session_options,
+                                     std::string* detail,
+                                     std::string* error) {
+  if (api == nullptr || session_options == nullptr) {
+    if (error != nullptr) {
+      *error = "internal error: TensorRT EP append arguments are null";
+    }
+    return false;
+  }
+  if (api->SessionOptionsAppendExecutionProvider_TensorRT == nullptr) {
+    if (error != nullptr) {
+      *error = "TensorRT execution provider append API is unavailable in this runtime";
+    }
+    return false;
+  }
+
+  OrtTensorRTProviderOptions options{};
+  options.device_id = ParseIntEnvOrDefault("ZSODA_ORT_TRT_DEVICE_ID", kDefaultGpuDeviceId, 0, 64);
+  options.trt_max_partition_iterations = 1000;
+  options.trt_min_subgraph_size = 1;
+  options.trt_max_workspace_size = static_cast<std::size_t>(1) << 30;
+  options.trt_fp16_enable = ParseBoolEnvOrDefault("ZSODA_ORT_TRT_FP16", true) ? 1 : 0;
+  options.trt_engine_cache_enable = ParseBoolEnvOrDefault("ZSODA_ORT_TRT_ENGINE_CACHE", true) ? 1 : 0;
+  options.trt_engine_cache_path = nullptr;
+
+  const std::string engine_cache_path = []() -> std::string {
+    const char* raw = std::getenv("ZSODA_ORT_TRT_ENGINE_CACHE_PATH");
+    if (raw == nullptr || raw[0] == '\0') {
+      return {};
+    }
+    return std::string(raw);
+  }();
+  if (!engine_cache_path.empty()) {
+    options.trt_engine_cache_path = engine_cache_path.c_str();
+  }
+
+  OrtStatus* status = api->SessionOptionsAppendExecutionProvider_TensorRT(session_options, &options);
+  if (status != nullptr) {
+    if (error != nullptr) {
+      *error = "TensorRT EP append failed: " + ConsumeOrtStatusMessage(api, status);
+    }
+    return false;
+  }
+  if (detail != nullptr) {
+    *detail = "tensorrt(device_id=" + std::to_string(options.device_id) +
+              ", fp16=" + std::string(options.trt_fp16_enable != 0 ? "1" : "0") + ")";
+  }
+  if (error != nullptr) {
+    error->clear();
+  }
+  return true;
+}
+
+bool AppendCoreMlExecutionProvider(const OrtApi* api,
+                                   OrtSessionOptions* session_options,
+                                   std::string* detail,
+                                   std::string* error) {
+  if (api == nullptr || session_options == nullptr) {
+    if (error != nullptr) {
+      *error = "internal error: CoreML EP append arguments are null";
+    }
+    return false;
+  }
+  if (api->SessionOptionsAppendExecutionProvider == nullptr) {
+    if (error != nullptr) {
+      *error = "generic execution provider append API is unavailable";
+    }
+    return false;
+  }
+
+  OrtStatus* status = api->SessionOptionsAppendExecutionProvider(
+      session_options, "CoreML", nullptr, nullptr, 0U);
+  if (status != nullptr) {
+    if (error != nullptr) {
+      *error = "CoreML EP append failed: " + ConsumeOrtStatusMessage(api, status);
+    }
+    return false;
+  }
+  if (detail != nullptr) {
+    *detail = "coreml";
+  }
+  if (error != nullptr) {
+    error->clear();
+  }
+  return true;
+}
+
+#if defined(_WIN32)
+using OrtSessionOptionsAppendExecutionProviderDmlFn =
+    OrtStatus* (ORT_API_CALL*)(OrtSessionOptions* options, int device_id);
+
+bool AppendDirectMlExecutionProvider(const OrtApi* api,
+                                     void* module_handle,
+                                     OrtSessionOptions* session_options,
+                                     std::string* detail,
+                                     std::string* error) {
+  if (api == nullptr || session_options == nullptr) {
+    if (error != nullptr) {
+      *error = "internal error: DirectML EP append arguments are null";
+    }
+    return false;
+  }
+  HMODULE module = reinterpret_cast<HMODULE>(module_handle);
+  if (module == nullptr) {
+    if (error != nullptr) {
+      *error = "DirectML EP append failed: ORT module handle is null";
+    }
+    return false;
+  }
+
+  const int device_id =
+      ParseIntEnvOrDefault("ZSODA_ORT_DML_DEVICE_ID", kDefaultGpuDeviceId, 0, 64);
+  FARPROC symbol = ::GetProcAddress(module, "OrtSessionOptionsAppendExecutionProvider_DML");
+  if (symbol != nullptr) {
+    const auto append_dml =
+        reinterpret_cast<OrtSessionOptionsAppendExecutionProviderDmlFn>(symbol);
+    OrtStatus* status = append_dml(session_options, device_id);
+    if (status == nullptr) {
+      if (detail != nullptr) {
+        *detail = "directml(device_id=" + std::to_string(device_id) + ")";
+      }
+      if (error != nullptr) {
+        error->clear();
+      }
+      return true;
+    }
+    if (error != nullptr) {
+      *error = "DirectML EP append failed: " + ConsumeOrtStatusMessage(api, status);
+    }
+    return false;
+  }
+
+  if (api->SessionOptionsAppendExecutionProvider != nullptr) {
+    const char* provider_names[] = {"DML", "DmlExecutionProvider", "DirectMLExecutionProvider"};
+    for (const char* provider_name : provider_names) {
+      OrtStatus* status = api->SessionOptionsAppendExecutionProvider(
+          session_options, provider_name, nullptr, nullptr, 0U);
+      if (status == nullptr) {
+        if (detail != nullptr) {
+          *detail = "directml(device_id=" + std::to_string(device_id) + ")";
+        }
+        if (error != nullptr) {
+          error->clear();
+        }
+        return true;
+      }
+      const std::string status_message = ConsumeOrtStatusMessage(api, status);
+      if (error != nullptr) {
+        *error = "DirectML generic append failed (" + std::string(provider_name) +
+                 "): " + status_message;
+      }
+    }
+  }
+
+  if (error != nullptr) {
+    *error =
+        "DirectML EP append failed: required symbol OrtSessionOptionsAppendExecutionProvider_DML is "
+        "not exported";
+  }
+  return false;
+}
+#endif
+
+bool ConfigureExecutionProvider(const OrtApi* api,
+                                void* module_handle,
+                                RuntimeBackend backend,
+                                OrtSessionOptions* session_options,
+                                std::string* applied_detail,
+                                std::string* error) {
+  if (applied_detail != nullptr) {
+    applied_detail->clear();
+  }
+  if (error != nullptr) {
+    error->clear();
+  }
+
+  if (backend == RuntimeBackend::kCpu) {
+    if (applied_detail != nullptr) {
+      *applied_detail = "cpu";
+    }
+    return true;
+  }
+
+  switch (backend) {
+    case RuntimeBackend::kTensorRT:
+      return AppendTensorRtExecutionProvider(api, session_options, applied_detail, error);
+    case RuntimeBackend::kCuda:
+      return AppendCudaExecutionProvider(api, session_options, applied_detail, error);
+    case RuntimeBackend::kDirectML:
+#if defined(_WIN32)
+      return AppendDirectMlExecutionProvider(api, module_handle, session_options, applied_detail, error);
+#else
+      if (error != nullptr) {
+        *error = "DirectML execution provider is only supported on Windows";
+      }
+      return false;
+#endif
+    case RuntimeBackend::kCoreML:
+      return AppendCoreMlExecutionProvider(api, session_options, applied_detail, error);
+    case RuntimeBackend::kAuto:
+    case RuntimeBackend::kCpu:
+      if (applied_detail != nullptr) {
+        *applied_detail = "cpu";
+      }
+      return true;
+    case RuntimeBackend::kMetal:
+    case RuntimeBackend::kRemote:
+      if (error != nullptr) {
+        *error = "requested backend is not supported by ONNX runtime backend";
+      }
+      return false;
+  }
+
+  if (error != nullptr) {
+    *error = "unknown backend selected";
+  }
+  return false;
 }
 #endif
 
@@ -293,24 +876,48 @@ std::string ResolveConfiguredOrtLibraryPath(const RuntimeOptions& options) {
 
 ModelPipelineProfile ResolvePipelineProfile(const std::string& model_id) {
   if (model_id.rfind("depth-anything-v3", 0) == 0) {
-    return {
-        518,
-        518,
-        0.5F,
-        0.5F,
-        false,
-    };
+    ModelPipelineProfile profile;
+    profile.input_width = 518;
+    profile.input_height = 518;
+    profile.input_frame_count = ResolveDa3MultiviewFrameCount(model_id);
+    profile.invert_depth = false;
+    profile.prefer_latest_output_map = profile.input_frame_count > 1;
+    if (UseImagenetNormalizationForDa3()) {
+      profile.normalize_mean = {0.485F, 0.456F, 0.406F};
+      profile.normalize_std = {0.229F, 0.224F, 0.225F};
+    } else {
+      profile.normalize_mean = {0.5F, 0.5F, 0.5F};
+      profile.normalize_std = {0.5F, 0.5F, 0.5F};
+    }
+    return profile;
+  }
+  if (model_id.rfind("video-depth-anything", 0) == 0) {
+    ModelPipelineProfile profile;
+    profile.input_width = 512;
+    profile.input_height = 288;
+    profile.input_frame_count = ParseIntEnvOrDefault("ZSODA_VDA_CLIP_LENGTH", 32, 2, 128);
+    profile.normalize_mean = {0.485F, 0.456F, 0.406F};
+    profile.normalize_std = {0.229F, 0.224F, 0.225F};
+    profile.invert_depth = false;
+    profile.prefer_latest_output_map = true;
+    return profile;
   }
   if (model_id.rfind("midas-", 0) == 0) {
     return {
         384,
         384,
-        0.5F,
-        0.5F,
+        1,
+        {0.5F, 0.5F, 0.5F},
+        {0.5F, 0.5F, 0.5F},
         true,
+        false,
     };
   }
   return {};
+}
+
+bool ShouldConvertLinearInputToSrgb() {
+  return ParseBoolEnvOrDefault("ZSODA_INPUT_LINEAR_TO_SRGB", false);
 }
 
 bool ValidateRequest(const InferenceRequest& request,
@@ -505,8 +1112,8 @@ bool PrepareInputForModel(const InferenceRequest& request,
   }
 
   prepared_input->nchw_values.assign(pixel_count * 3U, 0.0F);
-  const float normalize_denom = (profile.normalize_scale == 0.0F) ? 1.0F : profile.normalize_scale;
   constexpr float kPaddingNormalizedValue = 0.0F;
+  const bool convert_linear_to_srgb = ShouldConvertLinearInputToSrgb();
 
   const float src_width = static_cast<float>(src_desc.width);
   const float src_height = static_cast<float>(src_desc.height);
@@ -593,8 +1200,14 @@ bool PrepareInputForModel(const InferenceRequest& request,
       for (int channel = 0; channel < 3; ++channel) {
         float normalized = kPaddingNormalizedValue;
         if (!use_padding_value) {
-          const float sampled = std::clamp(sample_channel(src_x, src_y, channel), 0.0F, 1.0F);
-          normalized = (sampled - profile.normalize_bias) / normalize_denom;
+          float sampled = std::clamp(sample_channel(src_x, src_y, channel), 0.0F, 1.0F);
+          if (convert_linear_to_srgb) {
+            sampled = LinearToSrgb(sampled);
+          }
+          const std::size_t channel_index = static_cast<std::size_t>(channel);
+          const float mean = profile.normalize_mean[channel_index];
+          const float std_dev = std::max(1e-6F, profile.normalize_std[channel_index]);
+          normalized = (sampled - mean) / std_dev;
         }
         prepared_input->nchw_values[static_cast<std::size_t>(channel) * pixel_count + output_index] =
             normalized;
@@ -762,11 +1375,14 @@ bool PostprocessDepthForModel(const RawDepthOutput& raw_output,
       const float bottom = p10 + (p11 - p10) * tx;
       const float resized_depth = top + (bottom - top) * ty;
 
-      float normalized = (resized_depth - near_value) / range;
+      float depth_value = resized_depth;
       if (profile.invert_depth) {
-        normalized = 1.0F - normalized;
+        depth_value = -depth_value;
       }
-      out_depth->at(x, y, 0) = std::clamp(normalized, 0.0F, 1.0F);
+      if (!std::isfinite(depth_value)) {
+        depth_value = 0.0F;
+      }
+      out_depth->at(x, y, 0) = depth_value;
     }
   }
 
@@ -780,12 +1396,15 @@ bool PostprocessDepthForModel(const RawDepthOutput& raw_output,
 bool ResolveSessionIo(const Ort::Session& session,
                       std::string* input_name,
                       std::string* output_name,
+                      int fallback_input_frame_count,
                       int* input_width,
                       int* input_height,
+                      int* input_frame_count,
                       bool* input_has_image_dimension,
                       std::string* error) {
   if (input_name == nullptr || output_name == nullptr || input_width == nullptr ||
-      input_height == nullptr || input_has_image_dimension == nullptr) {
+      input_height == nullptr || input_frame_count == nullptr ||
+      input_has_image_dimension == nullptr) {
     if (error != nullptr) {
       *error = "internal error: invalid io metadata pointers";
     }
@@ -803,14 +1422,66 @@ bool ResolveSessionIo(const Ort::Session& session,
 
   Ort::AllocatorWithDefaultOptions allocator;
   auto input_name_alloc = session.GetInputNameAllocated(0U, allocator);
-  auto output_name_alloc = session.GetOutputNameAllocated(0U, allocator);
   *input_name = input_name_alloc.get() != nullptr ? input_name_alloc.get() : "";
-  *output_name = output_name_alloc.get() != nullptr ? output_name_alloc.get() : "";
-  if (input_name->empty() || output_name->empty()) {
+  if (input_name->empty()) {
     if (error != nullptr) {
       *error = "onnx runtime session has empty input/output names";
     }
     return false;
+  }
+
+  std::vector<std::string> output_names;
+  output_names.reserve(output_count);
+  for (std::size_t output_index = 0U; output_index < output_count; ++output_index) {
+    auto output_name_alloc = session.GetOutputNameAllocated(output_index, allocator);
+    output_names.emplace_back(output_name_alloc.get() != nullptr ? output_name_alloc.get() : "");
+  }
+
+  std::size_t selected_output_index = 0U;
+  const int forced_output_index = ParseIntEnvOrDefault("ZSODA_ORT_OUTPUT_INDEX", -1, -1, 4096);
+  if (forced_output_index >= 0) {
+    selected_output_index = static_cast<std::size_t>(forced_output_index);
+    if (selected_output_index >= output_names.size()) {
+      if (error != nullptr) {
+        *error = "onnx runtime forced output index is out of range";
+      }
+      return false;
+    }
+  } else {
+    const std::string forced_output_name = ToLowerCopy(ReadEnvOrEmpty("ZSODA_ORT_OUTPUT_NAME"));
+    if (!forced_output_name.empty()) {
+      bool found = false;
+      for (std::size_t i = 0U; i < output_names.size(); ++i) {
+        if (ToLowerCopy(output_names[i]) == forced_output_name) {
+          selected_output_index = i;
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        if (error != nullptr) {
+          *error = "onnx runtime forced output name was not found in session outputs";
+        }
+        return false;
+      }
+    } else {
+      selected_output_index = SelectDepthOutputIndexByName(output_names);
+    }
+  }
+
+  *output_name = output_names[selected_output_index];
+  if (output_name->empty()) {
+    if (error != nullptr) {
+      *error = "onnx runtime selected output name is empty";
+    }
+    return false;
+  }
+  {
+    std::ostringstream detail;
+    detail << "output_count=" << output_count << ", selected_index=" << selected_output_index
+           << ", selected_name=" << *output_name;
+    const std::string detail_text = detail.str();
+    AppendOrtTrace("resolve_io_output_select", detail_text.c_str());
   }
 
   const auto input_info = session.GetInputTypeInfo(0U).GetTensorTypeAndShapeInfo();
@@ -863,15 +1534,15 @@ bool ResolveSessionIo(const Ort::Session& session,
     return false;
   }
 
-  if (batch > 0 && batch != 1) {
+  if (batch == 0) {
     if (error != nullptr) {
-      *error = "onnx runtime session only supports batch size 1";
+      *error = "onnx runtime session batch dimension cannot be zero";
     }
     return false;
   }
-  if (has_image_dimension && num_images > 0 && num_images != 1) {
+  if (batch > static_cast<int64_t>(std::numeric_limits<int>::max())) {
     if (error != nullptr) {
-      *error = "onnx runtime session only supports num_images 1 for BNCHW input";
+      *error = "onnx runtime session batch dimension exceeds supported range";
     }
     return false;
   }
@@ -888,7 +1559,8 @@ bool ResolveSessionIo(const Ort::Session& session,
     return false;
   }
 
-  const auto output_info = session.GetOutputTypeInfo(0U).GetTensorTypeAndShapeInfo();
+  const auto output_info =
+      session.GetOutputTypeInfo(selected_output_index).GetTensorTypeAndShapeInfo();
   if (output_info.GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
     if (error != nullptr) {
       *error = "onnx runtime session output must be float tensor";
@@ -898,6 +1570,29 @@ bool ResolveSessionIo(const Ort::Session& session,
 
   *input_width = width > 0 ? static_cast<int>(width) : 0;
   *input_height = height > 0 ? static_cast<int>(height) : 0;
+  if (has_image_dimension) {
+    if (num_images == 0) {
+      if (error != nullptr) {
+        *error = "onnx runtime session BNCHW input has zero num_images dimension";
+      }
+      return false;
+    }
+    if (num_images > static_cast<int64_t>(std::numeric_limits<int>::max())) {
+      if (error != nullptr) {
+        *error = "onnx runtime session BNCHW num_images exceeds supported range";
+      }
+      return false;
+    }
+    const int resolved_frame_count = num_images > 0
+                                         ? static_cast<int>(num_images)
+                                         : std::max(1, fallback_input_frame_count);
+    *input_frame_count = std::max(1, resolved_frame_count);
+  } else {
+    const int resolved_batch_frame_count = batch > 0
+                                               ? static_cast<int>(batch)
+                                               : std::max(1, fallback_input_frame_count);
+    *input_frame_count = std::max(1, resolved_batch_frame_count);
+  }
   *input_has_image_dimension = has_image_dimension;
   if (error != nullptr) {
     error->clear();
@@ -975,6 +1670,8 @@ bool CopyTensorPrefix(const float* data,
 
 bool ExtractDepthOutputFromOrtValue(const OrtApi* api,
                                     const OrtValue* output,
+                                    std::size_t preferred_map_index,
+                                    int temporal_frame_count_hint,
                                     RawDepthOutput* raw_output,
                                     std::string* error) {
   AppendOrtTrace("extract_fn_enter");
@@ -1114,125 +1811,74 @@ bool ExtractDepthOutputFromOrtValue(const OrtApi* api,
   int width = 0;
   int height = 0;
   raw_output->depth_values.clear();
-
-  if (shape.size() == 4U) {
-    const int64_t batch = shape[0];
-    const int64_t channels = shape[1];
-    const int64_t output_height = shape[2];
-    const int64_t output_width = shape[3];
-    if (batch < 1 || channels < 1 || output_height < 1 || output_width < 1) {
-      if (error != nullptr) {
-        *error = "onnx runtime output tensor shape is invalid";
-      }
-      return false;
-    }
-    if (output_height > std::numeric_limits<int>::max() ||
-        output_width > std::numeric_limits<int>::max()) {
-      if (error != nullptr) {
-        *error = "onnx runtime output tensor shape exceeds supported dimensions";
-      }
-      return false;
-    }
-
-    width = static_cast<int>(output_width);
-    height = static_cast<int>(output_height);
-    std::size_t pixel_count = 0U;
-    if (!CheckedMultiplySize(static_cast<std::size_t>(width),
-                             static_cast<std::size_t>(height),
-                             &pixel_count)) {
-      if (error != nullptr) {
-        *error = "onnx runtime output tensor pixel count overflow";
-      }
-      return false;
-    }
-    if (tensor_element_count < pixel_count) {
-      if (error != nullptr) {
-        *error = "onnx runtime output tensor element count is smaller than required depth pixels";
-      }
-      return false;
-    }
-    if (!CopyTensorPrefix(data, pixel_count, &raw_output->depth_values, error)) {
-      return false;
-    }
-  } else if (shape.size() == 3U) {
-    const int64_t batch = shape[0];
-    const int64_t output_height = shape[1];
-    const int64_t output_width = shape[2];
-    if (batch < 1 || output_height < 1 || output_width < 1) {
-      if (error != nullptr) {
-        *error = "onnx runtime output tensor shape is invalid";
-      }
-      return false;
-    }
-    if (output_height > std::numeric_limits<int>::max() ||
-        output_width > std::numeric_limits<int>::max()) {
-      if (error != nullptr) {
-        *error = "onnx runtime output tensor shape exceeds supported dimensions";
-      }
-      return false;
-    }
-
-    width = static_cast<int>(output_width);
-    height = static_cast<int>(output_height);
-    std::size_t pixel_count = 0U;
-    if (!CheckedMultiplySize(static_cast<std::size_t>(width),
-                             static_cast<std::size_t>(height),
-                             &pixel_count)) {
-      if (error != nullptr) {
-        *error = "onnx runtime output tensor pixel count overflow";
-      }
-      return false;
-    }
-    if (tensor_element_count < pixel_count) {
-      if (error != nullptr) {
-        *error = "onnx runtime output tensor element count is smaller than required depth pixels";
-      }
-      return false;
-    }
-    if (!CopyTensorPrefix(data, pixel_count, &raw_output->depth_values, error)) {
-      return false;
-    }
-  } else if (shape.size() == 2U) {
-    const int64_t output_height = shape[0];
-    const int64_t output_width = shape[1];
-    if (output_height < 1 || output_width < 1) {
-      if (error != nullptr) {
-        *error = "onnx runtime output tensor shape is invalid";
-      }
-      return false;
-    }
-    if (output_height > std::numeric_limits<int>::max() ||
-        output_width > std::numeric_limits<int>::max()) {
-      if (error != nullptr) {
-        *error = "onnx runtime output tensor shape exceeds supported dimensions";
-      }
-      return false;
-    }
-
-    width = static_cast<int>(output_width);
-    height = static_cast<int>(output_height);
-    std::size_t pixel_count = 0U;
-    if (!CheckedMultiplySize(static_cast<std::size_t>(width),
-                             static_cast<std::size_t>(height),
-                             &pixel_count)) {
-      if (error != nullptr) {
-        *error = "onnx runtime output tensor pixel count overflow";
-      }
-      return false;
-    }
-    if (tensor_element_count < pixel_count) {
-      if (error != nullptr) {
-        *error = "onnx runtime output tensor element count is smaller than required depth pixels";
-      }
-      return false;
-    }
-    if (!CopyTensorPrefix(data, pixel_count, &raw_output->depth_values, error)) {
-      return false;
-    }
-  } else {
+  if (shape.size() < 2U) {
     if (error != nullptr) {
       *error = "onnx runtime output shape is unsupported";
     }
+    return false;
+  }
+
+  const int64_t output_height = shape[shape.size() - 2U];
+  const int64_t output_width = shape[shape.size() - 1U];
+  if (output_height < 1 || output_width < 1) {
+    if (error != nullptr) {
+      *error = "onnx runtime output tensor shape is invalid";
+    }
+    return false;
+  }
+  if (output_height > std::numeric_limits<int>::max() ||
+      output_width > std::numeric_limits<int>::max()) {
+    if (error != nullptr) {
+      *error = "onnx runtime output tensor shape exceeds supported dimensions";
+    }
+    return false;
+  }
+
+  width = static_cast<int>(output_width);
+  height = static_cast<int>(output_height);
+  std::size_t pixel_count = 0U;
+  if (!CheckedMultiplySize(static_cast<std::size_t>(width),
+                           static_cast<std::size_t>(height),
+                           &pixel_count)) {
+    if (error != nullptr) {
+      *error = "onnx runtime output tensor pixel count overflow";
+    }
+    return false;
+  }
+  if (pixel_count == 0U || tensor_element_count < pixel_count ||
+      (tensor_element_count % pixel_count) != 0U) {
+    if (error != nullptr) {
+      *error = "onnx runtime output tensor element count is incompatible with output shape";
+    }
+    return false;
+  }
+
+  const std::size_t map_count = tensor_element_count / pixel_count;
+  if (map_count == 0U) {
+    if (error != nullptr) {
+      *error = "onnx runtime output tensor has no maps";
+    }
+    return false;
+  }
+
+  const std::size_t selected_map =
+      ResolveOutputMapIndex(preferred_map_index, map_count, temporal_frame_count_hint);
+  if (selected_map >= map_count) {
+    if (error != nullptr) {
+      *error = "onnx runtime output tensor map index is out of range";
+    }
+    return false;
+  }
+  {
+    std::ostringstream detail;
+    detail << "map_count=" << map_count << ", selected_map=" << selected_map
+           << ", temporal_hint=" << temporal_frame_count_hint;
+    const std::string detail_text = detail.str();
+    AppendOrtTrace("extract_output_map_select", detail_text.c_str());
+  }
+
+  const float* map_data = data + selected_map * pixel_count;
+  if (!CopyTensorPrefix(map_data, pixel_count, &raw_output->depth_values, error)) {
     return false;
   }
 
@@ -1260,9 +1906,8 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
   explicit OnnxRuntimeBackendScaffold(RuntimeOptions options)
       : options_(std::move(options)),
         requested_backend_(options_.preferred_backend),
-        active_backend_(ResolveActiveBackend(requested_backend_)),
-        provider_note_(BuildProviderNote(requested_backend_, active_backend_)),
-        backend_name_(BuildBackendName(active_backend_, "", "", provider_note_)) {}
+        active_backend_(RuntimeBackend::kCpu),
+        backend_name_(BuildBackendName(active_backend_)) {}
 
   const char* Name() const override { return backend_name_.c_str(); }
 
@@ -1289,27 +1934,37 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
             : default_api_version;
 
     loader_ = std::make_unique<OrtDynamicLoader>();
+    const bool prefer_preloaded_ort = ShouldPreferPreloadedOrt(requested_backend_);
     std::string loader_error;
-    if (!loader_->Load(configured_library_path, requested_api_version, &loader_error)) {
+    if (!loader_->Load(configured_library_path,
+                       requested_api_version,
+                       &loader_error,
+                       prefer_preloaded_ort)) {
       initialized_ = false;
       if (error != nullptr) {
         *error = loader_error.empty() ? "onnx runtime dynamic loader failed" : loader_error;
       }
       return false;
     }
+    loader_diagnostics_ = loader_->Diagnostics();
 
+    RuntimeProviderCapabilities capabilities;
     std::string capability_note;
     std::string capability_error;
-    if (!QueryRuntimeCapabilities(loader_->Api(), active_backend_, &capability_note, &capability_error)) {
+    if (!QueryRuntimeCapabilities(
+            loader_->Api(), &capabilities, &capability_note, &capability_error)) {
       initialized_ = false;
       if (error != nullptr) {
         const std::string capability_detail =
             capability_error.empty() ? "onnx runtime capability probe failed" : capability_error;
-        *error = capability_detail + " [" + loader_->Diagnostics() + "]";
+        *error = WithRuntimeDiagnostics(capability_detail);
       }
       return false;
     }
 
+    std::string selection_note;
+    active_backend_ = SelectActiveBackend(requested_backend_, capabilities, &selection_note);
+    provider_note_ = BuildProviderNote(requested_backend_, active_backend_, selection_note);
     if (!capability_note.empty()) {
       if (provider_note_.empty()) {
         provider_note_ = capability_note;
@@ -1320,18 +1975,81 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
     }
 
     Ort::InitApi(loader_->Api());
-    loader_diagnostics_ = loader_->Diagnostics();
-    backend_name_ = BuildBackendName(active_backend_,
-                                     loader_->RuntimeVersionString(),
-                                     loader_->LoadedDllPath(),
-                                     provider_note_);
 
     try {
       env_ = std::make_unique<Ort::Env>(ORT_LOGGING_LEVEL_WARNING, "zsoda-ort");
       session_options_ = std::make_unique<Ort::SessionOptions>();
       session_options_->SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
-      session_options_->SetIntraOpNumThreads(1);
-      session_options_->SetInterOpNumThreads(1);
+      const int intra_threads = ParseIntEnvOrDefault("ZSODA_ORT_INTRA_THREADS", 0, 0, 256);
+      const int inter_threads = ParseIntEnvOrDefault("ZSODA_ORT_INTER_THREADS", 0, 0, 256);
+      if (intra_threads > 0) {
+        session_options_->SetIntraOpNumThreads(intra_threads);
+      }
+      if (inter_threads > 0) {
+        session_options_->SetInterOpNumThreads(inter_threads);
+      }
+
+      OrtSessionOptions* native_session_options = static_cast<OrtSessionOptions*>(*session_options_);
+      RuntimeBackend configured_backend = active_backend_;
+      std::string provider_apply_detail;
+      std::string provider_apply_error;
+      if (!ConfigureExecutionProvider(loader_->Api(),
+                                      loader_->NativeModuleHandle(),
+                                      configured_backend,
+                                      native_session_options,
+                                      &provider_apply_detail,
+                                      &provider_apply_error)) {
+        if (configured_backend == RuntimeBackend::kCpu) {
+          initialized_ = false;
+          if (error != nullptr) {
+            const std::string detail = provider_apply_error.empty()
+                                           ? "onnx runtime CPU provider setup failed"
+                                           : provider_apply_error;
+            *error = WithRuntimeDiagnostics(detail);
+          }
+          return false;
+        }
+
+        std::string cpu_apply_detail;
+        std::string cpu_apply_error;
+        if (!ConfigureExecutionProvider(loader_->Api(),
+                                        loader_->NativeModuleHandle(),
+                                        RuntimeBackend::kCpu,
+                                        native_session_options,
+                                        &cpu_apply_detail,
+                                        &cpu_apply_error)) {
+          initialized_ = false;
+          if (error != nullptr) {
+            const std::string gpu_detail =
+                provider_apply_error.empty() ? "<no provider error>" : provider_apply_error;
+            const std::string cpu_detail =
+                cpu_apply_error.empty() ? "<no cpu fallback error>" : cpu_apply_error;
+            *error = WithRuntimeDiagnostics("onnx runtime provider setup failed: requested=" +
+                                            std::string(RuntimeBackendName(configured_backend)) +
+                                            ", detail=" + gpu_detail +
+                                            ", cpu_fallback_detail=" + cpu_detail);
+          }
+          return false;
+        }
+
+        if (!provider_note_.empty()) {
+          provider_note_.append("; ");
+        }
+        provider_note_.append("provider_setup_failed=");
+        provider_note_.append(provider_apply_error.empty() ? "<none>" : provider_apply_error);
+        provider_note_.append(", fallback=cpu");
+        active_backend_ = RuntimeBackend::kCpu;
+        provider_apply_detail = cpu_apply_detail;
+      }
+
+      if (!provider_apply_detail.empty()) {
+        if (!provider_note_.empty()) {
+          provider_note_.append("; ");
+        }
+        provider_note_.append("applied_provider=");
+        provider_note_.append(provider_apply_detail);
+      }
+      provider_note_base_ = provider_note_;
     } catch (const Ort::Exception& ex) {
       initialized_ = false;
       if (error != nullptr) {
@@ -1340,7 +2058,9 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
       }
       return false;
     }
+    RefreshBackendName();
 #else
+    provider_note_base_.clear();
     loader_diagnostics_.clear();
 #endif
 
@@ -1399,6 +2119,7 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
     const std::string target_model_path = candidate_path.lexically_normal().string();
     int target_input_width = std::max(kMinimumModelInputSize, target_profile.input_width);
     int target_input_height = std::max(kMinimumModelInputSize, target_profile.input_height);
+    int target_input_frame_count = std::max(1, target_profile.input_frame_count);
     std::filesystem::path session_model_path = candidate_path;
 #if defined(ZSODA_WITH_ONNX_RUNTIME_API) && ZSODA_WITH_ONNX_RUNTIME_API
     input_has_image_dimension_ = false;
@@ -1431,13 +2152,16 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
       std::string resolved_output_name;
       int resolved_input_width = 0;
       int resolved_input_height = 0;
+      int resolved_input_frame_count = 1;
       bool resolved_input_has_image_dimension = false;
       std::string io_error;
       if (!ResolveSessionIo(*session,
                             &resolved_input_name,
                             &resolved_output_name,
+                            target_input_frame_count,
                             &resolved_input_width,
                             &resolved_input_height,
+                            &resolved_input_frame_count,
                             &resolved_input_has_image_dimension,
                             &io_error)) {
         if (error != nullptr) {
@@ -1454,6 +2178,9 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
       }
       if (resolved_input_height > 0) {
         target_input_height = resolved_input_height;
+      }
+      if (resolved_input_frame_count > 0) {
+        target_input_frame_count = resolved_input_frame_count;
       }
       input_has_image_dimension_ = resolved_input_has_image_dimension;
     } catch (const Ort::Exception& ex) {
@@ -1474,6 +2201,26 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
     active_model_path_ = target_model_path;
     model_input_width_ = target_input_width;
     model_input_height_ = target_input_height;
+    model_input_frame_count_ = target_input_frame_count;
+    const bool model_id_requests_multiview = ModelIdIndicatesMultiview(model_id);
+    requested_multiview_ = model_id_requests_multiview || target_profile.input_frame_count > 1;
+    resolved_input_frame_count_ = std::max(1, model_input_frame_count_);
+    multiview_active_ = resolved_input_frame_count_ > 1;
+    multiview_warning_ = model_id_requests_multiview && !multiview_active_;
+    const std::string multiview_note =
+        BuildMultiviewDiagnosticsNote(requested_multiview_,
+                                      resolved_input_frame_count_,
+                                      multiview_active_,
+                                      multiview_warning_);
+    provider_note_ = provider_note_base_;
+    AppendNoteSegment(&provider_note_, multiview_note);
+    {
+      std::string multiview_detail = "model_id=" + model_id + ", " + multiview_note;
+      AppendOrtTrace(multiview_warning_ ? "multiview_warning" : "multiview_status",
+                     multiview_detail.c_str());
+    }
+    RefreshBackendName();
+    ResetTemporalHistory();
 
     if (error != nullptr) {
       error->clear();
@@ -1530,11 +2277,17 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
 #else
       const bool has_image_dimension = false;
 #endif
+      const int frame_count = std::max(1, model_input_frame_count_);
       const std::string prepared_detail =
           "tensor=" + std::to_string(prepared_input.tensor_width) + "x" +
           std::to_string(prepared_input.tensor_height) + "x" +
           std::to_string(prepared_input.tensor_channels) +
+          ", frames=" + std::to_string(frame_count) +
           ", image_dim=" + std::string(has_image_dimension ? "1" : "0") +
+          ", requested_multiview=" + std::string(requested_multiview_ ? "1" : "0") +
+          ", resolved_input_frame_count=" + std::to_string(std::max(1, resolved_input_frame_count_)) +
+          ", multiview_active=" + std::string(multiview_active_ ? "1" : "0") +
+          ", multiview_warning=" + std::string(multiview_warning_ ? "1" : "0") +
           ", preprocess_resize_mode=" + std::string(PreprocessResizeModeName(options_.preprocess_resize_mode));
       AppendOrtTrace("run_prepare_input_ok", prepared_detail.c_str());
     }
@@ -1558,6 +2311,20 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
         *error = WithRuntimeDiagnostics("onnx runtime backend API handle is unavailable");
       }
       return false;
+    }
+
+    std::vector<float> temporal_input_values;
+    const std::vector<float>* run_input_values = &prepared_input.nchw_values;
+    const int input_frame_count = std::max(1, model_input_frame_count_);
+    if (input_frame_count > 1) {
+      if (!BuildTemporalInput(prepared_input,
+                              input_frame_count,
+                              request.frame_hash,
+                              &temporal_input_values,
+                              error)) {
+        return false;
+      }
+      run_input_values = &temporal_input_values;
     }
 
     const OrtApi* api = loader_->Api();
@@ -1595,13 +2362,13 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
 
     const std::array<int64_t, 5> input_shape_bnchw = {
         1,
-        1,
+        static_cast<int64_t>(input_frame_count),
         prepared_input.tensor_channels,
         prepared_input.tensor_height,
         prepared_input.tensor_width,
     };
     const std::array<int64_t, 4> input_shape_nchw = {
-        1,
+        static_cast<int64_t>(input_frame_count),
         prepared_input.tensor_channels,
         prepared_input.tensor_height,
         prepared_input.tensor_width,
@@ -1613,7 +2380,7 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
     AppendOrtTrace(input_has_image_dimension_ ? "session_run_begin_bnchw" : "session_run_begin_nchw");
 
     std::size_t input_byte_count = 0U;
-    if (!CheckedMultiplySize(prepared_input.nchw_values.size(), sizeof(float), &input_byte_count)) {
+    if (!CheckedMultiplySize(run_input_values->size(), sizeof(float), &input_byte_count)) {
       if (error != nullptr) {
         *error = "onnx runtime input tensor byte count overflow";
       }
@@ -1634,7 +2401,7 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
 
       if (OrtStatus* status = api->CreateTensorWithDataAsOrtValue(
               memory_info,
-              const_cast<float*>(prepared_input.nchw_values.data()),
+              const_cast<float*>(run_input_values->data()),
               input_byte_count,
               input_shape,
               input_rank,
@@ -1692,7 +2459,11 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
       }
 
       AppendOrtTrace("extract_output_begin");
-      if (!ExtractDepthOutputFromOrtValue(api, output_tensor, &raw_output, error)) {
+      const std::size_t output_map_index =
+          active_model_profile_.prefer_latest_output_map ? std::numeric_limits<std::size_t>::max()
+                                                         : 0U;
+      if (!ExtractDepthOutputFromOrtValue(
+              api, output_tensor, output_map_index, input_frame_count, &raw_output, error)) {
         AppendOrtTrace("extract_output_failed",
                        (error != nullptr && !error->empty()) ? error->c_str() : "<none>");
         release_run_resources();
@@ -1758,6 +2529,19 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
   RuntimeBackend ActiveBackend() const override { return active_backend_; }
 
  private:
+  void RefreshBackendName() {
+#if defined(ZSODA_WITH_ONNX_RUNTIME_API) && ZSODA_WITH_ONNX_RUNTIME_API
+    const std::string runtime_version =
+        (loader_ != nullptr) ? loader_->RuntimeVersionString() : std::string();
+    const std::string loaded_library_path =
+        (loader_ != nullptr) ? loader_->LoadedDllPath() : std::string();
+    backend_name_ =
+        BuildBackendName(active_backend_, runtime_version, loaded_library_path, provider_note_);
+#else
+    backend_name_ = BuildBackendName(active_backend_, {}, {}, provider_note_);
+#endif
+  }
+
   [[nodiscard]] std::string WithRuntimeDiagnostics(std::string_view message) const {
     if (loader_diagnostics_.empty()) {
       return std::string(message);
@@ -1769,9 +2553,139 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
     return combined;
   }
 
+  void ResetTemporalHistory() const {
+    temporal_history_.clear();
+    temporal_history_capacity_frames_ = 0;
+    temporal_history_valid_frames_ = 0;
+    temporal_history_head_index_ = 0;
+    temporal_history_frame_plane_size_ = 0U;
+    temporal_history_last_frame_hash_ = 0U;
+  }
+
+  bool BuildTemporalInput(const PreparedModelInput& prepared_input,
+                          int frame_count,
+                          std::uint64_t frame_hash,
+                          std::vector<float>* out_temporal_input,
+                          std::string* error) const {
+    if (out_temporal_input == nullptr) {
+      if (error != nullptr) {
+        *error = "internal error: temporal input output pointer is null";
+      }
+      return false;
+    }
+
+    const int clamped_frame_count = std::max(1, frame_count);
+    if (clamped_frame_count <= 1) {
+      *out_temporal_input = prepared_input.nchw_values;
+      if (error != nullptr) {
+        error->clear();
+      }
+      return true;
+    }
+
+    const std::size_t frame_plane_size = prepared_input.nchw_values.size();
+    if (frame_plane_size == 0U) {
+      if (error != nullptr) {
+        *error = "onnx runtime temporal input cannot be built from empty frame";
+      }
+      return false;
+    }
+
+    const bool requires_reset =
+        temporal_history_capacity_frames_ != clamped_frame_count ||
+        temporal_history_frame_plane_size_ != frame_plane_size;
+    if (requires_reset) {
+      temporal_history_capacity_frames_ = clamped_frame_count;
+      temporal_history_valid_frames_ = 0;
+      temporal_history_head_index_ = 0;
+      temporal_history_frame_plane_size_ = frame_plane_size;
+      temporal_history_.assign(
+          static_cast<std::size_t>(clamped_frame_count) * frame_plane_size, 0.0F);
+    } else if (temporal_history_.size() !=
+               static_cast<std::size_t>(clamped_frame_count) * frame_plane_size) {
+      temporal_history_.assign(
+          static_cast<std::size_t>(clamped_frame_count) * frame_plane_size, 0.0F);
+      temporal_history_valid_frames_ = 0;
+      temporal_history_head_index_ = 0;
+    }
+
+    const bool duplicate_frame_hash =
+        frame_hash != 0U && temporal_history_last_frame_hash_ != 0U &&
+        frame_hash == temporal_history_last_frame_hash_ && temporal_history_valid_frames_ > 0;
+
+    if (!duplicate_frame_hash && temporal_history_valid_frames_ > 0 &&
+        temporal_history_capacity_frames_ > 0) {
+      const int latest_slot =
+          (temporal_history_head_index_ + temporal_history_valid_frames_ - 1) %
+          temporal_history_capacity_frames_;
+      const float* previous_frame =
+          temporal_history_.data() + static_cast<std::size_t>(latest_slot) * frame_plane_size;
+      const float mean_abs_diff = ComputeSampledMeanAbsDiff(
+          previous_frame, prepared_input.nchw_values.data(), frame_plane_size);
+      const float scene_cut_threshold =
+          ParseFloatEnvOrDefault("ZSODA_DA3_MULTIVIEW_SCENE_CUT", 0.20F, 0.0F, 1.0F);
+      if (mean_abs_diff >= scene_cut_threshold) {
+        temporal_history_valid_frames_ = 0;
+        temporal_history_head_index_ = 0;
+        std::fill(temporal_history_.begin(), temporal_history_.end(), 0.0F);
+        const std::string detail =
+            "diff=" + std::to_string(mean_abs_diff) + ", threshold=" +
+            std::to_string(scene_cut_threshold);
+        AppendOrtTrace("temporal_history_reset_scene_cut", detail.c_str());
+      }
+    }
+
+    if (!duplicate_frame_hash || temporal_history_valid_frames_ == 0) {
+      int write_slot = 0;
+      if (temporal_history_valid_frames_ < temporal_history_capacity_frames_) {
+        write_slot = (temporal_history_head_index_ + temporal_history_valid_frames_) %
+                     temporal_history_capacity_frames_;
+        ++temporal_history_valid_frames_;
+      } else {
+        write_slot = temporal_history_head_index_;
+        temporal_history_head_index_ =
+            (temporal_history_head_index_ + 1) % temporal_history_capacity_frames_;
+      }
+
+      std::copy(prepared_input.nchw_values.begin(),
+                prepared_input.nchw_values.end(),
+                temporal_history_.begin() +
+                    static_cast<std::size_t>(write_slot) * frame_plane_size);
+    } else {
+      AppendOrtTrace("temporal_history_reuse_duplicate_frame");
+    }
+
+    out_temporal_input->assign(
+        static_cast<std::size_t>(clamped_frame_count) * frame_plane_size, 0.0F);
+    const int pad_count = std::max(0, clamped_frame_count - temporal_history_valid_frames_);
+    for (int t = 0; t < clamped_frame_count; ++t) {
+      int history_index = 0;
+      if (t >= pad_count) {
+        history_index = t - pad_count;
+      }
+      history_index = std::clamp(history_index, 0, std::max(0, temporal_history_valid_frames_ - 1));
+      const int slot =
+          (temporal_history_head_index_ + history_index) % temporal_history_capacity_frames_;
+      const float* src =
+          temporal_history_.data() + static_cast<std::size_t>(slot) * frame_plane_size;
+      float* dst = out_temporal_input->data() + static_cast<std::size_t>(t) * frame_plane_size;
+      std::memcpy(dst, src, frame_plane_size * sizeof(float));
+    }
+
+    if (frame_hash != 0U) {
+      temporal_history_last_frame_hash_ = frame_hash;
+    }
+
+    if (error != nullptr) {
+      error->clear();
+    }
+    return true;
+  }
+
   RuntimeOptions options_;
   RuntimeBackend requested_backend_ = RuntimeBackend::kAuto;
   RuntimeBackend active_backend_ = RuntimeBackend::kCpu;
+  std::string provider_note_base_;
   std::string provider_note_;
   std::string backend_name_;
   std::string loader_diagnostics_;
@@ -1781,6 +2695,17 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
   ModelPipelineProfile active_model_profile_;
   int model_input_width_ = 0;
   int model_input_height_ = 0;
+  int model_input_frame_count_ = 1;
+  bool requested_multiview_ = false;
+  int resolved_input_frame_count_ = 1;
+  bool multiview_active_ = false;
+  bool multiview_warning_ = false;
+  mutable std::vector<float> temporal_history_;
+  mutable int temporal_history_capacity_frames_ = 0;
+  mutable int temporal_history_valid_frames_ = 0;
+  mutable int temporal_history_head_index_ = 0;
+  mutable std::size_t temporal_history_frame_plane_size_ = 0U;
+  mutable std::uint64_t temporal_history_last_frame_hash_ = 0U;
 #if defined(ZSODA_WITH_ONNX_RUNTIME_API) && ZSODA_WITH_ONNX_RUNTIME_API
   std::unique_ptr<OrtDynamicLoader> loader_;
   std::unique_ptr<Ort::Env> env_;

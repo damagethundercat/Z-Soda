@@ -74,6 +74,90 @@ float Lerp(float a, float b, float t) {
   return a + (b - a) * t;
 }
 
+bool IsDepthWithinUnitRange(const FrameBuffer& depth) {
+  if (depth.empty()) {
+    return true;
+  }
+
+  const auto& desc = depth.desc();
+  float min_value = std::numeric_limits<float>::infinity();
+  float max_value = -std::numeric_limits<float>::infinity();
+  for (int y = 0; y < desc.height; ++y) {
+    for (int x = 0; x < desc.width; ++x) {
+      const float value = depth.at(x, y, 0);
+      if (!std::isfinite(value)) {
+        continue;
+      }
+      min_value = std::min(min_value, value);
+      max_value = std::max(max_value, value);
+    }
+  }
+
+  if (!std::isfinite(min_value) || !std::isfinite(max_value)) {
+    return true;
+  }
+  return min_value >= -1e-3F && max_value <= 1.001F;
+}
+
+void ApplyQuantileDepthMapping(FrameBuffer* depth,
+                               const DepthMappingParams& params,
+                               GuidedDepthMappingState* guided_state) {
+  if (depth == nullptr || depth->empty()) {
+    return;
+  }
+
+  std::vector<float> samples = CollectDepthSamples(*depth);
+  if (samples.empty()) {
+    NormalizeDepth(depth, params.invert);
+    return;
+  }
+
+  const float low_q = std::clamp(params.guided_low_percentile, 0.0F, 1.0F);
+  const float high_q = std::clamp(params.guided_high_percentile, 0.0F, 1.0F);
+  const float quantile_low = std::min(low_q, high_q);
+  const float quantile_high = std::max(low_q, high_q);
+
+  float near_value = ComputeQuantile(&samples, quantile_low);
+  float far_value = ComputeQuantile(&samples, quantile_high);
+  if (!std::isfinite(near_value) || !std::isfinite(far_value)) {
+    NormalizeDepth(depth, params.invert);
+    return;
+  }
+  if (far_value <= near_value + 1e-6F) {
+    far_value = near_value + 1e-6F;
+  }
+
+  if (guided_state != nullptr) {
+    const float alpha = Clamp01(params.guided_update_alpha);
+    if (!guided_state->initialized || !std::isfinite(guided_state->near_value) ||
+        !std::isfinite(guided_state->far_value) ||
+        guided_state->far_value <= guided_state->near_value + 1e-6F) {
+      guided_state->near_value = near_value;
+      guided_state->far_value = far_value;
+      guided_state->initialized = true;
+    } else {
+      guided_state->near_value = Lerp(guided_state->near_value, near_value, alpha);
+      guided_state->far_value = Lerp(guided_state->far_value, far_value, alpha);
+      if (guided_state->far_value <= guided_state->near_value + 1e-6F) {
+        guided_state->far_value = guided_state->near_value + 1e-6F;
+      }
+    }
+    near_value = guided_state->near_value;
+    far_value = guided_state->far_value;
+  }
+
+  const float range = std::max(far_value - near_value, 1e-6F);
+  const auto& desc = depth->desc();
+  for (int y = 0; y < desc.height; ++y) {
+    for (int x = 0; x < desc.width; ++x) {
+      const float sanitized = SanitizeDepthValue(depth->at(x, y, 0), near_value);
+      float normalized = (sanitized - near_value) / range;
+      normalized = Clamp01(normalized);
+      depth->at(x, y, 0) = params.invert ? (1.0F - normalized) : normalized;
+    }
+  }
+}
+
 }  // namespace
 
 const char* DepthMappingModeName(DepthMappingMode mode) {
@@ -173,6 +257,10 @@ void ApplyDepthMapping(FrameBuffer* depth,
   }
 
   if (params.mode == DepthMappingMode::kRaw) {
+    if (!IsDepthWithinUnitRange(*depth)) {
+      ApplyQuantileDepthMapping(depth, params, nullptr);
+      return;
+    }
     ClampDepth(depth, params.invert);
     return;
   }
@@ -182,56 +270,7 @@ void ApplyDepthMapping(FrameBuffer* depth,
     return;
   }
 
-  std::vector<float> samples = CollectDepthSamples(*depth);
-  if (samples.empty()) {
-    NormalizeDepth(depth, params.invert);
-    return;
-  }
-
-  const float low_q = std::clamp(params.guided_low_percentile, 0.0F, 1.0F);
-  const float high_q = std::clamp(params.guided_high_percentile, 0.0F, 1.0F);
-  const float quantile_low = std::min(low_q, high_q);
-  const float quantile_high = std::max(low_q, high_q);
-
-  float near_value = ComputeQuantile(&samples, quantile_low);
-  float far_value = ComputeQuantile(&samples, quantile_high);
-  if (!std::isfinite(near_value) || !std::isfinite(far_value)) {
-    NormalizeDepth(depth, params.invert);
-    return;
-  }
-  if (far_value <= near_value + 1e-6F) {
-    far_value = near_value + 1e-6F;
-  }
-
-  if (guided_state != nullptr) {
-    const float alpha = Clamp01(params.guided_update_alpha);
-    if (!guided_state->initialized || !std::isfinite(guided_state->near_value) ||
-        !std::isfinite(guided_state->far_value) ||
-        guided_state->far_value <= guided_state->near_value + 1e-6F) {
-      guided_state->near_value = near_value;
-      guided_state->far_value = far_value;
-      guided_state->initialized = true;
-    } else {
-      guided_state->near_value = Lerp(guided_state->near_value, near_value, alpha);
-      guided_state->far_value = Lerp(guided_state->far_value, far_value, alpha);
-      if (guided_state->far_value <= guided_state->near_value + 1e-6F) {
-        guided_state->far_value = guided_state->near_value + 1e-6F;
-      }
-    }
-    near_value = guided_state->near_value;
-    far_value = guided_state->far_value;
-  }
-
-  const float range = std::max(far_value - near_value, 1e-6F);
-  const auto& desc = depth->desc();
-  for (int y = 0; y < desc.height; ++y) {
-    for (int x = 0; x < desc.width; ++x) {
-      const float sanitized = SanitizeDepthValue(depth->at(x, y, 0), near_value);
-      float normalized = (sanitized - near_value) / range;
-      normalized = Clamp01(normalized);
-      depth->at(x, y, 0) = params.invert ? (1.0F - normalized) : normalized;
-    }
-  }
+  ApplyQuantileDepthMapping(depth, params, guided_state);
 }
 
 FrameBuffer BuildSliceMatte(const FrameBuffer& normalized_depth,

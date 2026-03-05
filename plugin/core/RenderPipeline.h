@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <string>
 
@@ -76,9 +77,14 @@ class RenderPipeline {
   bool ShouldUseCache(const RenderParams& params) const;
   static bool IsStatefulPostProcess(const RenderParams& params);
   std::uint64_t BuildPostprocessStateHash(const RenderParams& params) const;
-  bool RunInference(const FrameBuffer& source, int quality, FrameBuffer* depth, std::string* error) const;
+  bool RunInference(const FrameBuffer& source,
+                    int quality,
+                    std::uint64_t frame_hash,
+                    FrameBuffer* depth,
+                    std::string* error) const;
   bool RunTiledInference(const FrameBuffer& source,
                          int quality,
+                         std::uint64_t frame_hash,
                          int tile_size,
                          int overlap,
                          FrameBuffer* depth,

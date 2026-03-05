@@ -31,6 +31,22 @@ constexpr int kMaxDownscaleDivisor = 8;
 constexpr std::size_t kFallbackWorkingSetBytesPerPixelEstimate = 16U;
 constexpr float kEdgeAwareUpsampleGuidanceSigma = 0.12F;
 
+int ParseIntEnvOrDefault(const char* name, int default_value, int min_value, int max_value) {
+  const char* raw = std::getenv(name);
+  if (raw == nullptr || raw[0] == '\0') {
+    return default_value;
+  }
+  char* end = nullptr;
+  const long parsed = std::strtol(raw, &end, 10);
+  if (end == raw || (end != nullptr && *end != '\0')) {
+    return default_value;
+  }
+  if (parsed < static_cast<long>(min_value) || parsed > static_cast<long>(max_value)) {
+    return default_value;
+  }
+  return static_cast<int>(parsed);
+}
+
 std::uint64_t HashCombine64(std::uint64_t lhs, std::uint64_t rhs) {
   return lhs ^ (rhs + 0x9e3779b97f4a7c15ULL + (lhs << 6ULL) + (lhs >> 2ULL));
 }
@@ -336,6 +352,21 @@ std::string JoinAttemptDetails(const std::vector<std::string>& attempts) {
   return joined;
 }
 
+bool IsTemporalSequenceModelId(std::string_view model_id) {
+  if (model_id.rfind("video-depth-anything", 0) == 0) {
+    return true;
+  }
+  if (model_id.find("multiview") != std::string_view::npos) {
+    return true;
+  }
+  if (model_id.rfind("depth-anything-v3", 0) == 0) {
+    const int multiview_frames =
+        ParseIntEnvOrDefault("ZSODA_DA3_MULTIVIEW_FRAMES", 1, 1, 128);
+    return multiview_frames > 1;
+  }
+  return false;
+}
+
 int ComputeDownscaleDivisor(const FrameDesc& source_desc, int vram_budget_mb) {
   if (!IsValid(source_desc)) {
     return kMinDownscaleDivisor;
@@ -460,10 +491,9 @@ RenderOutput RenderPipeline::Render(const FrameBuffer& source, const RenderParam
       }
       return {status, std::move(output), std::move(message)};
     };
-
     std::string direct_error;
     AppendPipelineTrace("direct_inference_begin");
-    if (RunInference(source, params.quality, depth.get(), &direct_error)) {
+    if (RunInference(source, params.quality, params.frame_hash, depth.get(), &direct_error)) {
       AppendPipelineTrace("direct_inference_ok");
       return finalize_output(RenderStatus::kInference,
                              "direct inference succeeded (" + engine_->ActiveModelId() + ")");
@@ -474,21 +504,32 @@ RenderOutput RenderPipeline::Render(const FrameBuffer& source, const RenderParam
     std::string tiled_error;
     std::vector<std::string> tiled_attempts;
     int successful_tile_size = 0;
-    const auto tiled_retry_sizes = BuildAdaptiveTileSizes(params.tile_size, source.desc());
-    for (const int candidate_tile_size : tiled_retry_sizes) {
-      std::string attempt_error;
-      if (RunTiledInference(source, params.quality, candidate_tile_size, params.overlap, depth.get(),
-                            &attempt_error)) {
-        successful_tile_size = candidate_tile_size;
-        tiled_attempts.push_back("tile=" + std::to_string(candidate_tile_size) + " succeeded");
-        break;
-      }
+    const bool skip_tiled_fallback = IsTemporalSequenceModelId(params.model_id);
+    if (skip_tiled_fallback) {
+      tiled_error = "tiled fallback skipped for temporal sequence model";
+      AppendPipelineTrace("tiled_fallback_skipped_sequence_model", params.model_id.c_str());
+    } else {
+      const auto tiled_retry_sizes = BuildAdaptiveTileSizes(params.tile_size, source.desc());
+      for (const int candidate_tile_size : tiled_retry_sizes) {
+        std::string attempt_error;
+        if (RunTiledInference(source,
+                              params.quality,
+                              params.frame_hash,
+                              candidate_tile_size,
+                              params.overlap,
+                              depth.get(),
+                              &attempt_error)) {
+          successful_tile_size = candidate_tile_size;
+          tiled_attempts.push_back("tile=" + std::to_string(candidate_tile_size) + " succeeded");
+          break;
+        }
 
-      std::string attempt_detail = "tile=" + std::to_string(candidate_tile_size) + " failed";
-      if (!attempt_error.empty()) {
-        attempt_detail += " (" + attempt_error + ")";
+        std::string attempt_detail = "tile=" + std::to_string(candidate_tile_size) + " failed";
+        if (!attempt_error.empty()) {
+          attempt_detail += " (" + attempt_error + ")";
+        }
+        tiled_attempts.push_back(std::move(attempt_detail));
       }
-      tiled_attempts.push_back(std::move(attempt_detail));
     }
 
     if (successful_tile_size > 0) {
@@ -505,7 +546,7 @@ RenderOutput RenderPipeline::Render(const FrameBuffer& source, const RenderParam
     }
     if (!tiled_attempts.empty()) {
       tiled_error = JoinAttemptDetails(tiled_attempts);
-    } else {
+    } else if (tiled_error.empty()) {
       tiled_error = "no tiled attempts generated";
     }
 
@@ -634,6 +675,7 @@ RenderCacheKey RenderPipeline::BuildCacheKey(const FrameBuffer& source, const Re
   key.tile_size = std::max(1, params.tile_size);
   key.overlap = std::max(0, std::min(params.overlap, key.tile_size / 2));
   key.vram_budget_mb = std::max(0, params.vram_budget_mb);
+  key.extract_token = std::max(0, params.extract_token);
   key.model_hash = static_cast<std::uint64_t>(std::hash<std::string>{}(params.model_id));
   key.frame_hash = params.frame_hash;
   return key;
@@ -641,6 +683,7 @@ RenderCacheKey RenderPipeline::BuildCacheKey(const FrameBuffer& source, const Re
 
 bool RenderPipeline::RunInference(const FrameBuffer& source,
                                   int quality,
+                                  std::uint64_t frame_hash,
                                   FrameBuffer* depth,
                                   std::string* error) const {
   if (!engine_) {
@@ -652,11 +695,13 @@ bool RenderPipeline::RunInference(const FrameBuffer& source,
   inference::InferenceRequest request;
   request.source = &source;
   request.quality = quality;
+  request.frame_hash = frame_hash;
   return engine_->Run(request, depth, error);
 }
 
 bool RenderPipeline::RunTiledInference(const FrameBuffer& source,
                                        int quality,
+                                       std::uint64_t frame_hash,
                                        int tile_size,
                                        int overlap,
                                        FrameBuffer* depth,
@@ -687,6 +732,7 @@ bool RenderPipeline::RunTiledInference(const FrameBuffer& source,
     inference::InferenceRequest request;
     request.source = &tile_src;
     request.quality = quality;
+    request.frame_hash = frame_hash;
     if (!engine_->Run(request, &tile_depth, error)) {
       return false;
     }
@@ -734,7 +780,11 @@ bool RenderPipeline::RunDownscaledInference(const FrameBuffer& source,
   std::string downscaled_run_error;
   const int quality_penalty = std::max(1, downscale_divisor / 2);
   const int downscaled_quality = std::max(1, params.quality - quality_penalty);
-  if (!RunInference(downscaled_source, downscaled_quality, &downscaled_depth, &downscaled_run_error)) {
+  if (!RunInference(downscaled_source,
+                    downscaled_quality,
+                    params.frame_hash,
+                    &downscaled_depth,
+                    &downscaled_run_error)) {
     if (error != nullptr) {
       *error = downscaled_run_error.empty() ? "downscaled run failed" : downscaled_run_error;
     }

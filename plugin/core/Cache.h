@@ -34,6 +34,7 @@ struct RenderCacheKey {
   int tile_size = 512;
   int overlap = 32;
   int vram_budget_mb = 0;
+  int extract_token = 0;
   std::uint64_t model_hash = 0;
   std::uint64_t frame_hash = 0;
 
@@ -55,7 +56,8 @@ struct RenderCacheKey {
            slice_max_permille == other.slice_max_permille &&
            slice_softness_permille == other.slice_softness_permille &&
            tile_size == other.tile_size && overlap == other.overlap &&
-           vram_budget_mb == other.vram_budget_mb && model_hash == other.model_hash &&
+           vram_budget_mb == other.vram_budget_mb && extract_token == other.extract_token &&
+           model_hash == other.model_hash &&
            frame_hash == other.frame_hash;
   }
 };

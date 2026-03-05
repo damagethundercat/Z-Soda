@@ -440,6 +440,37 @@ void TestTileParametersInvalidateCacheKey() {
   assert(engine->RunCount() > run_count_after_first);
 }
 
+void TestExtractTokenInvalidatesCacheKey() {
+  auto engine = std::make_shared<ScriptedInferenceEngine>();
+  std::string error;
+  assert(engine->Initialize("depth-anything-v3-small", &error));
+
+  zsoda::core::RenderPipeline pipeline(engine);
+  const auto src = MakeSourceFrame(8, 8);
+
+  zsoda::core::RenderParams params;
+  params.model_id = "depth-anything-v3-small";
+  params.frame_hash = 9004;
+  params.cache_enabled = true;
+  params.freeze_enabled = false;
+  params.mapping_mode = zsoda::core::DepthMappingMode::kRaw;
+  params.temporal_alpha = 1.0F;
+  params.extract_token = 0;
+
+  const auto first = pipeline.Render(src, params);
+  assert(first.status == zsoda::core::RenderStatus::kInference);
+  const int run_count_after_first = engine->RunCount();
+
+  const auto second = pipeline.Render(src, params);
+  assert(second.status == zsoda::core::RenderStatus::kCacheHit);
+  assert(engine->RunCount() == run_count_after_first);
+
+  params.extract_token = 1;
+  const auto third = pipeline.Render(src, params);
+  assert(third.status != zsoda::core::RenderStatus::kCacheHit);
+  assert(engine->RunCount() > run_count_after_first);
+}
+
 void TestStatefulPostProcessDisablesCache() {
   auto engine = std::make_shared<ScriptedInferenceEngine>();
   std::string error;
@@ -691,6 +722,7 @@ void RunRenderPipelineTests() {
   TestFallbackOutputCachingSeparatedByModel();
   TestSliceParametersInvalidateCacheKey();
   TestTileParametersInvalidateCacheKey();
+  TestExtractTokenInvalidatesCacheKey();
   TestStatefulPostProcessDisablesCache();
   TestZeroFrameHashDisablesCache();
   TestDepthMappingModeRawVsNormalize();

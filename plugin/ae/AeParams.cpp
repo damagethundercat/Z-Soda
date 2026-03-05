@@ -74,16 +74,16 @@ void ApplyQualityDefaults(zsoda::core::RenderParams* params) {
   switch (params->quality) {
     case 1:
       params->temporal_alpha = 0.72F;
-      params->edge_enhancement = 0.08F;
+      params->edge_enhancement = 0.04F;
       break;
     case 2:
       params->temporal_alpha = 0.56F;
-      params->edge_enhancement = 0.14F;
+      params->edge_enhancement = 0.08F;
       break;
     case 3:
     default:
       params->temporal_alpha = 0.42F;
-      params->edge_enhancement = 0.22F;
+      params->edge_enhancement = 0.14F;
       break;
   }
 

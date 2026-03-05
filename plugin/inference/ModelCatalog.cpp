@@ -206,11 +206,29 @@ ModelCatalog::ModelCatalog() {
       false,
   });
   models_.push_back({
+      "depth-anything-v3-large-multiview",
+      "Depth Anything v3 Large Multi-View (Alias/Experimental Fallback)",
+      "depth-anything-v3/depth_anything_v3_large.onnx",
+      "https://huggingface.co/onnx-community/depth-anything-v3-large/resolve/main/onnx/model.onnx",
+      {{"depth-anything-v3/depth_anything_v3_large.onnx_data",
+        "https://huggingface.co/onnx-community/depth-anything-v3-large/resolve/main/onnx/model.onnx_data"}},
+      false,
+  });
+  models_.push_back({
       "midas-dpt-large",
       "MiDaS DPT Large",
       "midas/dpt_large_384.onnx",
       "https://github.com/isl-org/MiDaS/releases/download/v3_1/dpt_large_384.onnx",
       {},
+      false,
+  });
+  models_.push_back({
+      "depth-anything-v3-small-multiview",
+      "Depth Anything v3 Small Multi-View (True BNCHW)",
+      "depth-anything-v3/depth_anything_v3_small.onnx",
+      "https://huggingface.co/onnx-community/depth-anything-v3-small/resolve/main/onnx/model.onnx",
+      {{"depth-anything-v3/depth_anything_v3_small.onnx_data",
+        "https://huggingface.co/onnx-community/depth-anything-v3-small/resolve/main/onnx/model.onnx_data"}},
       false,
   });
 }

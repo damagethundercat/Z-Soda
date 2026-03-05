@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -11,6 +12,7 @@ namespace zsoda::inference {
 struct InferenceRequest {
   const zsoda::core::FrameBuffer* source = nullptr;
   int quality = 1;
+  std::uint64_t frame_hash = 0;
 };
 
 class IInferenceEngine {

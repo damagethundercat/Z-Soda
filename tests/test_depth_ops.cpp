@@ -99,6 +99,31 @@ void TestApplyDepthMappingRawAndNormalizeModes() {
   assert(NearlyEqual(normalized.at(1, 0, 0), 1.0F));
 }
 
+void TestApplyDepthMappingRawHandlesUnboundedInput() {
+  zsoda::core::FrameDesc desc;
+  desc.width = 4;
+  desc.height = 1;
+  desc.channels = 1;
+  desc.format = zsoda::core::PixelFormat::kGray32F;
+
+  zsoda::core::FrameBuffer raw(desc);
+  raw.at(0, 0, 0) = 2.0F;
+  raw.at(1, 0, 0) = 4.0F;
+  raw.at(2, 0, 0) = 6.0F;
+  raw.at(3, 0, 0) = 8.0F;
+
+  zsoda::core::DepthMappingParams raw_params;
+  raw_params.mode = zsoda::core::DepthMappingMode::kRaw;
+  raw_params.guided_low_percentile = 0.0F;
+  raw_params.guided_high_percentile = 1.0F;
+  zsoda::core::ApplyDepthMapping(&raw, raw_params, nullptr);
+
+  assert(NearlyEqual(raw.at(0, 0, 0), 0.0F));
+  assert(NearlyEqual(raw.at(3, 0, 0), 1.0F));
+  assert(raw.at(1, 0, 0) > raw.at(0, 0, 0));
+  assert(raw.at(2, 0, 0) > raw.at(1, 0, 0));
+}
+
 void TestApplyDepthMappingGuidedModeWithState() {
   zsoda::core::FrameDesc desc;
   desc.width = 4;
@@ -523,6 +548,7 @@ void RunDepthOpsTests() {
   TestNormalizeDepth();
   TestNormalizeDepthInvertAndFlatInput();
   TestApplyDepthMappingRawAndNormalizeModes();
+  TestApplyDepthMappingRawHandlesUnboundedInput();
   TestApplyDepthMappingGuidedModeWithState();
   TestApplyDepthMappingSanitizesNonFiniteInputs();
   TestSliceMatte();

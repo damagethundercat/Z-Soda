@@ -84,13 +84,14 @@ void InitializeDefaultPixelFormatCandidates(
 #endif
 #include "Param_Utils.h"
 constexpr int kAeSdkNumParams = static_cast<int>(AeParamId::kExtractDepthMap) + 1;
-constexpr int kModelPopupChoices = 4;
+constexpr int kModelPopupChoices = 6;
 constexpr int kQualityPopupChoices = 3;
 constexpr int kOutputModePopupChoices = 2;
 constexpr std::uint32_t kAeGlobalOutFlags = ZSODA_AE_GLOBAL_OUTFLAGS;
 constexpr std::uint32_t kAeGlobalOutFlags2 = ZSODA_AE_GLOBAL_OUTFLAGS2;
 
-constexpr char kModelPopupLabels[] = "Depth Small|Depth Base|Depth Large|MiDaS DPT Large";
+constexpr char kModelPopupLabels[] =
+    "Depth Small|Depth Base|Depth Large|Depth Large Multi-View (Alias/Exp Fallback)|MiDaS DPT Large|Depth Small Multi-View (True)";
 constexpr char kQualityPopupLabels[] = "Draft|Balanced|Best";
 constexpr char kOutputModePopupLabels[] = "Depth Map|Slicing";
 
@@ -244,8 +245,14 @@ PF_Err RegisterParamsSetupScaffold(const AeSdkEntryPayload& payload) {
     def = {};
 #endif
   };
+  const auto apply_supervise_flag = [&def]() {
+#if defined(PF_ParamFlag_SUPERVISE)
+    def.flags |= PF_ParamFlag_SUPERVISE;
+#endif
+  };
 
   clear_def();
+  apply_supervise_flag();
   PF_ADD_POPUP("Model",
                kModelPopupChoices,
                1,
@@ -253,6 +260,7 @@ PF_Err RegisterParamsSetupScaffold(const AeSdkEntryPayload& payload) {
                static_cast<int>(AeParamId::kModel));
 
   clear_def();
+  apply_supervise_flag();
   PF_ADD_POPUP("Quality",
                kQualityPopupChoices,
                1,
@@ -260,6 +268,7 @@ PF_Err RegisterParamsSetupScaffold(const AeSdkEntryPayload& payload) {
                static_cast<int>(AeParamId::kQuality));
 
   clear_def();
+  apply_supervise_flag();
   PF_ADD_POPUP("Output",
                kOutputModePopupChoices,
                1,
@@ -267,6 +276,7 @@ PF_Err RegisterParamsSetupScaffold(const AeSdkEntryPayload& payload) {
                static_cast<int>(AeParamId::kOutputMode));
 
   clear_def();
+  apply_supervise_flag();
 #if defined(PF_ADD_CHECKBOXX)
   PF_ADD_CHECKBOXX("Invert", 0, 0, static_cast<int>(AeParamId::kInvert));
 #else
@@ -274,6 +284,7 @@ PF_Err RegisterParamsSetupScaffold(const AeSdkEntryPayload& payload) {
 #endif
 
   clear_def();
+  apply_supervise_flag();
   PF_ADD_FLOAT_SLIDERX("Min Depth",
                        0.0,
                        1.0,
@@ -286,6 +297,7 @@ PF_Err RegisterParamsSetupScaffold(const AeSdkEntryPayload& payload) {
                        static_cast<int>(AeParamId::kMinDepth));
 
   clear_def();
+  apply_supervise_flag();
   PF_ADD_FLOAT_SLIDERX("Max Depth",
                        0.0,
                        1.0,
@@ -298,6 +310,7 @@ PF_Err RegisterParamsSetupScaffold(const AeSdkEntryPayload& payload) {
                        static_cast<int>(AeParamId::kMaxDepth));
 
   clear_def();
+  apply_supervise_flag();
   PF_ADD_FLOAT_SLIDERX("Softness",
                        0.0,
                        1.0,
@@ -310,6 +323,7 @@ PF_Err RegisterParamsSetupScaffold(const AeSdkEntryPayload& payload) {
                        static_cast<int>(AeParamId::kSoftness));
 
   clear_def();
+  apply_supervise_flag();
 #if defined(PF_ADD_CHECKBOXX)
   PF_ADD_CHECKBOXX("Cache Enable", 1, 0, static_cast<int>(AeParamId::kCacheEnable));
 #else
@@ -317,6 +331,7 @@ PF_Err RegisterParamsSetupScaffold(const AeSdkEntryPayload& payload) {
 #endif
 
   clear_def();
+  apply_supervise_flag();
   PF_ADD_FLOAT_SLIDERX("Tile Size",
                        64.0,
                        4096.0,
@@ -329,6 +344,7 @@ PF_Err RegisterParamsSetupScaffold(const AeSdkEntryPayload& payload) {
                        static_cast<int>(AeParamId::kTileSize));
 
   clear_def();
+  apply_supervise_flag();
   PF_ADD_FLOAT_SLIDERX("Overlap",
                        0.0,
                        1024.0,
@@ -341,6 +357,7 @@ PF_Err RegisterParamsSetupScaffold(const AeSdkEntryPayload& payload) {
                        static_cast<int>(AeParamId::kOverlap));
 
   clear_def();
+  apply_supervise_flag();
   PF_ADD_FLOAT_SLIDERX("VRAM Budget (MB)",
                        0.0,
                        16384.0,
@@ -353,6 +370,7 @@ PF_Err RegisterParamsSetupScaffold(const AeSdkEntryPayload& payload) {
                        static_cast<int>(AeParamId::kVramBudgetMb));
 
   clear_def();
+  apply_supervise_flag();
 #if defined(PF_ADD_CHECKBOXX)
   PF_ADD_CHECKBOXX("Freeze Depth", 0, 0, static_cast<int>(AeParamId::kFreezeEnable));
 #else
@@ -462,11 +480,13 @@ bool TryCopyLayerWorldPassThrough(const PF_LayerDef* source_world, PF_LayerDef* 
   return true;
 }
 
-constexpr std::array<const char*, 4> kFallbackModelIdOrder = {
+constexpr std::array<const char*, 6> kFallbackModelIdOrder = {
     "depth-anything-v3-small",
     "depth-anything-v3-base",
     "depth-anything-v3-large",
+    "depth-anything-v3-large-multiview",
     "midas-dpt-large",
+    "depth-anything-v3-small-multiview",
 };
 
 zsoda::core::CompatMutex& AeParamSnapshotMutex() {
@@ -501,6 +521,11 @@ int GetSdkParamCountHint(const AeSdkEntryPayload& payload) {
 #if defined(PF_Cmd_UPDATE_PARAMS_UI)
   allow_out_data_count = allow_out_data_count || payload.command == PF_Cmd_UPDATE_PARAMS_UI;
 #endif
+#if defined(PF_Cmd_RENDER)
+  // Some AE host paths report unreliable in_data->num_params during render, while
+  // out_data->num_params can still carry the full schema count.
+  allow_out_data_count = allow_out_data_count || payload.command == PF_Cmd_RENDER;
+#endif
   if (allow_out_data_count && payload.out_data != nullptr && payload.out_data->num_params > 0) {
     count = std::max(count, static_cast<int>(payload.out_data->num_params));
   }
@@ -517,12 +542,6 @@ const PF_ParamDef* GetParam(const AeSdkEntryPayload& payload, AeParamId id) {
   }
 
   const int count_hint = GetSdkParamCountHint(payload);
-  if (count_hint > 0) {
-    if (index >= count_hint) {
-      return nullptr;
-    }
-    return payload.params[index];
-  }
 
   // Runtime fallback: some hosts do not reliably expose num_params on non-setup
   // commands, but still provide a full params table for render/update paths.
@@ -536,10 +555,21 @@ const PF_ParamDef* GetParam(const AeSdkEntryPayload& payload, AeParamId id) {
 #if defined(PF_Cmd_UPDATE_PARAMS_UI)
   allow_sdk_table_fallback = allow_sdk_table_fallback || payload.command == PF_Cmd_UPDATE_PARAMS_UI;
 #endif
+
+  if (count_hint > 0 && index < count_hint) {
+    return payload.params[index];
+  }
+
+  // If count_hint is stale (commonly 1=input only), prefer the known AE parameter
+  // table layout for render/update commands instead of dropping to defaults.
   if (allow_sdk_table_fallback) {
     if (index < kAeSdkNumParams) {
       return payload.params[index];
     }
+    return nullptr;
+  }
+
+  if (count_hint > 0) {
     return nullptr;
   }
 
@@ -585,11 +615,19 @@ bool TryReadIntegerSliderValue(const PF_ParamDef* param, int* value_out) {
 
 std::optional<int> TryGetUserChangedParamIndex(const AeSdkEntryPayload& payload) {
 #if defined(PF_Cmd_USER_CHANGED_PARAM)
-  if (payload.command != PF_Cmd_USER_CHANGED_PARAM || payload.extra == nullptr) {
+  bool is_change_notification = payload.command == PF_Cmd_USER_CHANGED_PARAM;
+#if defined(PF_Cmd_UPDATE_PARAMS_UI)
+  is_change_notification = is_change_notification || payload.command == PF_Cmd_UPDATE_PARAMS_UI;
+#endif
+  if (!is_change_notification || payload.extra == nullptr) {
     return std::nullopt;
   }
   const auto* extra = reinterpret_cast<const PF_UserChangedParamExtra*>(payload.extra);
-  return static_cast<int>(extra->param_index);
+  const int param_index = static_cast<int>(extra->param_index);
+  if (param_index < 0 || param_index > kAeSdkNumParams) {
+    return std::nullopt;
+  }
+  return param_index;
 #else
   (void)payload;
   return std::nullopt;

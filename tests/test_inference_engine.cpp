@@ -280,6 +280,9 @@ void TestModelList() {
   const auto models = engine.ListModelIds();
   assert(!models.empty());
   assert(HasModel(models, "depth-anything-v3-small"));
+  assert(HasModel(models, "depth-anything-v3-small-multiview"));
+  assert(HasModel(models, "depth-anything-v3-large-multiview"));
+  assert(!HasModel(models, "video-depth-anything-large-onnx-512x288"));
 }
 
 void TestModelSelection() {
@@ -304,6 +307,10 @@ void TestRuntimeBackendOptions() {
          zsoda::inference::RuntimeBackend::kCpu);
   assert(zsoda::inference::ParseRuntimeBackend("CUDA") ==
          zsoda::inference::RuntimeBackend::kCuda);
+  assert(zsoda::inference::ParseRuntimeBackend("TensorRT") ==
+         zsoda::inference::RuntimeBackend::kTensorRT);
+  assert(zsoda::inference::ParseRuntimeBackend("trt") ==
+         zsoda::inference::RuntimeBackend::kTensorRT);
   assert(zsoda::inference::ParseRuntimeBackend("direct-ml") ==
          zsoda::inference::RuntimeBackend::kDirectML);
   assert(zsoda::inference::ParseRuntimeBackend("core_ml") ==
@@ -339,7 +346,13 @@ void TestRuntimeBackendOptions() {
     assert(HasOrtInitializationDiagnostic(status.fallback_reason));
   } else {
 #if defined(ZSODA_WITH_ONNX_RUNTIME_API)
-    assert(engine.ActiveBackend() == zsoda::inference::RuntimeBackend::kCpu);
+    const auto active_backend = engine.ActiveBackend();
+    const bool valid_active_backend = active_backend == zsoda::inference::RuntimeBackend::kCpu ||
+                                      active_backend == zsoda::inference::RuntimeBackend::kCuda ||
+                                      active_backend == zsoda::inference::RuntimeBackend::kTensorRT ||
+                                      active_backend == zsoda::inference::RuntimeBackend::kDirectML ||
+                                      active_backend == zsoda::inference::RuntimeBackend::kCoreML;
+    assert(valid_active_backend);
 #else
     assert(engine.ActiveBackend() == zsoda::inference::RuntimeBackend::kCuda);
 #endif
@@ -642,8 +655,8 @@ void TestOnnxPreprocessAspectRatioForNonSquareInput() {
     zsoda::inference::ModelPipelineProfile profile;
     profile.input_width = 12;
     profile.input_height = 12;
-    profile.normalize_bias = 0.0F;
-    profile.normalize_scale = 1.0F;
+    profile.normalize_mean = {0.0F, 0.0F, 0.0F};
+    profile.normalize_std = {1.0F, 1.0F, 1.0F};
     profile.invert_depth = false;
 
     zsoda::inference::PreparedModelInput prepared;
@@ -662,6 +675,40 @@ void TestOnnxPreprocessAspectRatioForNonSquareInput() {
                           zsoda::inference::PreprocessResizeMode::kLowerBoundCenterCrop}) {
     run_case(16, 8, mode);
     run_case(8, 16, mode);
+  }
+}
+
+void TestDa3ProfileRespectsMultiviewEnvToggle() {
+  {
+    ScopedEnvironmentOverride da3_frames_default("ZSODA_DA3_MULTIVIEW_FRAMES", "1");
+    const auto profile =
+        zsoda::inference::ResolvePipelineProfile("depth-anything-v3-small");
+    assert(profile.input_frame_count == 1);
+    assert(!profile.prefer_latest_output_map);
+  }
+
+  {
+    ScopedEnvironmentOverride da3_frames_default("ZSODA_DA3_MULTIVIEW_FRAMES", "");
+    const auto profile =
+        zsoda::inference::ResolvePipelineProfile("depth-anything-v3-small-multiview");
+    assert(profile.input_frame_count == 5);
+    assert(profile.prefer_latest_output_map);
+  }
+
+  {
+    ScopedEnvironmentOverride da3_frames_four("ZSODA_DA3_MULTIVIEW_FRAMES", "4");
+    const auto profile =
+        zsoda::inference::ResolvePipelineProfile("depth-anything-v3-small-multiview");
+    assert(profile.input_frame_count == 4);
+    assert(profile.prefer_latest_output_map);
+  }
+
+  {
+    ScopedEnvironmentOverride da3_frames_invalid("ZSODA_DA3_MULTIVIEW_FRAMES", "0");
+    const auto profile =
+        zsoda::inference::ResolvePipelineProfile("depth-anything-v3-small-multiview");
+    assert(profile.input_frame_count == 5);
+    assert(profile.prefer_latest_output_map);
   }
 }
 
@@ -771,6 +818,7 @@ void RunInferenceEngineTests() {
   TestMissingModelFileDiagnostics();
 #if defined(ZSODA_WITH_ONNX_RUNTIME)
   TestOnnxPreprocessAspectRatioForNonSquareInput();
+  TestDa3ProfileRespectsMultiviewEnvToggle();
   TestOnnxBackendValidationScaffold();
 #endif
   TestModelAutoDownloaderValidation();

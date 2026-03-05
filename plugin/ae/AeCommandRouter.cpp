@@ -129,16 +129,23 @@ bool AeCommandRouter::Handle(const AeCommandContext& context) {
 }
 
 bool AeCommandRouter::UpdateParams(const AeParamValues& params, std::string* error) {
+  const std::string update_detail =
+      "model=" + params.model_id + ", quality=" + std::to_string(params.quality) +
+      ", freeze=" + std::to_string(params.freeze_enabled ? 1 : 0) +
+      ", extract_token=" + std::to_string(std::max(0, params.extract_token));
+  AppendRouterTrace("params_update_enter", update_detail.c_str());
   if (engine_) {
     const auto menu = BuildModelMenu(*engine_);
     if (std::find(menu.begin(), menu.end(), params.model_id) == menu.end()) {
       if (error) {
         *error = "unsupported model id: " + params.model_id;
       }
+      AppendRouterTrace("params_update_rejected", params.model_id.c_str());
       return false;
     }
   }
   current_params_ = params;
+  AppendRouterTrace("params_update_applied", update_detail.c_str());
   return true;
 }
 

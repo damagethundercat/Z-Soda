@@ -893,7 +893,8 @@ OrtDynamicLoader::~OrtDynamicLoader() {
 
 bool OrtDynamicLoader::Load(const std::string& dll_path,
                             std::uint32_t requested_api_version,
-                            std::string* error) {
+                            std::string* error,
+                            bool prefer_preloaded) {
   Unload();
   requested_dll_path_ = dll_path;
   requested_api_version_ =
@@ -924,9 +925,8 @@ bool OrtDynamicLoader::Load(const std::string& dll_path,
   bool api_bound_from_preloaded = false;
   bool loaded_from_preloaded_module = false;
   std::string load_note;
-  std::string load_attempts_diagnostics;
-  if (!TryLoadOrtModuleWithFallback(load_path_wide, &module, &load_attempts_diagnostics)) {
-    const std::string detail = load_attempts_diagnostics.empty() ? "<none>" : load_attempts_diagnostics;
+  std::string preloaded_probe_error;
+  const auto try_bind_preloaded = [&](std::string* bind_error) -> bool {
     HMODULE preloaded_module = nullptr;
     const OrtApiBase* preloaded_api_base = nullptr;
     const OrtApi* preloaded_api = nullptr;
@@ -942,10 +942,10 @@ bool OrtDynamicLoader::Load(const std::string& dll_path,
                                       &preloaded_runtime_version,
                                       &preloaded_path,
                                       &preloaded_error)) {
-      const std::string preloaded_detail = preloaded_error.empty() ? "<none>" : preloaded_error;
-      return Fail("LoadLibraryW failed: all attempts exhausted (" + detail +
-                      "); preloaded fallback unavailable (" + preloaded_detail + ")",
-                  error);
+      if (bind_error != nullptr) {
+        *bind_error = preloaded_error.empty() ? "preloaded bind probe failed" : preloaded_error;
+      }
+      return false;
     }
     module = preloaded_module;
     api_base = preloaded_api_base;
@@ -967,6 +967,35 @@ bool OrtDynamicLoader::Load(const std::string& dll_path,
     load_note.append(std::to_string(negotiated_api_version));
     if (!preloaded_path.empty()) {
       load_note.append(")");
+    }
+    if (bind_error != nullptr) {
+      bind_error->clear();
+    }
+    return true;
+  };
+
+  if (prefer_preloaded) {
+    if (!try_bind_preloaded(&preloaded_probe_error)) {
+      load_note = "preloaded preference requested but unavailable";
+      if (!preloaded_probe_error.empty()) {
+        load_note.append(" (");
+        load_note.append(preloaded_probe_error);
+        load_note.append(")");
+      }
+      load_note.append("; attempting isolated runtime load");
+    }
+  }
+
+  std::string load_attempts_diagnostics;
+  if (module == nullptr &&
+      !TryLoadOrtModuleWithFallback(load_path_wide, &module, &load_attempts_diagnostics)) {
+    const std::string detail = load_attempts_diagnostics.empty() ? "<none>" : load_attempts_diagnostics;
+    if (!try_bind_preloaded(&preloaded_probe_error)) {
+      const std::string preloaded_detail =
+          preloaded_probe_error.empty() ? "<none>" : preloaded_probe_error;
+      return Fail("LoadLibraryW failed: all attempts exhausted (" + detail +
+                      "); preloaded fallback unavailable (" + preloaded_detail + ")",
+                  error);
     }
     load_note.append("; isolated load failed: ");
     load_note.append(detail);
@@ -1079,6 +1108,10 @@ const std::string& OrtDynamicLoader::RuntimeVersionString() const {
 
 const std::string& OrtDynamicLoader::Diagnostics() const {
   return diagnostics_;
+}
+
+void* OrtDynamicLoader::NativeModuleHandle() const {
+  return module_handle_;
 }
 
 bool OrtDynamicLoader::Fail(const std::string& reason, std::string* error) {

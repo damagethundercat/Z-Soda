@@ -413,6 +413,67 @@ void TestHostBufferRenderDispatchValidation() {
   assert(error.find("host->rgb conversion failed") != std::string::npos);
 }
 
+#if defined(ZSODA_WITH_AE_SDK) && ZSODA_WITH_AE_SDK
+void TestSdkRenderDispatchReadsParamsWhenNumParamsHintIsInputOnly() {
+  constexpr int kWidth = 4;
+  constexpr int kHeight = 2;
+  constexpr int kRowBytes = kWidth * 4;
+  constexpr int kParamCount = 14;
+
+  std::array<std::uint8_t, kRowBytes * kHeight> src_pixels{};
+  std::array<std::uint8_t, kRowBytes * kHeight> out_pixels{};
+  src_pixels.fill(128U);
+  out_pixels.fill(0U);
+
+  PF_LayerDef src_world{};
+  src_world.width = kWidth;
+  src_world.height = kHeight;
+  src_world.rowbytes = kRowBytes;
+  src_world.data = reinterpret_cast<PF_PixelPtr>(src_pixels.data());
+
+  PF_LayerDef out_world{};
+  out_world.width = kWidth;
+  out_world.height = kHeight;
+  out_world.rowbytes = kRowBytes;
+  out_world.data = reinterpret_cast<PF_PixelPtr>(out_pixels.data());
+
+  std::array<PF_ParamDef, kParamCount> params{};
+  std::array<PF_ParamDef*, kParamCount> param_ptrs{};
+  for (int i = 0; i < kParamCount; ++i) {
+    param_ptrs[static_cast<std::size_t>(i)] = &params[static_cast<std::size_t>(i)];
+  }
+
+  params[0].u.ld = src_world;
+  params[1].u.pd.value = 6;  // depth-anything-v3-small-multiview
+  params[2].u.pd.value = 2;  // quality: balanced
+
+  PF_InData in_data{};
+  in_data.num_params = 1;  // Host may report input-only count on render paths.
+  in_data.current_time = 100;
+  in_data.time_step = 1;
+  in_data.time_scale = 24;
+
+  PF_OutData out_data{};
+  out_data.num_params = kParamCount;
+
+  zsoda::ae::AeSdkEntryPayload payload{};
+  payload.command = PF_Cmd_RENDER;
+  payload.in_data = &in_data;
+  payload.out_data = &out_data;
+  payload.params = param_ptrs.data();
+  payload.output = &out_world;
+
+  zsoda::ae::AeDispatchContext dispatch;
+  std::string error;
+  assert(zsoda::ae::BuildSdkDispatch(payload, &dispatch, &error));
+  assert(dispatch.command.command == zsoda::ae::AeCommand::kRender);
+  assert(dispatch.render_request.params_override.has_value());
+  const auto& params_override = *dispatch.render_request.params_override;
+  assert(params_override.model_id == "depth-anything-v3-small-multiview");
+  assert(params_override.quality == 2);
+}
+#endif
+
 void TestExecuteHostBufferRenderBridge() {
   ScopedEnvironmentOverride force_temporal_alpha("ZSODA_TEMPORAL_ALPHA", "1");
 
@@ -789,6 +850,9 @@ void RunAeRouterTests() {
   TestRenderBridgeFrameHashCacheBehavior();
   TestHostBufferRenderDispatchConversion();
   TestHostBufferRenderDispatchValidation();
+#if defined(ZSODA_WITH_AE_SDK) && ZSODA_WITH_AE_SDK
+  TestSdkRenderDispatchReadsParamsWhenNumParamsHintIsInputOnly();
+#endif
   TestExecuteHostBufferRenderBridge();
   TestRouterPayloadValidation();
   TestPluginEntryValidation();

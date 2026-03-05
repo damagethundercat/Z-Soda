@@ -9,6 +9,7 @@ namespace zsoda::inference {
 enum class RuntimeBackend {
   kAuto,
   kCpu,
+  kTensorRT,
   kCuda,
   kDirectML,
   kMetal,
@@ -41,6 +42,8 @@ struct RuntimeOptions {
       return "auto";
     case RuntimeBackend::kCpu:
       return "cpu";
+    case RuntimeBackend::kTensorRT:
+      return "tensorrt";
     case RuntimeBackend::kCuda:
       return "cuda";
     case RuntimeBackend::kDirectML:
@@ -67,6 +70,9 @@ struct RuntimeOptions {
 
   if (normalized == "cpu") {
     return RuntimeBackend::kCpu;
+  }
+  if (normalized == "tensorrt" || normalized == "trt") {
+    return RuntimeBackend::kTensorRT;
   }
   if (normalized == "cuda") {
     return RuntimeBackend::kCuda;
