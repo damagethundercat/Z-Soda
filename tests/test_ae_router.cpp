@@ -421,7 +421,20 @@ void TestHostBufferRenderDispatchValidation() {
 }
 
 #if defined(ZSODA_WITH_AE_SDK) && ZSODA_WITH_AE_SDK
+void ResetSdkAdapterSupervisionState() {
+  PF_OutData out_data{};
+  zsoda::ae::AeSdkEntryPayload payload{};
+  payload.command = PF_Cmd_GLOBAL_SETUP;
+  payload.out_data = &out_data;
+
+  zsoda::ae::AeDispatchContext dispatch;
+  std::string error;
+  assert(zsoda::ae::BuildSdkDispatch(payload, &dispatch, &error));
+}
+
 void TestSdkRenderDispatchReadsParamsWhenNumParamsHintIsInputOnly() {
+  ResetSdkAdapterSupervisionState();
+
   constexpr int kWidth = 4;
   constexpr int kHeight = 2;
   constexpr int kRowBytes = kWidth * 4;
@@ -486,7 +499,61 @@ void TestSdkRenderDispatchReadsParamsWhenNumParamsHintIsInputOnly() {
   assert(override.quality_boost_level == 4);
 }
 
+void TestSdkRenderDispatchSkipsOverrideWhenRenderTableHasNoReadableParams() {
+  ResetSdkAdapterSupervisionState();
+
+  constexpr int kWidth = 4;
+  constexpr int kHeight = 2;
+  constexpr int kRowBytes = kWidth * 4;
+  constexpr int kParamCount = 20;
+
+  std::array<std::uint8_t, kRowBytes * kHeight> src_pixels{};
+  std::array<std::uint8_t, kRowBytes * kHeight> out_pixels{};
+  src_pixels.fill(128U);
+  out_pixels.fill(0U);
+
+  PF_LayerDef src_world{};
+  src_world.width = kWidth;
+  src_world.height = kHeight;
+  src_world.rowbytes = kRowBytes;
+  src_world.data = reinterpret_cast<PF_PixelPtr>(src_pixels.data());
+
+  PF_LayerDef out_world{};
+  out_world.width = kWidth;
+  out_world.height = kHeight;
+  out_world.rowbytes = kRowBytes;
+  out_world.data = reinterpret_cast<PF_PixelPtr>(out_pixels.data());
+
+  PF_ParamDef input_param{};
+  input_param.u.ld = src_world;
+
+  std::array<PF_ParamDef*, kParamCount> param_ptrs{};
+  param_ptrs.fill(nullptr);
+  param_ptrs[0] = &input_param;
+
+  PF_InData in_data{};
+  in_data.num_params = 1;
+
+  PF_OutData out_data{};
+  out_data.num_params = 1;
+
+  zsoda::ae::AeSdkEntryPayload payload{};
+  payload.command = PF_Cmd_RENDER;
+  payload.in_data = &in_data;
+  payload.out_data = &out_data;
+  payload.params = param_ptrs.data();
+  payload.output = &out_world;
+
+  zsoda::ae::AeDispatchContext dispatch;
+  std::string error;
+  assert(zsoda::ae::BuildSdkDispatch(payload, &dispatch, &error));
+  assert(dispatch.command.command == zsoda::ae::AeCommand::kRender);
+  assert(!dispatch.render_request.params_override.has_value());
+}
+
 void TestSdkSequenceResetupBootstrapsRouterParams() {
+  ResetSdkAdapterSupervisionState();
+
   constexpr int kParamCount = 20;
 
   std::array<PF_ParamDef, kParamCount> params{};
@@ -923,6 +990,7 @@ void RunAeRouterTests() {
   TestHostBufferRenderDispatchValidation();
 #if defined(ZSODA_WITH_AE_SDK) && ZSODA_WITH_AE_SDK
   TestSdkRenderDispatchReadsParamsWhenNumParamsHintIsInputOnly();
+  TestSdkRenderDispatchSkipsOverrideWhenRenderTableHasNoReadableParams();
   TestSdkSequenceResetupBootstrapsRouterParams();
 #endif
   TestExecuteHostBufferRenderBridge();

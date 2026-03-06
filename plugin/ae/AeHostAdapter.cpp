@@ -4,9 +4,12 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <string>
 #include <type_traits>
 #include <utility>
 
@@ -95,6 +98,62 @@ constexpr char kModelPopupLabels[] = "Depth HQ (DA3 Large, Locked)";
 constexpr char kQualityPopupLabels[] = "256 px|512 px|768 px|1024 px|1280 px|1536 px|1920 px|2048 px";
 constexpr char kQualityBoostLevelPopupLabels[] = "2x2|3x3|4x4|5x5";
 constexpr char kOutputModePopupLabels[] = "Depth Map|Slicing";
+
+struct AeParamExtractionMeta {
+  int count_hint = 0;
+  bool used_sdk_table_fallback = false;
+  bool used_param_snapshot_fallback = false;
+  bool any_param_read = false;
+  bool has_quality_popup = false;
+  int raw_quality_popup = 0;
+  bool has_quality_boost_enable = false;
+  bool raw_quality_boost_enable = false;
+  bool has_quality_boost_level_popup = false;
+  int raw_quality_boost_level_popup = 0;
+};
+
+void AppendSdkTrace(const char* stage, const std::string& detail) {
+#if defined(_WIN32)
+  const char* temp_dir = std::getenv("TEMP");
+  if (temp_dir == nullptr || temp_dir[0] == '\0') {
+    temp_dir = std::getenv("TMP");
+  }
+  if (temp_dir == nullptr || temp_dir[0] == '\0') {
+    return;
+  }
+
+  char log_path[MAX_PATH] = {};
+  std::snprintf(log_path, sizeof(log_path), "%s%sZSoda_AE_Runtime.log",
+                temp_dir,
+                (temp_dir[std::strlen(temp_dir) - 1] == '\\' || temp_dir[std::strlen(temp_dir) - 1] == '/')
+                    ? ""
+                    : "\\");
+  FILE* file = std::fopen(log_path, "ab");
+  if (file == nullptr) {
+    return;
+  }
+
+  SYSTEMTIME now = {};
+  ::GetLocalTime(&now);
+  const unsigned long tid = static_cast<unsigned long>(::GetCurrentThreadId());
+  std::fprintf(file,
+               "%04u-%02u-%02u %02u:%02u:%02u.%03u | SdkTrace | tid=%lu, stage=%s, detail=%s\r\n",
+               static_cast<unsigned>(now.wYear),
+               static_cast<unsigned>(now.wMonth),
+               static_cast<unsigned>(now.wDay),
+               static_cast<unsigned>(now.wHour),
+               static_cast<unsigned>(now.wMinute),
+               static_cast<unsigned>(now.wSecond),
+               static_cast<unsigned>(now.wMilliseconds),
+               tid,
+               stage != nullptr ? stage : "<null>",
+               detail.empty() ? "<none>" : detail.c_str());
+  std::fclose(file);
+#else
+  (void)stage;
+  (void)detail;
+#endif
+}
 
 #if defined(PF_Precision_HUNDREDTHS)
 constexpr int kSliderPrecisionFractional = PF_Precision_HUNDREDTHS;
@@ -570,63 +629,33 @@ void WriteAeSupervisedParamsSeen(bool seen) {
 
 bool AllowsSdkParamTableCount(PF_Cmd command) {
   bool allowed = command == PF_Cmd_PARAMS_SETUP;
-#if defined(PF_Cmd_USER_CHANGED_PARAM)
   allowed = allowed || command == PF_Cmd_USER_CHANGED_PARAM;
-#endif
-#if defined(PF_Cmd_UPDATE_PARAMS_UI)
   allowed = allowed || command == PF_Cmd_UPDATE_PARAMS_UI;
-#endif
-#if defined(PF_Cmd_SEQUENCE_SETUP)
   allowed = allowed || command == PF_Cmd_SEQUENCE_SETUP;
-#endif
-#if defined(PF_Cmd_SEQUENCE_RESETUP)
   allowed = allowed || command == PF_Cmd_SEQUENCE_RESETUP;
-#endif
-#if defined(PF_Cmd_RENDER)
   // Some AE host paths report unreliable in_data->num_params during render, while
   // out_data->num_params can still carry the full schema count.
   allowed = allowed || command == PF_Cmd_RENDER;
-#endif
   return allowed;
 }
 
 bool AllowsSdkParamTableFallback(PF_Cmd command) {
   bool allowed = false;
-#if defined(PF_Cmd_RENDER)
   allowed = allowed || command == PF_Cmd_RENDER;
-#endif
-#if defined(PF_Cmd_USER_CHANGED_PARAM)
   allowed = allowed || command == PF_Cmd_USER_CHANGED_PARAM;
-#endif
-#if defined(PF_Cmd_UPDATE_PARAMS_UI)
   allowed = allowed || command == PF_Cmd_UPDATE_PARAMS_UI;
-#endif
-#if defined(PF_Cmd_SEQUENCE_SETUP)
   allowed = allowed || command == PF_Cmd_SEQUENCE_SETUP;
-#endif
-#if defined(PF_Cmd_SEQUENCE_RESETUP)
   allowed = allowed || command == PF_Cmd_SEQUENCE_RESETUP;
-#endif
   return allowed;
 }
 
 bool AllowsParamSnapshotFallback(PF_Cmd command) {
   bool allowed = false;
-#if defined(PF_Cmd_RENDER)
   allowed = allowed || command == PF_Cmd_RENDER;
-#endif
-#if defined(PF_Cmd_USER_CHANGED_PARAM)
   allowed = allowed || command == PF_Cmd_USER_CHANGED_PARAM;
-#endif
-#if defined(PF_Cmd_UPDATE_PARAMS_UI)
   allowed = allowed || command == PF_Cmd_UPDATE_PARAMS_UI;
-#endif
-#if defined(PF_Cmd_SEQUENCE_SETUP)
   allowed = allowed || command == PF_Cmd_SEQUENCE_SETUP;
-#endif
-#if defined(PF_Cmd_SEQUENCE_RESETUP)
   allowed = allowed || command == PF_Cmd_SEQUENCE_RESETUP;
-#endif
   return allowed;
 }
 
@@ -715,11 +744,8 @@ bool TryReadIntegerSliderValue(const PF_ParamDef* param, int* value_out) {
 }
 
 std::optional<int> TryGetUserChangedParamIndex(const AeSdkEntryPayload& payload) {
-#if defined(PF_Cmd_USER_CHANGED_PARAM)
   bool is_change_notification = payload.command == PF_Cmd_USER_CHANGED_PARAM;
-#if defined(PF_Cmd_UPDATE_PARAMS_UI)
   is_change_notification = is_change_notification || payload.command == PF_Cmd_UPDATE_PARAMS_UI;
-#endif
   if (!is_change_notification || payload.extra == nullptr) {
     return std::nullopt;
   }
@@ -729,15 +755,12 @@ std::optional<int> TryGetUserChangedParamIndex(const AeSdkEntryPayload& payload)
     return std::nullopt;
   }
   return param_index;
-#else
-  (void)payload;
-  return std::nullopt;
-#endif
 }
 
 bool TryExtractPfCmdParamValues(const AeSdkEntryPayload& payload,
                                 AeParamValues* values_out,
-                                std::string* error) {
+                                std::string* error,
+                                AeParamExtractionMeta* meta = nullptr) {
   if (values_out == nullptr) {
     SetError(error, "missing sdk params output");
     return false;
@@ -749,6 +772,11 @@ bool TryExtractPfCmdParamValues(const AeSdkEntryPayload& payload,
 
   AeParamValues values = ReadAeParamSnapshot();
   bool any_param_read = false;
+  if (meta != nullptr) {
+    *meta = {};
+    meta->count_hint = GetSdkParamCountHint(payload);
+    meta->used_sdk_table_fallback = AllowsSdkParamTableFallback(payload.command);
+  }
 
   int popup_value = 0;
   if (TryReadPopupValue(GetParam(payload, AeParamId::kModel), &popup_value)) {
@@ -761,11 +789,19 @@ bool TryExtractPfCmdParamValues(const AeSdkEntryPayload& payload,
   if (TryReadPopupValue(GetParam(payload, AeParamId::kQuality), &popup_value)) {
     any_param_read = true;
     values.quality = ClampQualitySelection(popup_value);
+    if (meta != nullptr) {
+      meta->has_quality_popup = true;
+      meta->raw_quality_popup = popup_value;
+    }
   }
 
   if (TryReadPopupValue(GetParam(payload, AeParamId::kQualityBoostLevel), &popup_value)) {
     any_param_read = true;
     values.quality_boost_level = std::clamp(popup_value + 1, 2, 5);
+    if (meta != nullptr) {
+      meta->has_quality_boost_level_popup = true;
+      meta->raw_quality_boost_level_popup = popup_value;
+    }
   }
 
   if (TryReadPopupValue(GetParam(payload, AeParamId::kOutputMode), &popup_value)) {
@@ -785,6 +821,10 @@ bool TryExtractPfCmdParamValues(const AeSdkEntryPayload& payload,
   if (TryReadCheckboxValue(GetParam(payload, AeParamId::kQualityBoostEnable), &checkbox_value)) {
     any_param_read = true;
     values.quality_boost_enabled = checkbox_value;
+    if (meta != nullptr) {
+      meta->has_quality_boost_enable = true;
+      meta->raw_quality_boost_enable = checkbox_value;
+    }
   }
   if (TryReadCheckboxValue(GetParam(payload, AeParamId::kTimeConsistency), &checkbox_value)) {
     any_param_read = true;
@@ -842,8 +882,14 @@ bool TryExtractPfCmdParamValues(const AeSdkEntryPayload& payload,
       SetError(error, "sdk params table does not contain readable values");
       return false;
     }
+    if (meta != nullptr) {
+      meta->used_param_snapshot_fallback = true;
+    }
   }
 
+  if (meta != nullptr) {
+    meta->any_param_read = any_param_read;
+  }
   WriteAeParamSnapshot(values);
   *values_out = values;
   if (error != nullptr) {
@@ -855,6 +901,7 @@ bool TryExtractPfCmdParamValues(const AeSdkEntryPayload& payload,
 bool WireParamSetupPayload(const AeSdkEntryPayload& payload,
                            AeDispatchContext* dispatch,
                            std::string* error) {
+  WriteAeSupervisedParamsSeen(false);
   if (payload.out_data != nullptr) {
     // Keep setup metadata deterministic and lock to the full schema count.
     payload.out_data->my_version = static_cast<A_u_long>(ZSODA_EFFECT_VERSION_HEX);
@@ -884,6 +931,7 @@ bool WireParamSetupPayload(const AeSdkEntryPayload& payload,
 bool WireGlobalSetupPayload(const AeSdkEntryPayload& payload,
                             AeDispatchContext* dispatch,
                             std::string* error) {
+  WriteAeSupervisedParamsSeen(false);
   if (payload.out_data != nullptr) {
     payload.out_data->my_version = static_cast<A_u_long>(ZSODA_EFFECT_VERSION_HEX);
     payload.out_data->out_flags = static_cast<A_long>(kAeGlobalOutFlags);
@@ -901,8 +949,33 @@ bool WireParamUpdatePayload(const AeSdkEntryPayload& payload,
   InitializeSdkHostDispatch(payload, AeCommand::kUpdateParams, dispatch, error);
 
   AeParamValues params = DefaultAeParams();
-  if (!TryExtractPfCmdParamValues(payload, &params, error)) {
+  AeParamExtractionMeta meta{};
+  if (!TryExtractPfCmdParamValues(payload, &params, error, &meta)) {
     // Keep host responsiveness: skip unsupported payloads without failing host command.
+    dispatch->command.command = AeCommand::kUnknown;
+    return true;
+  }
+
+  const std::string trace_detail =
+      "cmd=" + std::to_string(static_cast<int>(payload.command)) +
+      ", count_hint=" + std::to_string(meta.count_hint) +
+      ", sdk_fallback=" + std::to_string(meta.used_sdk_table_fallback ? 1 : 0) +
+      ", snapshot_fallback=" + std::to_string(meta.used_param_snapshot_fallback ? 1 : 0) +
+      ", any_read=" + std::to_string(meta.any_param_read ? 1 : 0) +
+      ", quality_popup=" +
+      std::string(meta.has_quality_popup ? std::to_string(meta.raw_quality_popup) : "<none>") +
+      ", boost_enable=" +
+      std::string(meta.has_quality_boost_enable ? (meta.raw_quality_boost_enable ? "1" : "0")
+                                                : "<none>") +
+      ", boost_popup=" +
+      std::string(meta.has_quality_boost_level_popup
+                      ? std::to_string(meta.raw_quality_boost_level_popup)
+                      : "<none>") +
+      ", resolved_quality=" + std::to_string(params.quality) +
+      ", resolved_boost=" +
+      std::to_string(params.quality_boost_enabled ? params.quality_boost_level : 0);
+  AppendSdkTrace("param_update_extract", trace_detail);
+  if (!meta.any_param_read) {
     dispatch->command.command = AeCommand::kUnknown;
     return true;
   }
@@ -1168,38 +1241,22 @@ AeCommand MapPfCommand(PF_Cmd command) {
       return AeCommand::kGlobalSetup;
     case PF_Cmd_PARAMS_SETUP:
       return AeCommand::kParamsSetup;
-#if defined(PF_Cmd_USER_CHANGED_PARAM)
     case PF_Cmd_USER_CHANGED_PARAM:
       return AeCommand::kUpdateParams;
-#endif
-#if defined(PF_Cmd_UPDATE_PARAMS_UI)
     case PF_Cmd_UPDATE_PARAMS_UI:
       return AeCommand::kUpdateParams;
-#endif
-#if defined(PF_Cmd_SEQUENCE_SETUP)
     case PF_Cmd_SEQUENCE_SETUP:
       return AeCommand::kUpdateParams;
-#endif
-#if defined(PF_Cmd_SEQUENCE_RESETUP)
     case PF_Cmd_SEQUENCE_RESETUP:
       return AeCommand::kUpdateParams;
-#endif
-#if defined(PF_Cmd_SEQUENCE_SETDOWN)
     case PF_Cmd_SEQUENCE_SETDOWN:
       return AeCommand::kUnknown;
-#endif
-#if defined(PF_Cmd_SEQUENCE_FLATTEN)
     case PF_Cmd_SEQUENCE_FLATTEN:
       return AeCommand::kUnknown;
-#endif
-#if defined(PF_Cmd_SMART_PRE_RENDER)
     case PF_Cmd_SMART_PRE_RENDER:
       return AeCommand::kUnknown;
-#endif
-#if defined(PF_Cmd_SMART_RENDER)
     case PF_Cmd_SMART_RENDER:
       return AeCommand::kUnknown;
-#endif
     case PF_Cmd_RENDER:
       return AeCommand::kRender;
     default:
@@ -1219,6 +1276,16 @@ bool BuildSdkDispatch(const AeSdkEntryPayload& payload,
 
   const AeCommand mapped = MapPfCommand(payload.command);
   InitializeSdkHostDispatch(payload, mapped, dispatch, error);
+  if (mapped != AeCommand::kRender) {
+    const std::string detail =
+        "cmd=" + std::to_string(static_cast<int>(payload.command)) +
+        ", mapped=" + std::to_string(static_cast<int>(mapped)) +
+        ", in_num_params=" +
+        std::to_string(payload.in_data != nullptr ? static_cast<int>(payload.in_data->num_params) : 0) +
+        ", out_num_params=" +
+        std::to_string(payload.out_data != nullptr ? static_cast<int>(payload.out_data->num_params) : 0);
+    AppendSdkTrace("dispatch_enter", detail);
+  }
 
   switch (mapped) {
     case AeCommand::kGlobalSetup:
@@ -1313,15 +1380,40 @@ bool TryExtractPfCmdRenderPayload(const AeSdkEntryPayload& payload,
   // Some sessions never send USER_CHANGED/UPDATE_PARAMS_UI/SEQUENCE_RESETUP for
   // saved effect state, so allow render-table bootstrap only until the first
   // supervised params update has been observed.
+  const bool supervised_params_seen = ReadAeSupervisedParamsSeen();
   scaffold->has_params_override = false;
-  if (!ReadAeSupervisedParamsSeen()) {
+  AeParamExtractionMeta params_meta{};
+  bool params_extract_ok = false;
+  if (!supervised_params_seen) {
     AeParamValues params_override = DefaultAeParams();
     std::string params_error;
-    if (TryExtractPfCmdParamValues(payload, &params_override, &params_error)) {
+    params_extract_ok = TryExtractPfCmdParamValues(payload, &params_override, &params_error, &params_meta);
+    if (params_extract_ok && params_meta.any_param_read) {
       scaffold->host_render.params_override = params_override;
       scaffold->has_params_override = true;
     }
   }
+  const std::string render_param_detail =
+      "cmd=" + std::to_string(static_cast<int>(payload.command)) +
+      ", supervised_seen=" + std::to_string(supervised_params_seen ? 1 : 0) +
+      ", count_hint=" + std::to_string(params_meta.count_hint) +
+      ", sdk_fallback=" + std::to_string(params_meta.used_sdk_table_fallback ? 1 : 0) +
+      ", snapshot_fallback=" + std::to_string(params_meta.used_param_snapshot_fallback ? 1 : 0) +
+      ", extract_ok=" + std::to_string(params_extract_ok ? 1 : 0) +
+      ", any_read=" + std::to_string(params_meta.any_param_read ? 1 : 0) +
+      ", quality_popup=" +
+      std::string(params_meta.has_quality_popup ? std::to_string(params_meta.raw_quality_popup)
+                                                : "<none>") +
+      ", boost_enable=" +
+      std::string(params_meta.has_quality_boost_enable
+                      ? (params_meta.raw_quality_boost_enable ? "1" : "0")
+                      : "<none>") +
+      ", boost_popup=" +
+      std::string(params_meta.has_quality_boost_level_popup
+                      ? std::to_string(params_meta.raw_quality_boost_level_popup)
+                      : "<none>") +
+      ", using_override=" + std::to_string(scaffold->has_params_override ? 1 : 0);
+  AppendSdkTrace("render_param_extract", render_param_detail);
 
   int candidate_width = 0;
   std::size_t candidate_row_bytes = 0;
