@@ -94,7 +94,7 @@ constexpr int kOutputModePopupChoices = 2;
 constexpr std::uint32_t kAeGlobalOutFlags = ZSODA_AE_GLOBAL_OUTFLAGS;
 constexpr std::uint32_t kAeGlobalOutFlags2 = ZSODA_AE_GLOBAL_OUTFLAGS2;
 
-constexpr char kModelPopupLabels[] = "Depth HQ (DA3 Large, Locked)";
+constexpr char kModelPopupLabels[] = "Depth HQ (Locked)";
 constexpr char kQualityPopupLabels[] = "256 px|512 px|768 px|1024 px|1280 px|1536 px|1920 px|2048 px";
 constexpr char kQualityBoostLevelPopupLabels[] = "2x2|3x3|4x4|5x5";
 constexpr char kOutputModePopupLabels[] = "Depth Map|Slicing";
@@ -588,10 +588,6 @@ bool TryCopyLayerWorldPassThrough(const PF_LayerDef* source_world, PF_LayerDef* 
   return true;
 }
 
-constexpr std::array<const char*, 1> kFallbackModelIdOrder = {
-    "depth-anything-v3-large",
-};
-
 zsoda::core::CompatMutex& AeParamSnapshotMutex() {
   static zsoda::core::CompatMutex mutex;
   return mutex;
@@ -610,6 +606,21 @@ AeParamValues ReadAeParamSnapshot() {
 void WriteAeParamSnapshot(const AeParamValues& values) {
   zsoda::core::CompatLockGuard lock(AeParamSnapshotMutex());
   AeParamSnapshotStorage() = values;
+}
+
+bool& AeParamSnapshotSeededStorage() {
+  static bool seeded = false;
+  return seeded;
+}
+
+bool ReadAeParamSnapshotSeeded() {
+  zsoda::core::CompatLockGuard lock(AeParamSnapshotMutex());
+  return AeParamSnapshotSeededStorage();
+}
+
+void WriteAeParamSnapshotSeeded(bool seeded) {
+  zsoda::core::CompatLockGuard lock(AeParamSnapshotMutex());
+  AeParamSnapshotSeededStorage() = seeded;
 }
 
 bool& AeSupervisedParamsSeenStorage() {
@@ -779,13 +790,6 @@ bool TryExtractPfCmdParamValues(const AeSdkEntryPayload& payload,
   }
 
   int popup_value = 0;
-  if (TryReadPopupValue(GetParam(payload, AeParamId::kModel), &popup_value)) {
-    any_param_read = true;
-    const int model_index = std::clamp(popup_value - 1, 0,
-                                       static_cast<int>(kFallbackModelIdOrder.size()) - 1);
-    values.model_id = kFallbackModelIdOrder[model_index];
-  }
-
   if (TryReadPopupValue(GetParam(payload, AeParamId::kQuality), &popup_value)) {
     any_param_read = true;
     values.quality = ClampQualitySelection(popup_value);
@@ -890,6 +894,9 @@ bool TryExtractPfCmdParamValues(const AeSdkEntryPayload& payload,
   if (meta != nullptr) {
     meta->any_param_read = any_param_read;
   }
+  if (any_param_read) {
+    WriteAeParamSnapshotSeeded(true);
+  }
   WriteAeParamSnapshot(values);
   *values_out = values;
   if (error != nullptr) {
@@ -902,6 +909,7 @@ bool WireParamSetupPayload(const AeSdkEntryPayload& payload,
                            AeDispatchContext* dispatch,
                            std::string* error) {
   WriteAeSupervisedParamsSeen(false);
+  WriteAeParamSnapshotSeeded(false);
   if (payload.out_data != nullptr) {
     // Keep setup metadata deterministic and lock to the full schema count.
     payload.out_data->my_version = static_cast<A_u_long>(ZSODA_EFFECT_VERSION_HEX);
@@ -932,6 +940,7 @@ bool WireGlobalSetupPayload(const AeSdkEntryPayload& payload,
                             AeDispatchContext* dispatch,
                             std::string* error) {
   WriteAeSupervisedParamsSeen(false);
+  WriteAeParamSnapshotSeeded(false);
   if (payload.out_data != nullptr) {
     payload.out_data->my_version = static_cast<A_u_long>(ZSODA_EFFECT_VERSION_HEX);
     payload.out_data->out_flags = static_cast<A_long>(kAeGlobalOutFlags);
@@ -1376,26 +1385,25 @@ bool TryExtractPfCmdRenderPayload(const AeSdkEntryPayload& payload,
   scaffold->frame_hash = ComputeSafeFrameHash(frame_hash_seed);
   scaffold->host_render.frame_hash = scaffold->frame_hash;
 
-  // Prefer supervised update commands once AE has started emitting them.
-  // Some sessions never send USER_CHANGED/UPDATE_PARAMS_UI/SEQUENCE_RESETUP for
-  // saved effect state, so allow render-table bootstrap only until the first
-  // supervised params update has been observed.
   const bool supervised_params_seen = ReadAeSupervisedParamsSeen();
+  const bool snapshot_seeded = ReadAeParamSnapshotSeeded();
   scaffold->has_params_override = false;
   AeParamExtractionMeta params_meta{};
-  bool params_extract_ok = false;
-  if (!supervised_params_seen) {
-    AeParamValues params_override = DefaultAeParams();
-    std::string params_error;
-    params_extract_ok = TryExtractPfCmdParamValues(payload, &params_override, &params_error, &params_meta);
-    if (params_extract_ok && params_meta.any_param_read) {
-      scaffold->host_render.params_override = params_override;
-      scaffold->has_params_override = true;
-    }
+  AeParamValues params_override = DefaultAeParams();
+  std::string params_error;
+  const bool params_extract_ok =
+      TryExtractPfCmdParamValues(payload, &params_override, &params_error, &params_meta);
+  const bool use_snapshot_override =
+      params_extract_ok && !params_meta.any_param_read && params_meta.used_param_snapshot_fallback &&
+      snapshot_seeded;
+  if (params_extract_ok && (params_meta.any_param_read || use_snapshot_override)) {
+    scaffold->host_render.params_override = params_override;
+    scaffold->has_params_override = true;
   }
   const std::string render_param_detail =
       "cmd=" + std::to_string(static_cast<int>(payload.command)) +
       ", supervised_seen=" + std::to_string(supervised_params_seen ? 1 : 0) +
+      ", snapshot_seeded=" + std::to_string(snapshot_seeded ? 1 : 0) +
       ", count_hint=" + std::to_string(params_meta.count_hint) +
       ", sdk_fallback=" + std::to_string(params_meta.used_sdk_table_fallback ? 1 : 0) +
       ", snapshot_fallback=" + std::to_string(params_meta.used_param_snapshot_fallback ? 1 : 0) +
@@ -1412,6 +1420,10 @@ bool TryExtractPfCmdRenderPayload(const AeSdkEntryPayload& payload,
       std::string(params_meta.has_quality_boost_level_popup
                       ? std::to_string(params_meta.raw_quality_boost_level_popup)
                       : "<none>") +
+      ", override_source=" +
+      std::string(params_meta.any_param_read
+                      ? "live"
+                      : (use_snapshot_override ? "snapshot" : "current")) +
       ", using_override=" + std::to_string(scaffold->has_params_override ? 1 : 0);
   AppendSdkTrace("render_param_extract", render_param_detail);
 

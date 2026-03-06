@@ -492,7 +492,7 @@ void TestSdkRenderDispatchReadsParamsWhenNumParamsHintIsInputOnly() {
   assert(dispatch.command.command == zsoda::ae::AeCommand::kRender);
   assert(dispatch.render_request.params_override.has_value());
   const auto& override = *dispatch.render_request.params_override;
-  assert(override.model_id == "depth-anything-v3-large");
+  assert(override.model_id == zsoda::ae::DefaultAeParams().model_id);
   assert(override.quality == 2);
   assert(override.preserve_ratio);
   assert(override.quality_boost_enabled);
@@ -551,6 +551,174 @@ void TestSdkRenderDispatchSkipsOverrideWhenRenderTableHasNoReadableParams() {
   assert(!dispatch.render_request.params_override.has_value());
 }
 
+void TestSdkRenderDispatchReadsLiveParamsAfterSupervisionSeen() {
+  ResetSdkAdapterSupervisionState();
+
+  constexpr int kParamCount = 20;
+  std::array<PF_ParamDef, kParamCount> setup_params{};
+  std::array<PF_ParamDef*, kParamCount> setup_param_ptrs{};
+  for (int i = 0; i < kParamCount; ++i) {
+    setup_param_ptrs[static_cast<std::size_t>(i)] = &setup_params[static_cast<std::size_t>(i)];
+  }
+
+  setup_params[static_cast<int>(zsoda::ae::AeParamId::kQuality)].u.pd.value = 4;  // 1024 px
+  setup_params[static_cast<int>(zsoda::ae::AeParamId::kPreserveRatio)].u.bd.value = 0;
+
+  PF_InData setup_in_data{};
+  setup_in_data.num_params = 1;
+
+  PF_OutData setup_out_data{};
+  setup_out_data.num_params = kParamCount;
+
+  zsoda::ae::AeSdkEntryPayload setup_payload{};
+  setup_payload.command = PF_Cmd_SEQUENCE_RESETUP;
+  setup_payload.in_data = &setup_in_data;
+  setup_payload.out_data = &setup_out_data;
+  setup_payload.params = setup_param_ptrs.data();
+
+  zsoda::ae::AeDispatchContext setup_dispatch;
+  std::string error;
+  assert(zsoda::ae::BuildSdkDispatch(setup_payload, &setup_dispatch, &error));
+  assert(setup_dispatch.command.command == zsoda::ae::AeCommand::kUpdateParams);
+
+  constexpr int kWidth = 4;
+  constexpr int kHeight = 2;
+  constexpr int kRowBytes = kWidth * 4;
+
+  std::array<std::uint8_t, kRowBytes * kHeight> src_pixels{};
+  std::array<std::uint8_t, kRowBytes * kHeight> out_pixels{};
+  PF_LayerDef src_world{};
+  src_world.width = kWidth;
+  src_world.height = kHeight;
+  src_world.rowbytes = kRowBytes;
+  src_world.data = reinterpret_cast<PF_PixelPtr>(src_pixels.data());
+
+  PF_LayerDef out_world{};
+  out_world.width = kWidth;
+  out_world.height = kHeight;
+  out_world.rowbytes = kRowBytes;
+  out_world.data = reinterpret_cast<PF_PixelPtr>(out_pixels.data());
+
+  std::array<PF_ParamDef, kParamCount> render_params{};
+  std::array<PF_ParamDef*, kParamCount> render_param_ptrs{};
+  for (int i = 0; i < kParamCount; ++i) {
+    render_param_ptrs[static_cast<std::size_t>(i)] = &render_params[static_cast<std::size_t>(i)];
+  }
+  render_params[0].u.ld = src_world;
+  render_params[static_cast<int>(zsoda::ae::AeParamId::kQuality)].u.pd.value = 6;  // 1536 px
+  render_params[static_cast<int>(zsoda::ae::AeParamId::kPreserveRatio)].u.bd.value = 1;
+  render_params[static_cast<int>(zsoda::ae::AeParamId::kQualityBoostEnable)].u.bd.value = 1;
+  render_params[static_cast<int>(zsoda::ae::AeParamId::kQualityBoostLevel)].u.pd.value = 4;
+
+  PF_InData render_in_data{};
+  render_in_data.num_params = 1;
+
+  PF_OutData render_out_data{};
+  render_out_data.num_params = kParamCount;
+
+  zsoda::ae::AeSdkEntryPayload render_payload{};
+  render_payload.command = PF_Cmd_RENDER;
+  render_payload.in_data = &render_in_data;
+  render_payload.out_data = &render_out_data;
+  render_payload.params = render_param_ptrs.data();
+  render_payload.output = &out_world;
+
+  zsoda::ae::AeDispatchContext render_dispatch;
+  error.clear();
+  assert(zsoda::ae::BuildSdkDispatch(render_payload, &render_dispatch, &error));
+  assert(render_dispatch.command.command == zsoda::ae::AeCommand::kRender);
+  assert(render_dispatch.render_request.params_override.has_value());
+  const auto& override = *render_dispatch.render_request.params_override;
+  assert(override.model_id == zsoda::ae::DefaultAeParams().model_id);
+  assert(override.quality == 6);
+  assert(override.preserve_ratio);
+  assert(override.quality_boost_enabled);
+  assert(override.quality_boost_level == 5);
+}
+
+void TestSdkRenderDispatchUsesSnapshotOverrideWhenRenderTableUnreadable() {
+  ResetSdkAdapterSupervisionState();
+
+  constexpr int kParamCount = 20;
+  std::array<PF_ParamDef, kParamCount> params{};
+  std::array<PF_ParamDef*, kParamCount> param_ptrs{};
+  for (int i = 0; i < kParamCount; ++i) {
+    param_ptrs[static_cast<std::size_t>(i)] = &params[static_cast<std::size_t>(i)];
+  }
+
+  params[static_cast<int>(zsoda::ae::AeParamId::kQuality)].u.pd.value = 5;  // 1280 px
+  params[static_cast<int>(zsoda::ae::AeParamId::kPreserveRatio)].u.bd.value = 0;
+  params[static_cast<int>(zsoda::ae::AeParamId::kQualityBoostEnable)].u.bd.value = 1;
+  params[static_cast<int>(zsoda::ae::AeParamId::kQualityBoostLevel)].u.pd.value = 4;
+
+  PF_InData setup_in_data{};
+  setup_in_data.num_params = 1;
+
+  PF_OutData setup_out_data{};
+  setup_out_data.num_params = kParamCount;
+
+  zsoda::ae::AeSdkEntryPayload setup_payload{};
+  setup_payload.command = PF_Cmd_SEQUENCE_RESETUP;
+  setup_payload.in_data = &setup_in_data;
+  setup_payload.out_data = &setup_out_data;
+  setup_payload.params = param_ptrs.data();
+
+  zsoda::ae::AeDispatchContext setup_dispatch;
+  std::string error;
+  assert(zsoda::ae::BuildSdkDispatch(setup_payload, &setup_dispatch, &error));
+  assert(setup_dispatch.command.command == zsoda::ae::AeCommand::kUpdateParams);
+
+  constexpr int kWidth = 4;
+  constexpr int kHeight = 2;
+  constexpr int kRowBytes = kWidth * 4;
+  std::array<std::uint8_t, kRowBytes * kHeight> src_pixels{};
+  std::array<std::uint8_t, kRowBytes * kHeight> out_pixels{};
+
+  PF_LayerDef src_world{};
+  src_world.width = kWidth;
+  src_world.height = kHeight;
+  src_world.rowbytes = kRowBytes;
+  src_world.data = reinterpret_cast<PF_PixelPtr>(src_pixels.data());
+
+  PF_LayerDef out_world{};
+  out_world.width = kWidth;
+  out_world.height = kHeight;
+  out_world.rowbytes = kRowBytes;
+  out_world.data = reinterpret_cast<PF_PixelPtr>(out_pixels.data());
+
+  PF_ParamDef input_param{};
+  input_param.u.ld = src_world;
+
+  std::array<PF_ParamDef*, kParamCount> render_param_ptrs{};
+  render_param_ptrs.fill(nullptr);
+  render_param_ptrs[0] = &input_param;
+
+  PF_InData render_in_data{};
+  render_in_data.num_params = 1;
+
+  PF_OutData render_out_data{};
+  render_out_data.num_params = 1;
+
+  zsoda::ae::AeSdkEntryPayload render_payload{};
+  render_payload.command = PF_Cmd_RENDER;
+  render_payload.in_data = &render_in_data;
+  render_payload.out_data = &render_out_data;
+  render_payload.params = render_param_ptrs.data();
+  render_payload.output = &out_world;
+
+  zsoda::ae::AeDispatchContext render_dispatch;
+  error.clear();
+  assert(zsoda::ae::BuildSdkDispatch(render_payload, &render_dispatch, &error));
+  assert(render_dispatch.command.command == zsoda::ae::AeCommand::kRender);
+  assert(render_dispatch.render_request.params_override.has_value());
+  const auto& override = *render_dispatch.render_request.params_override;
+  assert(override.model_id == zsoda::ae::DefaultAeParams().model_id);
+  assert(override.quality == 5);
+  assert(!override.preserve_ratio);
+  assert(override.quality_boost_enabled);
+  assert(override.quality_boost_level == 5);
+}
+
 void TestSdkSequenceResetupBootstrapsRouterParams() {
   ResetSdkAdapterSupervisionState();
 
@@ -586,7 +754,7 @@ void TestSdkSequenceResetupBootstrapsRouterParams() {
   assert(zsoda::ae::BuildSdkDispatch(payload, &dispatch, &error));
   assert(dispatch.command.command == zsoda::ae::AeCommand::kUpdateParams);
   assert(dispatch.command.params_update == &dispatch.params_update);
-  assert(dispatch.params_update.model_id == "depth-anything-v3-large");
+  assert(dispatch.params_update.model_id == zsoda::ae::DefaultAeParams().model_id);
   assert(dispatch.params_update.quality == 4);
   assert(!dispatch.params_update.preserve_ratio);
   assert(dispatch.params_update.quality_boost_enabled);
@@ -991,6 +1159,8 @@ void RunAeRouterTests() {
 #if defined(ZSODA_WITH_AE_SDK) && ZSODA_WITH_AE_SDK
   TestSdkRenderDispatchReadsParamsWhenNumParamsHintIsInputOnly();
   TestSdkRenderDispatchSkipsOverrideWhenRenderTableHasNoReadableParams();
+  TestSdkRenderDispatchReadsLiveParamsAfterSupervisionSeen();
+  TestSdkRenderDispatchUsesSnapshotOverrideWhenRenderTableUnreadable();
   TestSdkSequenceResetupBootstrapsRouterParams();
 #endif
   TestExecuteHostBufferRenderBridge();
