@@ -479,6 +479,66 @@ void TestSdkRenderDispatchReadsParamsWhenNumParamsHintIsInputOnly() {
   assert(dispatch.command.command == zsoda::ae::AeCommand::kRender);
   assert(!dispatch.render_request.params_override.has_value());
 }
+
+void TestSdkSequenceResetupBootstrapsRouterParams() {
+  constexpr int kParamCount = 20;
+
+  std::array<PF_ParamDef, kParamCount> params{};
+  std::array<PF_ParamDef*, kParamCount> param_ptrs{};
+  for (int i = 0; i < kParamCount; ++i) {
+    param_ptrs[static_cast<std::size_t>(i)] = &params[static_cast<std::size_t>(i)];
+  }
+
+  params[static_cast<int>(zsoda::ae::AeParamId::kQuality)].u.pd.value = 4;  // 1024 px
+  params[static_cast<int>(zsoda::ae::AeParamId::kPreserveRatio)].u.bd.value = 0;
+  params[static_cast<int>(zsoda::ae::AeParamId::kQualityBoostEnable)].u.bd.value = 1;
+  params[static_cast<int>(zsoda::ae::AeParamId::kQualityBoostLevel)].u.pd.value = 4;  // 5x5
+  params[static_cast<int>(zsoda::ae::AeParamId::kTimeConsistency)].u.bd.value = 1;
+  params[static_cast<int>(zsoda::ae::AeParamId::kModel)].u.pd.value = 1;
+
+  PF_InData in_data{};
+  in_data.num_params = 1;
+
+  PF_OutData out_data{};
+  out_data.num_params = kParamCount;
+
+  zsoda::ae::AeSdkEntryPayload payload{};
+  payload.command = PF_Cmd_SEQUENCE_RESETUP;
+  payload.in_data = &in_data;
+  payload.out_data = &out_data;
+  payload.params = param_ptrs.data();
+
+  zsoda::ae::AeDispatchContext dispatch;
+  std::string error;
+  assert(zsoda::ae::BuildSdkDispatch(payload, &dispatch, &error));
+  assert(dispatch.command.command == zsoda::ae::AeCommand::kUpdateParams);
+  assert(dispatch.command.params_update == &dispatch.params_update);
+  assert(dispatch.params_update.model_id == "depth-anything-v3-large");
+  assert(dispatch.params_update.quality == 4);
+  assert(!dispatch.params_update.preserve_ratio);
+  assert(dispatch.params_update.quality_boost_enabled);
+  assert(dispatch.params_update.quality_boost_level == 5);
+  assert(dispatch.params_update.time_consistency);
+
+  auto engine = std::make_shared<zsoda::inference::ManagedInferenceEngine>("models");
+  assert(engine->Initialize("depth-anything-v3-small", &error));
+  auto pipeline = std::make_shared<zsoda::core::RenderPipeline>(engine);
+  zsoda::ae::AeCommandRouter router(pipeline, engine);
+
+  zsoda::ae::AeCommandContext setup_context;
+  setup_context.command = zsoda::ae::AeCommand::kGlobalSetup;
+  setup_context.error = &error;
+  assert(router.Handle(setup_context));
+
+  dispatch.command.error = &error;
+  assert(router.Handle(dispatch.command));
+  const auto current = router.CurrentParams();
+  assert(current.quality == 4);
+  assert(!current.preserve_ratio);
+  assert(current.quality_boost_enabled);
+  assert(current.quality_boost_level == 5);
+  assert(current.time_consistency);
+}
 #endif
 
 void TestExecuteHostBufferRenderBridge() {
@@ -857,6 +917,7 @@ void RunAeRouterTests() {
   TestHostBufferRenderDispatchValidation();
 #if defined(ZSODA_WITH_AE_SDK) && ZSODA_WITH_AE_SDK
   TestSdkRenderDispatchReadsParamsWhenNumParamsHintIsInputOnly();
+  TestSdkSequenceResetupBootstrapsRouterParams();
 #endif
   TestExecuteHostBufferRenderBridge();
   TestRouterPayloadValidation();

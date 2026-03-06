@@ -553,24 +553,75 @@ void WriteAeParamSnapshot(const AeParamValues& values) {
   AeParamSnapshotStorage() = values;
 }
 
+bool AllowsSdkParamTableCount(PF_Cmd command) {
+  bool allowed = command == PF_Cmd_PARAMS_SETUP;
+#if defined(PF_Cmd_USER_CHANGED_PARAM)
+  allowed = allowed || command == PF_Cmd_USER_CHANGED_PARAM;
+#endif
+#if defined(PF_Cmd_UPDATE_PARAMS_UI)
+  allowed = allowed || command == PF_Cmd_UPDATE_PARAMS_UI;
+#endif
+#if defined(PF_Cmd_SEQUENCE_SETUP)
+  allowed = allowed || command == PF_Cmd_SEQUENCE_SETUP;
+#endif
+#if defined(PF_Cmd_SEQUENCE_RESETUP)
+  allowed = allowed || command == PF_Cmd_SEQUENCE_RESETUP;
+#endif
+#if defined(PF_Cmd_RENDER)
+  // Some AE host paths report unreliable in_data->num_params during render, while
+  // out_data->num_params can still carry the full schema count.
+  allowed = allowed || command == PF_Cmd_RENDER;
+#endif
+  return allowed;
+}
+
+bool AllowsSdkParamTableFallback(PF_Cmd command) {
+  bool allowed = false;
+#if defined(PF_Cmd_RENDER)
+  allowed = allowed || command == PF_Cmd_RENDER;
+#endif
+#if defined(PF_Cmd_USER_CHANGED_PARAM)
+  allowed = allowed || command == PF_Cmd_USER_CHANGED_PARAM;
+#endif
+#if defined(PF_Cmd_UPDATE_PARAMS_UI)
+  allowed = allowed || command == PF_Cmd_UPDATE_PARAMS_UI;
+#endif
+#if defined(PF_Cmd_SEQUENCE_SETUP)
+  allowed = allowed || command == PF_Cmd_SEQUENCE_SETUP;
+#endif
+#if defined(PF_Cmd_SEQUENCE_RESETUP)
+  allowed = allowed || command == PF_Cmd_SEQUENCE_RESETUP;
+#endif
+  return allowed;
+}
+
+bool AllowsParamSnapshotFallback(PF_Cmd command) {
+  bool allowed = false;
+#if defined(PF_Cmd_RENDER)
+  allowed = allowed || command == PF_Cmd_RENDER;
+#endif
+#if defined(PF_Cmd_USER_CHANGED_PARAM)
+  allowed = allowed || command == PF_Cmd_USER_CHANGED_PARAM;
+#endif
+#if defined(PF_Cmd_UPDATE_PARAMS_UI)
+  allowed = allowed || command == PF_Cmd_UPDATE_PARAMS_UI;
+#endif
+#if defined(PF_Cmd_SEQUENCE_SETUP)
+  allowed = allowed || command == PF_Cmd_SEQUENCE_SETUP;
+#endif
+#if defined(PF_Cmd_SEQUENCE_RESETUP)
+  allowed = allowed || command == PF_Cmd_SEQUENCE_RESETUP;
+#endif
+  return allowed;
+}
+
 int GetSdkParamCountHint(const AeSdkEntryPayload& payload) {
   int count = 0;
   if (payload.in_data != nullptr && payload.in_data->num_params > 0) {
     count = static_cast<int>(payload.in_data->num_params);
   }
-  bool allow_out_data_count = payload.command == PF_Cmd_PARAMS_SETUP;
-#if defined(PF_Cmd_USER_CHANGED_PARAM)
-  allow_out_data_count = allow_out_data_count || payload.command == PF_Cmd_USER_CHANGED_PARAM;
-#endif
-#if defined(PF_Cmd_UPDATE_PARAMS_UI)
-  allow_out_data_count = allow_out_data_count || payload.command == PF_Cmd_UPDATE_PARAMS_UI;
-#endif
-#if defined(PF_Cmd_RENDER)
-  // Some AE host paths report unreliable in_data->num_params during render, while
-  // out_data->num_params can still carry the full schema count.
-  allow_out_data_count = allow_out_data_count || payload.command == PF_Cmd_RENDER;
-#endif
-  if (allow_out_data_count && payload.out_data != nullptr && payload.out_data->num_params > 0) {
+  if (AllowsSdkParamTableCount(payload.command) && payload.out_data != nullptr &&
+      payload.out_data->num_params > 0) {
     count = std::max(count, static_cast<int>(payload.out_data->num_params));
   }
   return count;
@@ -589,16 +640,7 @@ const PF_ParamDef* GetParam(const AeSdkEntryPayload& payload, AeParamId id) {
 
   // Runtime fallback: some hosts do not reliably expose num_params on non-setup
   // commands, but still provide a full params table for render/update paths.
-  bool allow_sdk_table_fallback = false;
-#if defined(PF_Cmd_RENDER)
-  allow_sdk_table_fallback = allow_sdk_table_fallback || payload.command == PF_Cmd_RENDER;
-#endif
-#if defined(PF_Cmd_USER_CHANGED_PARAM)
-  allow_sdk_table_fallback = allow_sdk_table_fallback || payload.command == PF_Cmd_USER_CHANGED_PARAM;
-#endif
-#if defined(PF_Cmd_UPDATE_PARAMS_UI)
-  allow_sdk_table_fallback = allow_sdk_table_fallback || payload.command == PF_Cmd_UPDATE_PARAMS_UI;
-#endif
+  const bool allow_sdk_table_fallback = AllowsSdkParamTableFallback(payload.command);
 
   if (count_hint > 0 && index < count_hint) {
     return payload.params[index];
@@ -781,19 +823,7 @@ bool TryExtractPfCmdParamValues(const AeSdkEntryPayload& payload,
   }
 
   if (!any_param_read) {
-    bool allow_snapshot_fallback = false;
-#if defined(PF_Cmd_RENDER)
-    allow_snapshot_fallback = allow_snapshot_fallback || payload.command == PF_Cmd_RENDER;
-#endif
-#if defined(PF_Cmd_USER_CHANGED_PARAM)
-    allow_snapshot_fallback =
-        allow_snapshot_fallback || payload.command == PF_Cmd_USER_CHANGED_PARAM;
-#endif
-#if defined(PF_Cmd_UPDATE_PARAMS_UI)
-    allow_snapshot_fallback =
-        allow_snapshot_fallback || payload.command == PF_Cmd_UPDATE_PARAMS_UI;
-#endif
-    if (!allow_snapshot_fallback) {
+    if (!AllowsParamSnapshotFallback(payload.command)) {
       SetError(error, "sdk params table does not contain readable values");
       return false;
     }
@@ -1132,11 +1162,11 @@ AeCommand MapPfCommand(PF_Cmd command) {
 #endif
 #if defined(PF_Cmd_SEQUENCE_SETUP)
     case PF_Cmd_SEQUENCE_SETUP:
-      return AeCommand::kUnknown;
+      return AeCommand::kUpdateParams;
 #endif
 #if defined(PF_Cmd_SEQUENCE_RESETUP)
     case PF_Cmd_SEQUENCE_RESETUP:
-      return AeCommand::kUnknown;
+      return AeCommand::kUpdateParams;
 #endif
 #if defined(PF_Cmd_SEQUENCE_SETDOWN)
     case PF_Cmd_SEQUENCE_SETDOWN:
