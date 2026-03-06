@@ -185,7 +185,7 @@ ModelCatalog::ModelCatalog() {
       "https://huggingface.co/onnx-community/depth-anything-v3-small/resolve/main/onnx/model.onnx",
       {{"depth-anything-v3/depth_anything_v3_small.onnx_data",
         "https://huggingface.co/onnx-community/depth-anything-v3-small/resolve/main/onnx/model.onnx_data"}},
-      true,
+      false,
   });
   models_.push_back({
       "depth-anything-v3-base",
@@ -194,7 +194,7 @@ ModelCatalog::ModelCatalog() {
       "https://huggingface.co/onnx-community/depth-anything-v3-base/resolve/main/onnx/model.onnx",
       {{"depth-anything-v3/depth_anything_v3_base.onnx_data",
         "https://huggingface.co/onnx-community/depth-anything-v3-base/resolve/main/onnx/model.onnx_data"}},
-      false,
+      true,
   });
   models_.push_back({
       "depth-anything-v3-large",
