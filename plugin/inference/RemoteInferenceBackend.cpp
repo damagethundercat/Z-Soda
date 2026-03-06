@@ -16,6 +16,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -36,6 +37,8 @@ namespace {
 constexpr char kRemoteCommandEnv[] = "ZSODA_REMOTE_INFERENCE_COMMAND";
 constexpr char kRemoteCommandEnvLegacy[] = "ZSODA_REMOTE_BACKEND_COMMAND";
 constexpr char kRequestSchema[] = "zsoda.remote_depth.v2";
+constexpr char kDefaultLocalRemoteHost[] = "127.0.0.1";
+constexpr int kDefaultLocalRemotePort = 8345;
 
 std::atomic<std::uint64_t> g_temp_file_counter{0U};
 
@@ -63,6 +66,58 @@ std::string BuildBackendName(RuntimeBackend backend) {
   name.append(RuntimeBackendName(backend));
   name.push_back(']');
   return name;
+}
+
+bool IsExistingFile(const std::filesystem::path& path) {
+  if (path.empty()) {
+    return false;
+  }
+  std::error_code ec;
+  return std::filesystem::is_regular_file(path, ec) && !ec;
+}
+
+std::string NormalizeLoopbackHost(std::string host) {
+  if (host.empty()) {
+    return kDefaultLocalRemoteHost;
+  }
+  return host;
+}
+
+std::string BuildLocalInferenceEndpoint(std::string_view host, int port) {
+  std::ostringstream endpoint;
+  endpoint << "http://" << host << ":" << port << "/zsoda/depth";
+  return endpoint.str();
+}
+
+std::string BuildLocalStatusEndpoint(std::string_view host, int port) {
+  std::ostringstream endpoint;
+  endpoint << "http://" << host << ":" << port << "/status";
+  return endpoint.str();
+}
+
+std::filesystem::path ResolveRemoteServiceScriptPath(const RuntimeOptions& options) {
+  if (!options.remote_service_script_path.empty()) {
+    const std::filesystem::path explicit_path(options.remote_service_script_path);
+    if (IsExistingFile(explicit_path)) {
+      return explicit_path;
+    }
+  }
+
+  if (!options.plugin_directory.empty()) {
+    const std::filesystem::path plugin_dir(options.plugin_directory);
+    const std::array<std::filesystem::path, 3> candidates = {
+        plugin_dir / "zsoda_py" / "official_da3_remote_service.py",
+        plugin_dir / "tools" / "official_da3_remote_service.py",
+        plugin_dir / "official_da3_remote_service.py",
+    };
+    for (const auto& candidate : candidates) {
+      if (IsExistingFile(candidate)) {
+        return candidate;
+      }
+    }
+  }
+
+  return {};
 }
 
 bool ValidateRequest(const InferenceRequest& request,
@@ -697,6 +752,331 @@ bool PostJsonToEndpoint(std::string_view endpoint,
     error->clear();
   }
   return true;
+}
+
+bool GetEndpointText(std::string_view endpoint,
+                     int timeout_ms,
+                     std::string* response_payload,
+                     std::string* error) {
+  if (response_payload == nullptr) {
+    if (error != nullptr) {
+      *error = "internal error: response payload output is null";
+    }
+    return false;
+  }
+
+  std::wstring endpoint_wide;
+  if (!Utf8ToWide(endpoint, &endpoint_wide, error)) {
+    return false;
+  }
+
+  URL_COMPONENTS components = {};
+  components.dwStructSize = sizeof(components);
+  components.dwSchemeLength = static_cast<DWORD>(-1);
+  components.dwHostNameLength = static_cast<DWORD>(-1);
+  components.dwUrlPathLength = static_cast<DWORD>(-1);
+  components.dwExtraInfoLength = static_cast<DWORD>(-1);
+  if (!::WinHttpCrackUrl(endpoint_wide.c_str(),
+                         static_cast<DWORD>(endpoint_wide.size()),
+                         0,
+                         &components)) {
+    if (error != nullptr) {
+      *error = "WinHttpCrackUrl failed for endpoint: " + std::string(endpoint) +
+               " (" + std::to_string(::GetLastError()) + ")";
+    }
+    return false;
+  }
+
+  const bool secure = components.nScheme == INTERNET_SCHEME_HTTPS;
+  const std::wstring host(components.lpszHostName,
+                          static_cast<std::size_t>(components.dwHostNameLength));
+  std::wstring path(components.lpszUrlPath,
+                    static_cast<std::size_t>(components.dwUrlPathLength));
+  if (path.empty()) {
+    path = L"/";
+  }
+  if (components.dwExtraInfoLength > 0U && components.lpszExtraInfo != nullptr) {
+    path.append(components.lpszExtraInfo, static_cast<std::size_t>(components.dwExtraInfoLength));
+  }
+
+  HINTERNET session = ::WinHttpOpen(L"ZSoda/1.0",
+                                    WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                                    WINHTTP_NO_PROXY_NAME,
+                                    WINHTTP_NO_PROXY_BYPASS,
+                                    0);
+  if (session == nullptr) {
+    if (error != nullptr) {
+      *error = "WinHttpOpen failed (" + std::to_string(::GetLastError()) + ")";
+    }
+    return false;
+  }
+
+  const int effective_timeout = timeout_ms > 0 ? timeout_ms : 5000;
+  ::WinHttpSetTimeouts(session,
+                       effective_timeout,
+                       effective_timeout,
+                       effective_timeout,
+                       effective_timeout);
+
+  HINTERNET connection = ::WinHttpConnect(session, host.c_str(), components.nPort, 0);
+  if (connection == nullptr) {
+    const DWORD win_error = ::GetLastError();
+    ::WinHttpCloseHandle(session);
+    if (error != nullptr) {
+      *error = "WinHttpConnect failed (" + std::to_string(win_error) + ")";
+    }
+    return false;
+  }
+
+  const DWORD request_flags = secure ? WINHTTP_FLAG_SECURE : 0U;
+  HINTERNET request_handle = ::WinHttpOpenRequest(connection,
+                                                  L"GET",
+                                                  path.c_str(),
+                                                  nullptr,
+                                                  WINHTTP_NO_REFERER,
+                                                  WINHTTP_DEFAULT_ACCEPT_TYPES,
+                                                  request_flags);
+  if (request_handle == nullptr) {
+    const DWORD win_error = ::GetLastError();
+    ::WinHttpCloseHandle(connection);
+    ::WinHttpCloseHandle(session);
+    if (error != nullptr) {
+      *error = "WinHttpOpenRequest failed (" + std::to_string(win_error) + ")";
+    }
+    return false;
+  }
+
+  if (!::WinHttpSendRequest(request_handle,
+                            WINHTTP_NO_ADDITIONAL_HEADERS,
+                            0,
+                            WINHTTP_NO_REQUEST_DATA,
+                            0,
+                            0,
+                            0)) {
+    const DWORD win_error = ::GetLastError();
+    ::WinHttpCloseHandle(request_handle);
+    ::WinHttpCloseHandle(connection);
+    ::WinHttpCloseHandle(session);
+    if (error != nullptr) {
+      *error = "WinHttpSendRequest failed (" + std::to_string(win_error) + ")";
+    }
+    return false;
+  }
+
+  if (!::WinHttpReceiveResponse(request_handle, nullptr)) {
+    const DWORD win_error = ::GetLastError();
+    ::WinHttpCloseHandle(request_handle);
+    ::WinHttpCloseHandle(connection);
+    ::WinHttpCloseHandle(session);
+    if (error != nullptr) {
+      *error = "WinHttpReceiveResponse failed (" + std::to_string(win_error) + ")";
+    }
+    return false;
+  }
+
+  DWORD status_code = 0;
+  DWORD status_code_size = sizeof(status_code);
+  if (!::WinHttpQueryHeaders(request_handle,
+                             WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                             WINHTTP_HEADER_NAME_BY_INDEX,
+                             &status_code,
+                             &status_code_size,
+                             WINHTTP_NO_HEADER_INDEX)) {
+    status_code = 0U;
+  }
+
+  response_payload->clear();
+  while (true) {
+    DWORD available = 0;
+    if (!::WinHttpQueryDataAvailable(request_handle, &available)) {
+      const DWORD win_error = ::GetLastError();
+      ::WinHttpCloseHandle(request_handle);
+      ::WinHttpCloseHandle(connection);
+      ::WinHttpCloseHandle(session);
+      if (error != nullptr) {
+        *error = "WinHttpQueryDataAvailable failed (" + std::to_string(win_error) + ")";
+      }
+      return false;
+    }
+    if (available == 0U) {
+      break;
+    }
+
+    std::string chunk(static_cast<std::size_t>(available), '\0');
+    DWORD read = 0;
+    if (!::WinHttpReadData(request_handle, chunk.data(), available, &read)) {
+      const DWORD win_error = ::GetLastError();
+      ::WinHttpCloseHandle(request_handle);
+      ::WinHttpCloseHandle(connection);
+      ::WinHttpCloseHandle(session);
+      if (error != nullptr) {
+        *error = "WinHttpReadData failed (" + std::to_string(win_error) + ")";
+      }
+      return false;
+    }
+    chunk.resize(static_cast<std::size_t>(read));
+    response_payload->append(chunk);
+  }
+
+  ::WinHttpCloseHandle(request_handle);
+  ::WinHttpCloseHandle(connection);
+  ::WinHttpCloseHandle(session);
+
+  if (status_code < 200U || status_code >= 300U) {
+    if (error != nullptr) {
+      *error = "remote endpoint returned HTTP " + std::to_string(status_code) +
+               (response_payload->empty() ? std::string() : ": " + *response_payload);
+    }
+    return false;
+  }
+
+  if (error != nullptr) {
+    error->clear();
+  }
+  return true;
+}
+
+std::filesystem::path DefaultRemoteServiceLogPath() {
+  std::error_code temp_error;
+  const std::filesystem::path temp_root = std::filesystem::temp_directory_path(temp_error);
+  if (!temp_error) {
+    return temp_root / "ZSoda_DA3_RemoteService.log";
+  }
+  return std::filesystem::path("ZSoda_DA3_RemoteService.log");
+}
+
+bool StartDetachedPythonService(const RuntimeOptions& options,
+                                std::string_view status_endpoint,
+                                std::string* error) {
+  const std::filesystem::path script_path = ResolveRemoteServiceScriptPath(options);
+  if (script_path.empty()) {
+    if (error != nullptr) {
+      *error = "official DA3 service script was not found";
+    }
+    return false;
+  }
+
+  std::wstring python_wide;
+  const std::string python_command =
+      options.remote_service_python.empty() ? std::string("python") : options.remote_service_python;
+  if (!Utf8ToWide(python_command, &python_wide, error)) {
+    return false;
+  }
+
+  std::wstring script_wide;
+  if (!Utf8ToWide(script_path.string(), &script_wide, error)) {
+    return false;
+  }
+
+  std::wstring host_wide;
+  if (!Utf8ToWide(NormalizeLoopbackHost(options.remote_service_host), &host_wide, error)) {
+    return false;
+  }
+
+  std::wstring repo_root_wide;
+  if (!options.da3_repo_root.empty() &&
+      !Utf8ToWide(options.da3_repo_root, &repo_root_wide, error)) {
+    return false;
+  }
+
+  std::filesystem::path log_path = options.remote_service_log_path.empty()
+                                       ? DefaultRemoteServiceLogPath()
+                                       : std::filesystem::path(options.remote_service_log_path);
+  std::wstring log_path_wide;
+  if (!Utf8ToWide(log_path.string(), &log_path_wide, error)) {
+    return false;
+  }
+
+  std::wstring command_line;
+  command_line.reserve(512);
+  command_line.push_back(L'"');
+  command_line.append(python_wide);
+  command_line.append(L"\" \"");
+  command_line.append(script_wide);
+  command_line.append(L"\" --host \"");
+  command_line.append(host_wide);
+  command_line.append(L"\" --port ");
+  command_line.append(std::to_wstring(options.remote_service_port > 0 ? options.remote_service_port
+                                                                      : kDefaultLocalRemotePort));
+  if (!repo_root_wide.empty()) {
+    command_line.append(L" --repo-root \"");
+    command_line.append(repo_root_wide);
+    command_line.push_back(L'"');
+  }
+
+  const std::filesystem::path working_directory = script_path.parent_path();
+  std::wstring working_directory_wide;
+  if (!Utf8ToWide(working_directory.string(), &working_directory_wide, error)) {
+    return false;
+  }
+
+  SECURITY_ATTRIBUTES security_attributes = {};
+  security_attributes.nLength = sizeof(security_attributes);
+  security_attributes.bInheritHandle = TRUE;
+  HANDLE log_handle = ::CreateFileW(log_path_wide.c_str(),
+                                    FILE_APPEND_DATA,
+                                    FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                    &security_attributes,
+                                    OPEN_ALWAYS,
+                                    FILE_ATTRIBUTE_NORMAL,
+                                    nullptr);
+  if (log_handle == INVALID_HANDLE_VALUE) {
+    if (error != nullptr) {
+      *error = "CreateFileW failed for service log (" + std::to_string(::GetLastError()) + ")";
+    }
+    return false;
+  }
+
+  ::SetFilePointer(log_handle, 0, nullptr, FILE_END);
+  STARTUPINFOW startup_info = {};
+  startup_info.cb = sizeof(startup_info);
+  startup_info.dwFlags = STARTF_USESTDHANDLES;
+  startup_info.hStdInput = ::GetStdHandle(STD_INPUT_HANDLE);
+  startup_info.hStdOutput = log_handle;
+  startup_info.hStdError = log_handle;
+
+  PROCESS_INFORMATION process_info = {};
+  std::wstring mutable_command_line = command_line;
+  const BOOL create_ok = ::CreateProcessW(nullptr,
+                                          mutable_command_line.data(),
+                                          nullptr,
+                                          nullptr,
+                                          TRUE,
+                                          CREATE_NO_WINDOW | DETACHED_PROCESS,
+                                          nullptr,
+                                          working_directory_wide.c_str(),
+                                          &startup_info,
+                                          &process_info);
+  ::CloseHandle(log_handle);
+  if (!create_ok) {
+    if (error != nullptr) {
+      *error = "CreateProcessW failed for official DA3 service (" +
+               std::to_string(::GetLastError()) + ")";
+    }
+    return false;
+  }
+
+  ::CloseHandle(process_info.hThread);
+  ::CloseHandle(process_info.hProcess);
+
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+  std::string status_payload;
+  std::string status_error;
+  while (std::chrono::steady_clock::now() < deadline) {
+    if (GetEndpointText(status_endpoint, 2000, &status_payload, &status_error)) {
+      if (error != nullptr) {
+        error->clear();
+      }
+      return true;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+  }
+
+  if (error != nullptr) {
+    *error = "official DA3 service did not become healthy at " + std::string(status_endpoint) +
+             (status_error.empty() ? std::string() : ": " + status_error);
+  }
+  return false;
 }
 #endif
 
@@ -1373,6 +1753,61 @@ const char* RemoteInferenceBackend::Name() const {
   return backend_name_.empty() ? "RemoteInferenceBackend" : backend_name_.c_str();
 }
 
+bool RemoteInferenceBackend::ResolveEndpointConfigurationLocked(std::string* error) {
+  resolved_remote_endpoint_.clear();
+  resolved_status_endpoint_.clear();
+  service_autostart_enabled_ = false;
+
+  if (!options_.remote_endpoint.empty()) {
+    resolved_remote_endpoint_ = options_.remote_endpoint;
+    if (error != nullptr) {
+      error->clear();
+    }
+    return true;
+  }
+
+  service_autostart_enabled_ = options_.remote_service_autostart;
+  if (service_autostart_enabled_) {
+    const std::string host = NormalizeLoopbackHost(options_.remote_service_host);
+    const int port =
+        options_.remote_service_port > 0 ? options_.remote_service_port : kDefaultLocalRemotePort;
+    resolved_remote_endpoint_ = BuildLocalInferenceEndpoint(host, port);
+    resolved_status_endpoint_ = BuildLocalStatusEndpoint(host, port);
+    if (error != nullptr) {
+      error->clear();
+    }
+    return true;
+  }
+
+  if (error != nullptr) {
+    error->clear();
+  }
+  return true;
+}
+
+#if defined(_WIN32)
+bool RemoteInferenceBackend::EnsureAutoStartedServiceReadyLocked(std::string* error) {
+  if (!service_autostart_enabled_ || resolved_remote_endpoint_.empty() ||
+      resolved_status_endpoint_.empty()) {
+    if (error != nullptr) {
+      error->clear();
+    }
+    return true;
+  }
+
+  std::string status_payload;
+  std::string status_error;
+  if (GetEndpointText(resolved_status_endpoint_, 2000, &status_payload, &status_error)) {
+    if (error != nullptr) {
+      error->clear();
+    }
+    return true;
+  }
+
+  return StartDetachedPythonService(options_, resolved_status_endpoint_, error);
+}
+#endif
+
 bool RemoteInferenceBackend::Initialize(std::string* error) {
   zsoda::core::CompatLockGuard lock(mutex_);
   if (initialized_) {
@@ -1382,7 +1817,20 @@ bool RemoteInferenceBackend::Initialize(std::string* error) {
     return true;
   }
 
-  if (!options_.remote_endpoint.empty()) {
+#if defined(_WIN32)
+  if (!ResolveEndpointConfigurationLocked(error)) {
+    return false;
+  }
+  if (!EnsureAutoStartedServiceReadyLocked(error)) {
+    return false;
+  }
+#else
+  if (!ResolveEndpointConfigurationLocked(error)) {
+    return false;
+  }
+#endif
+
+  if (!resolved_remote_endpoint_.empty()) {
     initialized_ = true;
     if (error != nullptr) {
       error->clear();
@@ -1453,7 +1901,7 @@ bool RemoteInferenceBackend::Run(const InferenceRequest& request,
     model_id = active_model_id_;
     model_path = active_model_path_;
     backend_name = backend_name_;
-    remote_endpoint = options_.remote_endpoint;
+    remote_endpoint = resolved_remote_endpoint_;
     remote_api_key = options_.remote_api_key;
     remote_timeout_ms = options_.remote_timeout_ms;
   }

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import sys
@@ -28,6 +29,20 @@ QUALITY_TO_PROCESS_RES = {
 }
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Persistent local HTTP service for official Depth Anything 3 inference."
+    )
+    parser.add_argument("--host", default=None, help="Override bind host")
+    parser.add_argument("--port", type=int, default=None, help="Override bind port")
+    parser.add_argument(
+        "--repo-root",
+        default=None,
+        help="Optional official repo root or import root containing depth_anything_3",
+    )
+    return parser.parse_args()
+
+
 def install_api_stubs() -> None:
     export_module = types.ModuleType("depth_anything_3.utils.export")
 
@@ -46,24 +61,27 @@ def install_api_stubs() -> None:
     sys.modules.setdefault("depth_anything_3.utils.pose_align", pose_align_module)
 
 
-def resolve_repo_root() -> Path | None:
-    explicit = os.getenv("ZSODA_DA3_REPO_ROOT", "").strip()
+def resolve_import_root(explicit_repo_root: str | None = None) -> Path | None:
+    explicit = (explicit_repo_root or os.getenv("ZSODA_DA3_REPO_ROOT", "")).strip()
     if explicit:
         candidate = Path(explicit).expanduser().resolve()
-        if (candidate / "src").exists():
+        if (candidate / "depth_anything_3").exists():
             return candidate
+        if (candidate / "src").exists():
+            return candidate / "src"
+    packaged = Path(__file__).resolve().parent
+    if (packaged / "depth_anything_3").exists():
+        return packaged
     repo_local = Path(__file__).resolve().parents[1] / ".tmp_external_research" / "Depth-Anything-3"
     if (repo_local / "src").exists():
-        return repo_local
+        return repo_local / "src"
     return None
 
 
-def load_depth_anything_api():
-    repo_root = resolve_repo_root()
-    if repo_root is not None:
-        src_root = repo_root / "src"
-        if str(src_root) not in sys.path:
-            sys.path.insert(0, str(src_root))
+def load_depth_anything_api(explicit_repo_root: str | None = None):
+    import_root = resolve_import_root(explicit_repo_root)
+    if import_root is not None and str(import_root) not in sys.path:
+        sys.path.insert(0, str(import_root))
 
     install_api_stubs()
     from depth_anything_3.api import DepthAnything3  # type: ignore
@@ -71,7 +89,7 @@ def load_depth_anything_api():
     import torch  # type: ignore
     from PIL import Image  # type: ignore
 
-    return DepthAnything3, np, torch, Image, repo_root
+    return DepthAnything3, np, torch, Image, import_root
 
 
 def resolve_model_repo(model_id: str) -> str:
@@ -135,7 +153,7 @@ class ModelManager:
         self.numpy = None
         self.torch = None
         self.image_module = None
-        self.repo_root = None
+        self.import_root = None
         self.loaded_at = 0.0
 
     def _ensure_imports(self) -> None:
@@ -146,8 +164,8 @@ class ModelManager:
             self.numpy,
             self.torch,
             self.image_module,
-            self.repo_root,
-        ) = load_depth_anything_api()
+            self.import_root,
+        ) = load_depth_anything_api(os.getenv("ZSODA_DA3_REPO_ROOT", "").strip() or None)
 
     def get_model(self, model_id: str):
         requested_device = os.getenv("ZSODA_DA3_SERVICE_DEVICE", "auto")
@@ -171,7 +189,7 @@ class ModelManager:
             "device": self.device,
             "loaded": self.model is not None,
             "loaded_at": self.loaded_at,
-            "repo_root": "" if self.repo_root is None else str(self.repo_root),
+            "import_root": "" if self.import_root is None else str(self.import_root),
         }
 
 
@@ -290,8 +308,11 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> int:
-    host = os.getenv("ZSODA_DA3_SERVICE_HOST", "127.0.0.1").strip() or "127.0.0.1"
-    port = int(os.getenv("ZSODA_DA3_SERVICE_PORT", "8345").strip() or "8345")
+    args = parse_args()
+    if args.repo_root:
+        os.environ["ZSODA_DA3_REPO_ROOT"] = args.repo_root
+    host = (args.host or os.getenv("ZSODA_DA3_SERVICE_HOST", "127.0.0.1")).strip() or "127.0.0.1"
+    port = args.port or int(os.getenv("ZSODA_DA3_SERVICE_PORT", "8345").strip() or "8345")
     server = ThreadingHTTPServer((host, port), Handler)
     print(
         json.dumps(

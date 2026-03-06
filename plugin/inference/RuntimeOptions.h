@@ -29,12 +29,20 @@ struct RuntimeOptions {
   std::string model_manifest_path;
   std::string onnxruntime_library_path;
   std::string onnxruntime_library_dir;
+  std::string plugin_directory;
   int onnxruntime_api_version = 0;
   bool auto_download_missing_models = true;
   bool remote_inference_enabled = false;
   std::string remote_endpoint;
   std::string remote_api_key;
   int remote_timeout_ms = 0;
+  bool remote_service_autostart = false;
+  std::string remote_service_host = "127.0.0.1";
+  int remote_service_port = 8345;
+  std::string remote_service_python;
+  std::string remote_service_script_path;
+  std::string remote_service_log_path;
+  std::string da3_repo_root;
 };
 
 [[nodiscard]] inline const char* RuntimeBackendName(RuntimeBackend backend) {

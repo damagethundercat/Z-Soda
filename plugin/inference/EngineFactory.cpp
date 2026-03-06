@@ -96,9 +96,28 @@ std::shared_ptr<IInferenceEngine> CreateDefaultEngine() {
       ParseBoolEnvOrDefault(std::getenv("ZSODA_REMOTE_INFERENCE_ENABLED"), false);
   options.remote_timeout_ms =
       ParsePositiveIntEnvOrDefault(std::getenv("ZSODA_REMOTE_INFERENCE_TIMEOUT_MS"), 0);
+  options.remote_service_autostart =
+      ParseBoolEnvOrDefault(std::getenv("ZSODA_REMOTE_SERVICE_AUTOSTART"), false);
+  options.remote_service_host = ReadEnvOrEmpty("ZSODA_REMOTE_SERVICE_HOST");
+  if (options.remote_service_host.empty()) {
+    options.remote_service_host = "127.0.0.1";
+  }
+  options.remote_service_port =
+      ParsePositiveIntEnvOrDefault(std::getenv("ZSODA_REMOTE_SERVICE_PORT"), 8345);
+  options.remote_service_python = ReadEnvOrEmpty("ZSODA_REMOTE_SERVICE_PYTHON");
+  options.remote_service_script_path = ReadEnvOrEmpty("ZSODA_REMOTE_SERVICE_SCRIPT");
+  options.remote_service_log_path = ReadEnvOrEmpty("ZSODA_REMOTE_SERVICE_LOG");
+  options.da3_repo_root = ReadEnvOrEmpty("ZSODA_DA3_REPO_ROOT");
+  if (path_hints.plugin_directory.has_value()) {
+    options.plugin_directory = *path_hints.plugin_directory;
+  }
 
   if (options.preferred_backend == RuntimeBackend::kRemote) {
     options.remote_inference_enabled = true;
+    if (options.remote_endpoint.empty()) {
+      options.remote_service_autostart =
+          ParseBoolEnvOrDefault(std::getenv("ZSODA_REMOTE_SERVICE_AUTOSTART"), true);
+    }
   } else if (!has_explicit_backend &&
              (options.remote_inference_enabled || !options.remote_endpoint.empty())) {
     options.preferred_backend = RuntimeBackend::kRemote;

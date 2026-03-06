@@ -68,22 +68,23 @@ The new direct-endpoint path avoids both per-frame model loads and the extra cli
 
 ## Current expected setup
 
-1. Start the service manually:
+The manual-terminal prototype is no longer the target shape.
 
-```powershell
-python C:\Users\Yongkyu\code\Z-Soda\tools\official_da3_remote_service.py
-```
+Current direction:
 
-2. Launch After Effects with these environment variables:
+1. Stage `official_da3_remote_service.py` and the `depth_anything_3` package next to the plugin under `zsoda_py/`.
+2. Let `RemoteInferenceBackend` auto-start the local service when the remote backend is explicitly selected.
+3. Reuse the local HTTP service for subsequent AE renders without any user-run terminal.
+
+The current auto-start path still expects the remote backend to be selected explicitly, for example with:
 
 ```powershell
 $env:ZSODA_INFERENCE_BACKEND = "remote"
-$env:ZSODA_REMOTE_INFERENCE_ENABLED = "1"
-$env:ZSODA_REMOTE_INFERENCE_ENDPOINT = "http://127.0.0.1:8345/zsoda/depth"
+$env:ZSODA_REMOTE_SERVICE_AUTOSTART = "1"
 $env:ZSODA_LOCKED_MODEL_ID = "depth-anything-v3-base"
 ```
 
-3. Then launch AE from the same environment.
+Manual `python ...official_da3_remote_service.py` startup is now only a debugging fallback.
 
 Legacy fallback if direct endpoint mode is unavailable:
 
@@ -110,6 +111,7 @@ Each repo id can be overridden with env vars:
 ## Limitations
 
 - The HTTP service response still returns depth values as JSON floats.
+- The remote backend is not yet the default AE path.
 - This is not the final performance architecture.
 
 The next step, if this path proves worthwhile, is a binary response path or shared-memory IPC to remove JSON float overhead.

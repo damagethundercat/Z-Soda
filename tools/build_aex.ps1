@@ -680,6 +680,55 @@ function Sync-ModelAssets {
   }
 }
 
+function Sync-PythonRuntimeAssets {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$RepoRoot,
+
+    [Parameter(Mandatory = $true)]
+    [string]$DestinationRoot
+  )
+
+  New-Item -ItemType Directory -Path $DestinationRoot -Force | Out-Null
+  Get-ChildItem -LiteralPath $DestinationRoot -Force -ErrorAction SilentlyContinue |
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+
+  $serviceFiles = @(
+    "tools\\official_da3_remote_service.py",
+    "tools\\official_da3_remote_client.py"
+  )
+  foreach ($relativePath in $serviceFiles) {
+    $sourcePath = Join-Path $RepoRoot $relativePath
+    if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
+      Write-Warning "python_runtime_sync: missing service file $sourcePath"
+      continue
+    }
+    $destinationPath = Join-Path $DestinationRoot ([System.IO.Path]::GetFileName($sourcePath))
+    Copy-Item -LiteralPath $sourcePath -Destination $destinationPath -Force
+    Print-ArtifactInfo -Label "python_runtime_file" -Path $destinationPath
+  }
+
+  $packageSource = Join-Path $RepoRoot ".tmp_external_research\\Depth-Anything-3\\src\\depth_anything_3"
+  if (-not (Test-Path -LiteralPath $packageSource -PathType Container)) {
+    Write-Warning "python_runtime_sync: depth_anything_3 source package not found ($packageSource)"
+    return
+  }
+
+  $packageDestination = Join-Path $DestinationRoot "depth_anything_3"
+  Copy-Item -LiteralPath $packageSource -Destination $packageDestination -Recurse -Force
+  Get-ChildItem -LiteralPath $packageDestination -Recurse -Directory -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -eq "__pycache__" } |
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+  Get-ChildItem -LiteralPath $packageDestination -Recurse -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.Extension -in @(".pyc", ".pyo") } |
+    Remove-Item -Force -ErrorAction SilentlyContinue
+
+  $apiPath = Join-Path $packageDestination "api.py"
+  if (Test-Path -LiteralPath $apiPath -PathType Leaf) {
+    Print-ArtifactInfo -Label "python_runtime_api" -Path $apiPath
+  }
+}
+
 $runningOnWindows = $false
 if (Get-Variable -Name IsWindows -ErrorAction SilentlyContinue) {
   $runningOnWindows = [bool]$IsWindows
@@ -952,6 +1001,7 @@ if ($ortProvidersSharedAbs) {
   Print-ArtifactInfo -Label "staged_ort_providers_shared_dll" -Path $stagedOrtProvidersPath
 }
 Stage-DllBundle -Files $ortRuntimeBundleDlls -DestinationDir (Join-Path $aexDir "zsoda_ort") -LabelPrefix "staged_ort_runtime_bundle_dll"
+Sync-PythonRuntimeAssets -RepoRoot $repoRoot -DestinationRoot (Join-Path $aexDir "zsoda_py")
 
 Print-LoaderEvidence -AexPath $aex
 if ($BuildLoaderProbe) {
@@ -1008,6 +1058,7 @@ if ($CopyToMediaCore) {
     Write-Warning "MediaCore copy requested but onnxruntime_providers_shared.dll is unavailable."
   }
   Stage-DllBundle -Files $ortRuntimeBundleDlls -DestinationDir (Join-Path $MediaCoreDir "zsoda_ort") -LabelPrefix "mediacore_ort_runtime_bundle_dll"
+  Sync-PythonRuntimeAssets -RepoRoot $repoRoot -DestinationRoot (Join-Path $MediaCoreDir "zsoda_py")
 
   $repoModelsRoot = Join-Path $repoRoot "models"
   $mediaCoreModelsRoot = Join-Path $MediaCoreDir "models"

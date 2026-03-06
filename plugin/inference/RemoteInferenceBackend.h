@@ -28,13 +28,21 @@ class RemoteInferenceBackend final : public IOnnxRuntimeBackend {
   RuntimeBackend ActiveBackend() const override;
 
  private:
+  bool ResolveEndpointConfigurationLocked(std::string* error);
+#if defined(_WIN32)
+  bool EnsureAutoStartedServiceReadyLocked(std::string* error);
+#endif
+
   RuntimeOptions options_;
   RemoteBackendCommandConfig command_config_;
   RuntimeBackend active_backend_ = RuntimeBackend::kCpu;
   bool initialized_ = false;
+  bool service_autostart_enabled_ = false;
   std::string backend_name_;
   std::string active_model_id_;
   std::string active_model_path_;
+  std::string resolved_remote_endpoint_;
+  std::string resolved_status_endpoint_;
   mutable zsoda::core::CompatMutex mutex_;
 };
 
