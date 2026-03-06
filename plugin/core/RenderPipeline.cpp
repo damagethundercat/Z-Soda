@@ -47,6 +47,51 @@ int ParseIntEnvOrDefault(const char* name, int default_value, int min_value, int
   return static_cast<int>(parsed);
 }
 
+float ParseFloatEnvOrDefault(const char* name,
+                             float default_value,
+                             float min_value,
+                             float max_value) {
+  const char* raw = std::getenv(name);
+  if (raw == nullptr || raw[0] == 0) {
+    return default_value;
+  }
+  char* end = nullptr;
+  const float parsed = std::strtof(raw, &end);
+  if (end == raw || (end != nullptr && *end != 0)) {
+    return default_value;
+  }
+  if (!std::isfinite(parsed) || parsed < min_value || parsed > max_value) {
+    return default_value;
+  }
+  return parsed;
+}
+
+bool ParseBoolEnvOrDefault(const char* name, bool default_value) {
+  const char* raw = std::getenv(name);
+  if (raw == nullptr) {
+    return default_value;
+  }
+
+  std::string normalized;
+  while (*raw != '\0') {
+    const char ch = *raw++;
+    if (ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n' || ch == '-' || ch == '_') {
+      continue;
+    }
+    normalized.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
+  }
+  if (normalized.empty()) {
+    return default_value;
+  }
+  if (normalized == "1" || normalized == "true" || normalized == "yes" || normalized == "on") {
+    return true;
+  }
+  if (normalized == "0" || normalized == "false" || normalized == "no" || normalized == "off") {
+    return false;
+  }
+  return default_value;
+}
+
 std::uint64_t HashCombine64(std::uint64_t lhs, std::uint64_t rhs) {
   return lhs ^ (rhs + 0x9e3779b97f4a7c15ULL + (lhs << 6ULL) + (lhs >> 2ULL));
 }
@@ -215,6 +260,40 @@ FrameBuffer BuildSourceLuma(const FrameBuffer& source) {
   return luma;
 }
 
+void ApplySourceAlphaMask(FrameBuffer* output, const FrameBuffer& source, float outside_value) {
+  if (output == nullptr || output->empty() || source.empty()) {
+    return;
+  }
+  const FrameDesc& out_desc = output->desc();
+  const FrameDesc& src_desc = source.desc();
+  if (src_desc.channels < 4 || src_desc.width != out_desc.width ||
+      src_desc.height != out_desc.height) {
+    return;
+  }
+
+  const float alpha_threshold =
+      ParseFloatEnvOrDefault("ZSODA_ALPHA_MASK_THRESHOLD", 0.01F, 0.0F, 1.0F);
+  const bool soft_blend =
+      ParseBoolEnvOrDefault("ZSODA_ALPHA_MASK_SOFT_BLEND", true);
+  const float clamped_outside = std::clamp(outside_value, 0.0F, 1.0F);
+  for (int y = 0; y < out_desc.height; ++y) {
+    for (int x = 0; x < out_desc.width; ++x) {
+      float alpha = source.at(x, y, 3);
+      if (!std::isfinite(alpha)) {
+        output->at(x, y, 0) = clamped_outside;
+        continue;
+      }
+      alpha = std::clamp(alpha, 0.0F, 1.0F);
+      if (alpha <= alpha_threshold) {
+        output->at(x, y, 0) = clamped_outside;
+      } else if (soft_blend && alpha < 1.0F) {
+        const float value = output->at(x, y, 0);
+        output->at(x, y, 0) = value * alpha + clamped_outside * (1.0F - alpha);
+      }
+    }
+  }
+}
+
 float ComputeMeanAbsoluteDifference(const FrameBuffer& lhs, const FrameBuffer& rhs) {
   if (lhs.empty() || rhs.empty() || lhs.desc().width != rhs.desc().width ||
       lhs.desc().height != rhs.desc().height || lhs.desc().channels != 1 ||
@@ -247,6 +326,200 @@ float ComputeMeanAbsoluteDifference(const FrameBuffer& lhs, const FrameBuffer& r
     return 0.0F;
   }
   return total / static_cast<float>(sampled);
+}
+
+struct PercentileRange {
+  float low = 0.0F;
+  float high = 1.0F;
+  bool valid = false;
+};
+
+PercentileRange ComputeDepthPercentileRange(const FrameBuffer& depth,
+                                            float low_quantile,
+                                            float high_quantile) {
+  PercentileRange range;
+  if (depth.empty() || depth.desc().channels != 1) {
+    return range;
+  }
+
+  const auto& desc = depth.desc();
+  const std::size_t pixel_count =
+      static_cast<std::size_t>(desc.width) * static_cast<std::size_t>(desc.height);
+  if (pixel_count == 0U) {
+    return range;
+  }
+
+  constexpr std::size_t kMaxSamples = 131072U;
+  const std::size_t stride = std::max<std::size_t>(1U, pixel_count / kMaxSamples);
+  std::vector<float> values;
+  values.reserve(std::min<std::size_t>(pixel_count, kMaxSamples));
+
+  std::size_t linear = 0U;
+  for (int y = 0; y < desc.height; ++y) {
+    for (int x = 0; x < desc.width; ++x, ++linear) {
+      if ((linear % stride) != 0U) {
+        continue;
+      }
+      const float value = depth.at(x, y, 0);
+      if (std::isfinite(value)) {
+        values.push_back(value);
+      }
+    }
+  }
+
+  if (values.size() < 16U) {
+    return range;
+  }
+
+  const float q_low = std::clamp(std::min(low_quantile, high_quantile), 0.0F, 1.0F);
+  const float q_high = std::clamp(std::max(low_quantile, high_quantile), 0.0F, 1.0F);
+  const std::size_t low_index =
+      static_cast<std::size_t>(q_low * static_cast<float>(values.size() - 1U));
+  const std::size_t high_index =
+      static_cast<std::size_t>(q_high * static_cast<float>(values.size() - 1U));
+
+  std::nth_element(values.begin(),
+                   values.begin() + static_cast<std::ptrdiff_t>(low_index),
+                   values.end());
+  range.low = values[low_index];
+
+  std::nth_element(values.begin(),
+                   values.begin() + static_cast<std::ptrdiff_t>(high_index),
+                   values.end());
+  range.high = values[high_index];
+  range.valid = std::isfinite(range.low) && std::isfinite(range.high) &&
+                (range.high > range.low + 1e-6F);
+  return range;
+}
+
+bool ShouldEnableDetailBoost(const RenderParams& params, const FrameDesc& source_desc) {
+  (void)source_desc;
+  int requested_tiles = std::clamp(params.quality_boost, 0, 8);
+  if (requested_tiles <= 1) {
+    requested_tiles = ParseIntEnvOrDefault("ZSODA_QUALITY_BOOST_TILES", requested_tiles, 0, 8);
+  }
+  if (requested_tiles <= 1 && ParseBoolEnvOrDefault("ZSODA_DETAIL_BOOST", false)) {
+    requested_tiles = 2;
+  }
+  return requested_tiles > 1;
+}
+
+int ResolveDetailBoostTiles(const RenderParams& params) {
+  int requested_tiles = std::clamp(params.quality_boost, 0, 8);
+  if (requested_tiles <= 1) {
+    requested_tiles = ParseIntEnvOrDefault("ZSODA_QUALITY_BOOST_TILES", requested_tiles, 0, 8);
+  }
+  if (requested_tiles <= 1 && ParseBoolEnvOrDefault("ZSODA_DETAIL_BOOST", false)) {
+    requested_tiles = 2;
+  }
+  return std::clamp(requested_tiles, 0, 8);
+}
+
+int ResolveDetailBoostReferenceQuality(const RenderParams& params) {
+  const int default_quality = std::min(2, std::clamp(params.quality, 1, 8));
+  return ParseIntEnvOrDefault("ZSODA_QUALITY_BOOST_REFERENCE_QUALITY", default_quality, 1, 8);
+}
+
+float ResolveDetailBoostPaddingRatio() {
+  return ParseFloatEnvOrDefault("ZSODA_QUALITY_BOOST_PADDING_RATIO", 0.50F, 0.0F, 1.0F);
+}
+
+float ResolveDetailBoostVarianceFloor() {
+  return ParseFloatEnvOrDefault("ZSODA_QUALITY_BOOST_VARIANCE_FLOOR", 1.0e-4F, 1.0e-6F, 1.0F);
+}
+
+struct DetailBoostStats {
+  float mean = 0.0F;
+  float stddev = 0.0F;
+  bool valid = false;
+};
+
+DetailBoostStats ComputeFiniteMeanStd(const FrameBuffer& frame,
+                                      int x0,
+                                      int y0,
+                                      int x1,
+                                      int y1) {
+  DetailBoostStats stats;
+  if (frame.empty()) {
+    return stats;
+  }
+
+  const int begin_x = std::clamp(std::min(x0, x1), 0, frame.desc().width);
+  const int end_x = std::clamp(std::max(x0, x1), 0, frame.desc().width);
+  const int begin_y = std::clamp(std::min(y0, y1), 0, frame.desc().height);
+  const int end_y = std::clamp(std::max(y0, y1), 0, frame.desc().height);
+  if (begin_x >= end_x || begin_y >= end_y) {
+    return stats;
+  }
+
+  double sum = 0.0;
+  double sum_sq = 0.0;
+  std::size_t count = 0U;
+  for (int y = begin_y; y < end_y; ++y) {
+    for (int x = begin_x; x < end_x; ++x) {
+      const float value = frame.at(x, y, 0);
+      if (!std::isfinite(value)) {
+        continue;
+      }
+      sum += static_cast<double>(value);
+      sum_sq += static_cast<double>(value) * static_cast<double>(value);
+      ++count;
+    }
+  }
+
+  if (count == 0U) {
+    return stats;
+  }
+
+  const double mean = sum / static_cast<double>(count);
+  const double variance = std::max(0.0, sum_sq / static_cast<double>(count) - mean * mean);
+  stats.mean = static_cast<float>(mean);
+  stats.stddev = static_cast<float>(std::sqrt(variance));
+  stats.valid = std::isfinite(stats.mean) && std::isfinite(stats.stddev);
+  return stats;
+}
+
+float ComputeDetailBoostFeatherWeight(int x,
+                                      int y,
+                                      int core_x1,
+                                      int core_y1,
+                                      int core_x2,
+                                      int core_y2,
+                                      int pad_x1,
+                                      int pad_y1,
+                                      int pad_x2,
+                                      int pad_y2) {
+  float weight = 1.0F;
+
+  const int left_margin = std::max(0, core_x1 - pad_x1);
+  if (left_margin > 0) {
+    weight *= std::clamp(static_cast<float>(x - pad_x1) / static_cast<float>(left_margin),
+                         0.0F,
+                         1.0F);
+  }
+
+  const int right_margin = std::max(0, pad_x2 - core_x2);
+  if (right_margin > 0) {
+    weight *= std::clamp(static_cast<float>((pad_x2 - 1) - x) / static_cast<float>(right_margin),
+                         0.0F,
+                         1.0F);
+  }
+
+  const int top_margin = std::max(0, core_y1 - pad_y1);
+  if (top_margin > 0) {
+    weight *= std::clamp(static_cast<float>(y - pad_y1) / static_cast<float>(top_margin),
+                         0.0F,
+                         1.0F);
+  }
+
+  const int bottom_margin = std::max(0, pad_y2 - core_y2);
+  if (bottom_margin > 0) {
+    weight *= std::clamp(static_cast<float>((pad_y2 - 1) - y) / static_cast<float>(bottom_margin),
+                         0.0F,
+                         1.0F);
+  }
+
+  return std::max(1.0e-3F, weight);
 }
 
 FrameBuffer UpsampleDepthWithGuide(const FrameBuffer& lowres_depth,
@@ -480,6 +753,9 @@ RenderOutput RenderPipeline::Render(const FrameBuffer& source, const RenderParam
     auto finalize_output = [&](RenderStatus status, std::string message) -> RenderOutput {
       ApplyPostProcess(depth.get(), source, params);
       FrameBuffer output = BuildOutput(*depth.get(), params);
+      const float outside_value =
+          params.output_mode == OutputMode::kSlicing ? 0.0F : (params.invert ? 1.0F : 0.0F);
+      ApplySourceAlphaMask(&output, source, outside_value);
       if (use_cache) {
         cache_.Insert(key, output);
       }
@@ -491,12 +767,50 @@ RenderOutput RenderPipeline::Render(const FrameBuffer& source, const RenderParam
       }
       return {status, std::move(output), std::move(message)};
     };
+    const bool detail_boost_requested = ShouldEnableDetailBoost(params, source.desc());
+    const bool detail_boost_supported =
+        detail_boost_requested && !IsTemporalSequenceModelId(params.model_id);
+    const int direct_quality =
+        detail_boost_supported ? ResolveDetailBoostReferenceQuality(params) : params.quality;
+
     std::string direct_error;
     AppendPipelineTrace("direct_inference_begin");
-    if (RunInference(source, params.quality, params.frame_hash, depth.get(), &direct_error)) {
+    if (RunInference(source, params, direct_quality, depth.get(), &direct_error)) {
       AppendPipelineTrace("direct_inference_ok");
-      return finalize_output(RenderStatus::kInference,
-                             "direct inference succeeded (" + engine_->ActiveModelId() + ")");
+      std::string message =
+          (detail_boost_supported ? "reference inference succeeded (" : "direct inference succeeded (") +
+          engine_->ActiveModelId() + ")";
+      if (!direct_error.empty()) {
+        message += " - backend note: " + direct_error;
+      }
+      if (detail_boost_requested) {
+        std::string detail_note;
+        bool detail_applied = false;
+        if (!detail_boost_supported) {
+          detail_note = "temporal sequence model";
+        } else if (ApplyDetailBoostRefinement(source, params, depth.get(), &detail_note)) {
+          detail_applied = true;
+        } else if (direct_quality != params.quality) {
+          FrameBuffer restored_depth(depth_desc);
+          std::string restore_error;
+          if (RunInference(source, params, params.quality, &restored_depth, &restore_error)) {
+            *depth.get() = std::move(restored_depth);
+            if (!restore_error.empty()) {
+              detail_note += " - restored direct quality with backend note: " + restore_error;
+            } else {
+              detail_note += " - restored direct quality";
+            }
+          } else if (!restore_error.empty()) {
+            detail_note += " - direct quality restore failed: " + restore_error;
+          }
+        }
+        if (detail_applied && !detail_note.empty()) {
+          message += " - " + detail_note;
+        } else if (!detail_applied && !detail_note.empty()) {
+          message += " - detail boost skipped: " + detail_note;
+        }
+      }
+      return finalize_output(RenderStatus::kInference, std::move(message));
     }
     AppendPipelineTrace("direct_inference_failed",
                         direct_error.empty() ? "<none>" : direct_error.c_str());
@@ -513,8 +827,8 @@ RenderOutput RenderPipeline::Render(const FrameBuffer& source, const RenderParam
       for (const int candidate_tile_size : tiled_retry_sizes) {
         std::string attempt_error;
         if (RunTiledInference(source,
+                              params,
                               params.quality,
-                              params.frame_hash,
                               candidate_tile_size,
                               params.overlap,
                               depth.get(),
@@ -631,6 +945,7 @@ std::uint64_t RenderPipeline::BuildPostprocessStateHash(const RenderParams& para
   };
 
   std::uint64_t h = static_cast<std::uint64_t>(static_cast<int>(params.mapping_mode));
+  h = mix(h, static_cast<std::uint64_t>(std::max(0, params.quality_boost)));
   h = mix(h, static_cast<std::uint64_t>(params.invert ? 1 : 0));
   h = mix(h, to_permille(params.guided_low_percentile));
   h = mix(h, to_permille(params.guided_high_percentile));
@@ -656,6 +971,8 @@ RenderCacheKey RenderPipeline::BuildCacheKey(const FrameBuffer& source, const Re
   key.width = source.desc().width;
   key.height = source.desc().height;
   key.quality = params.quality;
+  key.quality_boost = std::max(0, params.quality_boost);
+  key.preserve_aspect_ratio = params.preserve_aspect_ratio;
   key.invert = params.invert;
   key.mapping_mode = static_cast<int>(params.mapping_mode);
   key.guided_low_permille = to_permille(params.guided_low_percentile);
@@ -682,8 +999,8 @@ RenderCacheKey RenderPipeline::BuildCacheKey(const FrameBuffer& source, const Re
 }
 
 bool RenderPipeline::RunInference(const FrameBuffer& source,
+                                  const RenderParams& params,
                                   int quality,
-                                  std::uint64_t frame_hash,
                                   FrameBuffer* depth,
                                   std::string* error) const {
   if (!engine_) {
@@ -695,13 +1012,172 @@ bool RenderPipeline::RunInference(const FrameBuffer& source,
   inference::InferenceRequest request;
   request.source = &source;
   request.quality = quality;
-  request.frame_hash = frame_hash;
+  request.resize_mode = params.preserve_aspect_ratio
+                            ? inference::PreprocessResizeMode::kUpperBoundLetterbox
+                            : inference::PreprocessResizeMode::kStretch;
+  request.frame_hash = params.frame_hash;
   return engine_->Run(request, depth, error);
 }
 
+bool RenderPipeline::ApplyDetailBoostRefinement(const FrameBuffer& source,
+                                                const RenderParams& params,
+                                                FrameBuffer* depth,
+                                                std::string* detail) const {
+  if (detail != nullptr) {
+    detail->clear();
+  }
+  if (depth == nullptr || depth->empty() || source.empty()) {
+    if (detail != nullptr) {
+      *detail = "invalid source/depth";
+    }
+    return false;
+  }
+  if (depth->desc().channels != 1) {
+    if (detail != nullptr) {
+      *detail = "depth boost requires single-channel depth";
+    }
+    return false;
+  }
+
+  const int n_tiles = ResolveDetailBoostTiles(params);
+  if (n_tiles <= 1) {
+    if (detail != nullptr) {
+      *detail = "quality boost disabled";
+    }
+    return false;
+  }
+
+  if (IsTemporalSequenceModelId(params.model_id)) {
+    if (detail != nullptr) {
+      *detail = "temporal sequence model";
+    }
+    return false;
+  }
+
+  const auto& desc = depth->desc();
+  const FrameBuffer reference_depth = *depth;
+  const int reference_quality = ResolveDetailBoostReferenceQuality(params);
+  const float padding_ratio = ResolveDetailBoostPaddingRatio();
+  const float variance_floor = ResolveDetailBoostVarianceFloor();
+  const int source_width = source.desc().width;
+  const int source_height = source.desc().height;
+  const int tile_w = std::max(1, source_width / n_tiles);
+  const int tile_h = std::max(1, source_height / n_tiles);
+  const int padding = static_cast<int>(
+      std::lround(static_cast<float>(std::min(tile_w, tile_h)) * padding_ratio));
+
+  FrameBuffer accumulated(desc);
+  accumulated.Fill(0.0F);
+  FrameBuffer weights(desc);
+  weights.Fill(0.0F);
+
+  int tiles_applied = 0;
+  for (int tile_y = 0; tile_y < n_tiles; ++tile_y) {
+    for (int tile_x = 0; tile_x < n_tiles; ++tile_x) {
+      const int core_x1 = tile_x * tile_w;
+      const int core_y1 = tile_y * tile_h;
+      const int core_x2 =
+          tile_x == n_tiles - 1 ? source_width : std::min(source_width, (tile_x + 1) * tile_w);
+      const int core_y2 =
+          tile_y == n_tiles - 1 ? source_height : std::min(source_height, (tile_y + 1) * tile_h);
+      if (core_x1 >= core_x2 || core_y1 >= core_y2) {
+        continue;
+      }
+
+      const int pad_x1 = std::max(0, core_x1 - padding);
+      const int pad_y1 = std::max(0, core_y1 - padding);
+      const int pad_x2 = std::min(source_width, core_x2 + padding);
+      const int pad_y2 = std::min(source_height, core_y2 + padding);
+
+      TileRect padded_tile;
+      padded_tile.x = pad_x1;
+      padded_tile.y = pad_y1;
+      padded_tile.width = std::max(1, pad_x2 - pad_x1);
+      padded_tile.height = std::max(1, pad_y2 - pad_y1);
+
+      const FrameBuffer tile_source = CropGray(source, padded_tile);
+      FrameDesc tile_desc = tile_source.desc();
+      tile_desc.channels = 1;
+      tile_desc.format = PixelFormat::kGray32F;
+      FrameBuffer tile_depth(tile_desc);
+
+      std::string tile_error;
+      if (!RunInference(tile_source, params, params.quality, &tile_depth, &tile_error)) {
+        if (detail != nullptr) {
+          *detail = tile_error.empty() ? "quality boost tiled refinement failed" : tile_error;
+        }
+        return false;
+      }
+
+      const DetailBoostStats ref_stats =
+          ComputeFiniteMeanStd(reference_depth, pad_x1, pad_y1, pad_x2, pad_y2);
+      const DetailBoostStats tile_stats =
+          ComputeFiniteMeanStd(tile_depth, 0, 0, tile_depth.desc().width, tile_depth.desc().height);
+
+      float scale = 1.0F;
+      float offset = 0.0F;
+      if (ref_stats.valid && tile_stats.valid) {
+        scale = std::max(variance_floor, ref_stats.stddev) /
+                std::max(variance_floor, tile_stats.stddev);
+        offset = ref_stats.mean - tile_stats.mean * scale;
+      }
+
+      for (int local_y = 0; local_y < padded_tile.height; ++local_y) {
+        for (int local_x = 0; local_x < padded_tile.width; ++local_x) {
+          const float tile_value = tile_depth.at(local_x, local_y, 0);
+          if (!std::isfinite(tile_value)) {
+            continue;
+          }
+          const int out_x = pad_x1 + local_x;
+          const int out_y = pad_y1 + local_y;
+          const float weight = ComputeDetailBoostFeatherWeight(out_x,
+                                                               out_y,
+                                                               core_x1,
+                                                               core_y1,
+                                                               core_x2,
+                                                               core_y2,
+                                                               pad_x1,
+                                                               pad_y1,
+                                                               pad_x2,
+                                                               pad_y2);
+          accumulated.at(out_x, out_y, 0) += (tile_value * scale + offset) * weight;
+          weights.at(out_x, out_y, 0) += weight;
+        }
+      }
+      ++tiles_applied;
+    }
+  }
+
+  for (int y = 0; y < desc.height; ++y) {
+    for (int x = 0; x < desc.width; ++x) {
+      const float weight = weights.at(x, y, 0);
+      if (weight > 0.0F) {
+        depth->at(x, y, 0) = accumulated.at(x, y, 0) / weight;
+      } else {
+        depth->at(x, y, 0) = reference_depth.at(x, y, 0);
+      }
+    }
+  }
+
+  if (tiles_applied == 0) {
+    if (detail != nullptr) {
+      *detail = "quality boost generated no tiles";
+    }
+    return false;
+  }
+
+  if (detail != nullptr) {
+    *detail = "quality boost applied (" + std::to_string(n_tiles) + "x" +
+              std::to_string(n_tiles) + " tiles, ref_quality=" +
+              std::to_string(reference_quality) + ", padding=" +
+              std::to_string(padding) + ")";
+  }
+  return true;
+}
+
 bool RenderPipeline::RunTiledInference(const FrameBuffer& source,
+                                       const RenderParams& params,
                                        int quality,
-                                       std::uint64_t frame_hash,
                                        int tile_size,
                                        int overlap,
                                        FrameBuffer* depth,
@@ -732,7 +1208,10 @@ bool RenderPipeline::RunTiledInference(const FrameBuffer& source,
     inference::InferenceRequest request;
     request.source = &tile_src;
     request.quality = quality;
-    request.frame_hash = frame_hash;
+    request.resize_mode = params.preserve_aspect_ratio
+                              ? inference::PreprocessResizeMode::kUpperBoundLetterbox
+                              : inference::PreprocessResizeMode::kStretch;
+    request.frame_hash = params.frame_hash;
     if (!engine_->Run(request, &tile_depth, error)) {
       return false;
     }
@@ -780,11 +1259,7 @@ bool RenderPipeline::RunDownscaledInference(const FrameBuffer& source,
   std::string downscaled_run_error;
   const int quality_penalty = std::max(1, downscale_divisor / 2);
   const int downscaled_quality = std::max(1, params.quality - quality_penalty);
-  if (!RunInference(downscaled_source,
-                    downscaled_quality,
-                    params.frame_hash,
-                    &downscaled_depth,
-                    &downscaled_run_error)) {
+  if (!RunInference(downscaled_source, params, downscaled_quality, &downscaled_depth, &downscaled_run_error)) {
     if (error != nullptr) {
       *error = downscaled_run_error.empty() ? "downscaled run failed" : downscaled_run_error;
     }
@@ -856,6 +1331,8 @@ std::uint64_t RenderPipeline::BuildFrozenStateHash(const FrameBuffer& source,
   hash = HashCombine64(hash, HashFromInt(static_cast<int>(source.desc().format)));
 
   hash = HashCombine64(hash, HashFromInt(params.quality));
+  hash = HashCombine64(hash, HashFromInt(std::max(0, params.quality_boost)));
+  hash = HashCombine64(hash, HashFromBool(params.preserve_aspect_ratio));
   hash = HashCombine64(hash, HashFromBool(params.invert));
   hash = HashCombine64(hash, HashFromInt(static_cast<int>(params.mapping_mode)));
   hash = HashCombine64(hash, HashFromPermille(params.guided_low_percentile));

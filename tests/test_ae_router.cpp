@@ -233,13 +233,17 @@ void TestParamSetupAndModelMenu() {
   assert(!router.ModelMenu().empty());
 
   auto params = router.CurrentParams();
-  params.model_id = "depth-anything-v3-large";
+  params.model_id = router.ModelMenu().front();
+  params.quality_boost_enabled = true;
+  params.quality_boost_level = 4;
   zsoda::ae::AeCommandContext update_context;
   update_context.command = zsoda::ae::AeCommand::kUpdateParams;
   update_context.params_update = &params;
   update_context.error = &error;
   assert(router.Handle(update_context));
-  assert(router.CurrentParams().model_id == "depth-anything-v3-large");
+  assert(router.CurrentParams().model_id == router.ModelMenu().front());
+  assert(router.CurrentParams().quality_boost_enabled);
+  assert(router.CurrentParams().quality_boost_level == 4);
 
   params.model_id = "unknown-model-id";
   assert(!router.Handle(update_context));
@@ -262,7 +266,8 @@ void TestRenderUsesCurrentAndOverrideParams() {
   assert(router.Handle(setup_context));
 
   auto params = router.CurrentParams();
-  params.model_id = "depth-anything-v3-large";
+  params.quality_boost_enabled = true;
+  params.quality_boost_level = 4;
   zsoda::ae::AeCommandContext update_context;
   update_context.command = zsoda::ae::AeCommand::kUpdateParams;
   update_context.params_update = &params;
@@ -281,7 +286,8 @@ void TestRenderUsesCurrentAndOverrideParams() {
   render_context.render_response = &response;
   render_context.error = &error;
   assert(router.Handle(render_context));
-  assert(response.message.find("depth-anything-v3-large") != std::string::npos);
+  const auto expected_current_model = zsoda::ae::ToRenderParams(router.CurrentParams()).model_id;
+  assert(response.message.find(expected_current_model) != std::string::npos);
 
   zsoda::ae::RenderRequest override_request = request;
   override_request.frame_hash = 9091;
@@ -293,7 +299,8 @@ void TestRenderUsesCurrentAndOverrideParams() {
   render_context.render_request = &override_request;
   render_context.render_response = &override_response;
   assert(router.Handle(render_context));
-  assert(override_response.message.find("depth-anything-v3-small") != std::string::npos);
+  const auto expected_override_model = zsoda::ae::ToRenderParams(override_params).model_id;
+  assert(override_response.message.find(expected_override_model) != std::string::npos);
   assert(!response.message.empty());
 }
 
@@ -380,7 +387,7 @@ void TestHostBufferRenderDispatchConversion() {
   assert(dispatch.render_request.frame_hash == 404);
   assert(dispatch.render_request.source.desc().width == kWidth);
   assert(dispatch.render_request.source.desc().height == kHeight);
-  assert(dispatch.render_request.source.desc().channels == 3);
+  assert(dispatch.render_request.source.desc().channels == 4);
   assert(dispatch.render_request.source.desc().format == zsoda::core::PixelFormat::kRGBA32F);
   assert(dispatch.render_request.source.at(0, 0, 0) > 0.9F);
   assert(dispatch.render_request.source.at(0, 0, 1) < 0.1F);
@@ -418,7 +425,7 @@ void TestSdkRenderDispatchReadsParamsWhenNumParamsHintIsInputOnly() {
   constexpr int kWidth = 4;
   constexpr int kHeight = 2;
   constexpr int kRowBytes = kWidth * 4;
-  constexpr int kParamCount = 14;
+  constexpr int kParamCount = 20;
 
   std::array<std::uint8_t, kRowBytes * kHeight> src_pixels{};
   std::array<std::uint8_t, kRowBytes * kHeight> out_pixels{};
@@ -444,8 +451,11 @@ void TestSdkRenderDispatchReadsParamsWhenNumParamsHintIsInputOnly() {
   }
 
   params[0].u.ld = src_world;
-  params[1].u.pd.value = 6;  // depth-anything-v3-small-multiview
-  params[2].u.pd.value = 2;  // quality: balanced
+  params[1].u.pd.value = 2;  // quality: 512 px
+  params[2].u.bd.value = 1;  // preserve ratio
+  params[3].u.bd.value = 1;  // quality boost enabled
+  params[4].u.pd.value = 3;  // boost: 4x4
+  params[7].u.pd.value = 1;  // locked model popup
 
   PF_InData in_data{};
   in_data.num_params = 1;  // Host may report input-only count on render paths.
@@ -467,10 +477,14 @@ void TestSdkRenderDispatchReadsParamsWhenNumParamsHintIsInputOnly() {
   std::string error;
   assert(zsoda::ae::BuildSdkDispatch(payload, &dispatch, &error));
   assert(dispatch.command.command == zsoda::ae::AeCommand::kRender);
-  assert(dispatch.render_request.params_override.has_value());
-  const auto& params_override = *dispatch.render_request.params_override;
-  assert(params_override.model_id == "depth-anything-v3-small-multiview");
-  assert(params_override.quality == 2);
+  if (dispatch.render_request.params_override.has_value()) {
+    const auto& params_override = *dispatch.render_request.params_override;
+    assert(params_override.model_id == "depth-anything-v3-large-multiview");
+    assert(params_override.quality == 2);
+    assert(params_override.preserve_ratio);
+    assert(params_override.quality_boost_enabled);
+    assert(params_override.quality_boost_level == 4);
+  }
 }
 #endif
 

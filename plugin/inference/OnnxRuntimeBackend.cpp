@@ -38,6 +38,7 @@ namespace {
 constexpr int kMinimumModelInputSize = 32;
 constexpr std::uint32_t kDefaultOrtApiVersionFloor = 17U;
 constexpr int kDefaultGpuDeviceId = 0;
+constexpr int kDa3PatchMultiple = 14;
 
 struct RuntimeProviderCapabilities {
   std::vector<std::string> providers;
@@ -106,10 +107,11 @@ float ParseFloatEnvOrDefault(const char* name,
 }
 
 bool ShouldPreferPreloadedOrt(RuntimeBackend requested_backend) {
-  const bool prefer_gpu_when_auto = true;
-  const bool default_prefer_preloaded =
-      (requested_backend != RuntimeBackend::kCpu) ||
-      (requested_backend == RuntimeBackend::kAuto && prefer_gpu_when_auto);
+  (void)requested_backend;
+  // Prefer isolated runtime by default to avoid binding to AE-preloaded ORT
+  // (often older than the plugin-bundled runtime). If isolated loading fails,
+  // the loader still performs a safe preloaded fallback.
+  const bool default_prefer_preloaded = false;
   return ParseBoolEnvOrDefault("ZSODA_ORT_PREFER_PRELOADED", default_prefer_preloaded);
 }
 
@@ -203,6 +205,9 @@ struct ModelPipelineProfile {
   std::array<float, 3> normalize_std = {0.5F, 0.5F, 0.5F};
   bool invert_depth = false;
   bool prefer_latest_output_map = false;
+  bool use_upper_bound_dynamic_aspect = false;
+  int patch_multiple = 1;
+  bool use_middle_reference_strategy = false;
 };
 
 struct PreparedModelInput {
@@ -211,6 +216,10 @@ struct PreparedModelInput {
   int tensor_width = 0;
   int tensor_height = 0;
   int tensor_channels = 3;
+  int process_res = 0;
+  int patch_multiple = 1;
+  bool dynamic_upper_bound_aspect = false;
+  bool direct_resize_mapping = false;
   float resize_scale = 1.0F;
   float resize_offset_x = 0.0F;
   float resize_offset_y = 0.0F;
@@ -227,6 +236,12 @@ struct RawDepthOutput {
   float min_depth = 0.0F;
   float max_depth = 1.0F;
   std::vector<float> depth_values;
+};
+
+enum class MultiviewReferenceStrategy {
+  kFirst,
+  kMiddle,
+  kLatest,
 };
 
 std::string ToLowerCopy(std::string_view text) {
@@ -298,7 +313,8 @@ std::size_t SelectDepthOutputIndexByName(const std::vector<std::string>& output_
 
 std::size_t ResolveOutputMapIndex(std::size_t preferred_map_index,
                                   std::size_t map_count,
-                                  int temporal_frame_count_hint) {
+                                  int temporal_frame_count_hint,
+                                  MultiviewReferenceStrategy strategy) {
   const int forced_output_map_index =
       ParseIntEnvOrDefault("ZSODA_ORT_OUTPUT_MAP_INDEX", -1, -1, 4096);
   if (forced_output_map_index >= 0) {
@@ -311,7 +327,14 @@ std::size_t ResolveOutputMapIndex(std::size_t preferred_map_index,
 
   if (temporal_frame_count_hint > 1 &&
       map_count == static_cast<std::size_t>(temporal_frame_count_hint)) {
-    return map_count - 1U;
+    switch (strategy) {
+      case MultiviewReferenceStrategy::kFirst:
+        return 0U;
+      case MultiviewReferenceStrategy::kMiddle:
+        return map_count / 2U;
+      case MultiviewReferenceStrategy::kLatest:
+        return map_count - 1U;
+    }
   }
   return 0U;
 }
@@ -433,11 +456,24 @@ void AppendNoteSegment(std::string* note, std::string_view segment) {
 std::string BuildMultiviewDiagnosticsNote(bool requested_multiview,
                                           int resolved_input_frame_count,
                                           bool multiview_active,
-                                          bool multiview_warning) {
+                                          bool multiview_warning,
+                                          MultiviewReferenceStrategy strategy) {
+  const auto strategy_name = [](MultiviewReferenceStrategy value) -> const char* {
+    switch (value) {
+      case MultiviewReferenceStrategy::kFirst:
+        return "first";
+      case MultiviewReferenceStrategy::kMiddle:
+        return "middle";
+      case MultiviewReferenceStrategy::kLatest:
+        return "latest";
+    }
+    return "latest";
+  };
   std::ostringstream oss;
   oss << "requested_multiview=" << (requested_multiview ? "1" : "0")
       << ", resolved_input_frame_count=" << std::max(1, resolved_input_frame_count)
-      << ", multiview_active=" << (multiview_active ? "1" : "0");
+      << ", multiview_active=" << (multiview_active ? "1" : "0")
+      << ", ref_strategy=" << strategy_name(strategy);
   if (multiview_warning) {
     oss << ", warning=multiview_model_degraded_to_single_frame";
   }
@@ -464,6 +500,96 @@ bool IsDa3MultiviewModelId(std::string_view model_id) {
 int ResolveDa3MultiviewFrameCount(std::string_view model_id) {
   const int default_frames = IsDa3MultiviewModelId(model_id) ? 5 : 1;
   return ParseIntEnvOrDefault("ZSODA_DA3_MULTIVIEW_FRAMES", default_frames, 1, 128);
+}
+
+MultiviewReferenceStrategy ResolveDa3MultiviewReferenceStrategy() {
+  const std::string raw = ToLowerCopy(ReadEnvOrEmpty("ZSODA_DA3_MULTIVIEW_REF"));
+  if (raw.empty()) {
+    return MultiviewReferenceStrategy::kMiddle;
+  }
+
+  std::string normalized;
+  normalized.reserve(raw.size());
+  for (const char ch : raw) {
+    if (ch == '-' || ch == '_' || std::isspace(static_cast<unsigned char>(ch)) != 0) {
+      continue;
+    }
+    normalized.push_back(ch);
+  }
+  if (normalized == "first" || normalized == "left" || normalized == "start") {
+    return MultiviewReferenceStrategy::kFirst;
+  }
+  if (normalized == "middle" || normalized == "center" || normalized == "centre") {
+    return MultiviewReferenceStrategy::kMiddle;
+  }
+  if (normalized == "latest" || normalized == "last" || normalized == "right" ||
+      normalized == "end") {
+    return MultiviewReferenceStrategy::kLatest;
+  }
+  return MultiviewReferenceStrategy::kMiddle;
+}
+
+int ResolveDa3ProcessResolution(int fallback_long_edge, int quality) {
+  static constexpr std::array<int, 8> kQualityResolutions = {
+      256, 512, 768, 1024, 1280, 1536, 1920, 2048};
+  const int clamped_quality = std::clamp(quality, 1, static_cast<int>(kQualityResolutions.size()));
+  const int quality_default =
+      kQualityResolutions[static_cast<std::size_t>(clamped_quality - 1)];
+  const int fallback =
+      std::max(kDa3PatchMultiple, quality_default > 0 ? quality_default : fallback_long_edge);
+  return ParseIntEnvOrDefault("ZSODA_DA3_PROCESS_RES", fallback, kDa3PatchMultiple, 4096);
+}
+
+int AlignToNearestMultiple(int value, int multiple) {
+  if (multiple <= 1) {
+    return std::max(1, value);
+  }
+  const int clamped = std::max(multiple, value);
+  const int aligned = static_cast<int>(
+      std::lround(static_cast<double>(clamped) / static_cast<double>(multiple)));
+  return std::max(multiple, aligned * multiple);
+}
+
+bool ComputeUpperBoundAspectTensorSize(int source_width,
+                                       int source_height,
+                                       int process_res,
+                                       int patch_multiple,
+                                       int* out_width,
+                                       int* out_height) {
+  if (out_width == nullptr || out_height == nullptr) {
+    return false;
+  }
+  if (source_width <= 0 || source_height <= 0 || process_res <= 0) {
+    return false;
+  }
+
+  const int safe_patch_multiple = std::max(1, patch_multiple);
+  const int long_edge = std::max(source_width, source_height);
+  if (long_edge <= 0) {
+    return false;
+  }
+
+  int aligned_process_res = process_res;
+  if (safe_patch_multiple > 1) {
+    aligned_process_res = AlignToNearestMultiple(aligned_process_res, safe_patch_multiple);
+  }
+
+  const float scale = static_cast<float>(aligned_process_res) /
+                      static_cast<float>(long_edge);
+  const int resized_width =
+      std::max(1, static_cast<int>(std::lround(static_cast<float>(source_width) * scale)));
+  const int resized_height =
+      std::max(1, static_cast<int>(std::lround(static_cast<float>(source_height) * scale)));
+
+  int tensor_width = resized_width;
+  int tensor_height = resized_height;
+  if (safe_patch_multiple > 1) {
+    tensor_width = AlignToNearestMultiple(resized_width, safe_patch_multiple);
+    tensor_height = AlignToNearestMultiple(resized_height, safe_patch_multiple);
+  }
+  *out_width = std::max(1, tensor_width);
+  *out_height = std::max(1, tensor_height);
+  return true;
 }
 
 float ComputeSampledMeanAbsDiff(const float* lhs, const float* rhs, std::size_t count) {
@@ -882,6 +1008,9 @@ ModelPipelineProfile ResolvePipelineProfile(const std::string& model_id) {
     profile.input_frame_count = ResolveDa3MultiviewFrameCount(model_id);
     profile.invert_depth = false;
     profile.prefer_latest_output_map = profile.input_frame_count > 1;
+    profile.use_upper_bound_dynamic_aspect = true;
+    profile.patch_multiple = kDa3PatchMultiple;
+    profile.use_middle_reference_strategy = profile.input_frame_count > 1;
     if (UseImagenetNormalizationForDa3()) {
       profile.normalize_mean = {0.485F, 0.456F, 0.406F};
       profile.normalize_std = {0.229F, 0.224F, 0.225F};
@@ -900,6 +1029,8 @@ ModelPipelineProfile ResolvePipelineProfile(const std::string& model_id) {
     profile.normalize_std = {0.229F, 0.224F, 0.225F};
     profile.invert_depth = false;
     profile.prefer_latest_output_map = true;
+    profile.patch_multiple = 1;
+    profile.use_middle_reference_strategy = false;
     return profile;
   }
   if (model_id.rfind("midas-", 0) == 0) {
@@ -917,7 +1048,7 @@ ModelPipelineProfile ResolvePipelineProfile(const std::string& model_id) {
 }
 
 bool ShouldConvertLinearInputToSrgb() {
-  return ParseBoolEnvOrDefault("ZSODA_INPUT_LINEAR_TO_SRGB", false);
+  return ParseBoolEnvOrDefault("ZSODA_INPUT_LINEAR_TO_SRGB", true);
 }
 
 bool ValidateRequest(const InferenceRequest& request,
@@ -1022,14 +1153,20 @@ bool PrepareOrtModelPath(const std::filesystem::path& candidate_path,
   }
 
   *out_session_model_path = candidate_path;
+  const std::filesystem::path legacy_external_path = BuildLegacyExternalDataPath(candidate_path);
   const std::filesystem::path expected_external_path =
       candidate_path.parent_path() / "model.onnx_data";
-  if (IsRegularFile(expected_external_path)) {
+  const bool has_legacy_external = IsRegularFile(legacy_external_path);
+  const bool has_expected_external = IsRegularFile(expected_external_path);
+
+  // Prefer model-specific "<model>.onnx_data" whenever available.
+  // Multiple DA3 variants can coexist in the same directory and share the
+  // generic alias name "model.onnx_data"; binding directly to that alias can
+  // accidentally pair a model with another variant's tensor data.
+  if (!has_legacy_external && has_expected_external) {
     return true;
   }
-
-  const std::filesystem::path legacy_external_path = BuildLegacyExternalDataPath(candidate_path);
-  if (!IsRegularFile(legacy_external_path)) {
+  if (!has_legacy_external) {
     return true;
   }
 
@@ -1066,6 +1203,7 @@ bool PrepareInputForModel(const InferenceRequest& request,
                           int preferred_tensor_width,
                           int preferred_tensor_height,
                           PreprocessResizeMode resize_mode,
+                          bool allow_dynamic_upper_bound_aspect,
                           PreparedModelInput* prepared_input,
                           std::string* error) {
   if (prepared_input == nullptr) {
@@ -1088,17 +1226,44 @@ bool PrepareInputForModel(const InferenceRequest& request,
 
   const int fallback_width = std::max(kMinimumModelInputSize, profile.input_width);
   const int fallback_height = std::max(kMinimumModelInputSize, profile.input_height);
-  prepared_input->tensor_width =
+  const int configured_tensor_width =
       std::max(kMinimumModelInputSize,
                preferred_tensor_width > 0 ? preferred_tensor_width : fallback_width);
-  prepared_input->tensor_height =
+  const int configured_tensor_height =
       std::max(kMinimumModelInputSize,
                preferred_tensor_height > 0 ? preferred_tensor_height : fallback_height);
+  prepared_input->tensor_width = configured_tensor_width;
+  prepared_input->tensor_height = configured_tensor_height;
   prepared_input->tensor_channels = 3;
+  prepared_input->process_res = std::max(configured_tensor_width, configured_tensor_height);
+  prepared_input->patch_multiple = std::max(1, profile.patch_multiple);
+  prepared_input->dynamic_upper_bound_aspect = false;
+  prepared_input->direct_resize_mapping = false;
   prepared_input->resize_mode = resize_mode;
   prepared_input->resize_scale = 1.0F;
   prepared_input->resize_offset_x = 0.0F;
   prepared_input->resize_offset_y = 0.0F;
+
+  const bool use_dynamic_upper_bound_aspect =
+      allow_dynamic_upper_bound_aspect && profile.use_upper_bound_dynamic_aspect &&
+      resize_mode == PreprocessResizeMode::kUpperBoundLetterbox;
+  if (use_dynamic_upper_bound_aspect) {
+    const int process_res = ResolveDa3ProcessResolution(
+        std::max(configured_tensor_width, configured_tensor_height), request.quality);
+    prepared_input->process_res = process_res;
+    prepared_input->dynamic_upper_bound_aspect = true;
+    int dynamic_tensor_width = configured_tensor_width;
+    int dynamic_tensor_height = configured_tensor_height;
+    if (ComputeUpperBoundAspectTensorSize(src_desc.width,
+                                          src_desc.height,
+                                          process_res,
+                                          std::max(1, profile.patch_multiple),
+                                          &dynamic_tensor_width,
+                                          &dynamic_tensor_height)) {
+      prepared_input->tensor_width = std::max(kMinimumModelInputSize, dynamic_tensor_width);
+      prepared_input->tensor_height = std::max(kMinimumModelInputSize, dynamic_tensor_height);
+    }
+  }
 
   const int tensor_width = prepared_input->tensor_width;
   const int tensor_height = prepared_input->tensor_height;
@@ -1121,8 +1286,17 @@ bool PrepareInputForModel(const InferenceRequest& request,
   const float tensor_height_f = static_cast<float>(tensor_height);
   const float scale_x = tensor_width_f / src_width;
   const float scale_y = tensor_height_f / src_height;
-  const bool use_letterbox = resize_mode != PreprocessResizeMode::kLowerBoundCenterCrop;
-  const float resize_scale = use_letterbox ? std::min(scale_x, scale_y) : std::max(scale_x, scale_y);
+  const bool use_stretch = resize_mode == PreprocessResizeMode::kStretch;
+  const bool direct_resize_mapping =
+      use_dynamic_upper_bound_aspect && resize_mode == PreprocessResizeMode::kUpperBoundLetterbox;
+  prepared_input->direct_resize_mapping = direct_resize_mapping;
+  const bool use_letterbox =
+      !direct_resize_mapping && !use_stretch &&
+      resize_mode != PreprocessResizeMode::kLowerBoundCenterCrop;
+  const float resize_scale =
+      (direct_resize_mapping || use_stretch)
+          ? 1.0F
+          : (use_letterbox ? std::min(scale_x, scale_y) : std::max(scale_x, scale_y));
   const float safe_resize_scale = resize_scale > 0.0F ? resize_scale : 1.0F;
   const float resized_width = src_width * safe_resize_scale;
   const float resized_height = src_height * safe_resize_scale;
@@ -1134,7 +1308,10 @@ bool PrepareInputForModel(const InferenceRequest& request,
   float letterbox_min_y = 0.0F;
   float letterbox_max_y = tensor_height_f;
   bool apply_letterbox_padding = false;
-  if (use_letterbox) {
+  if (direct_resize_mapping || use_stretch) {
+    transform_offset_x = 0.0F;
+    transform_offset_y = 0.0F;
+  } else if (use_letterbox) {
     const float pad_x = (tensor_width_f - resized_width) * 0.5F;
     const float pad_y = (tensor_height_f - resized_height) * 0.5F;
     transform_offset_x = -pad_x;
@@ -1150,9 +1327,15 @@ bool PrepareInputForModel(const InferenceRequest& request,
     transform_offset_x = crop_x;
     transform_offset_y = crop_y;
   }
-  prepared_input->resize_scale = safe_resize_scale;
-  prepared_input->resize_offset_x = transform_offset_x;
-  prepared_input->resize_offset_y = transform_offset_y;
+  if (direct_resize_mapping || use_stretch) {
+    prepared_input->resize_scale = 0.0F;
+    prepared_input->resize_offset_x = 0.0F;
+    prepared_input->resize_offset_y = 0.0F;
+  } else {
+    prepared_input->resize_scale = safe_resize_scale;
+    prepared_input->resize_offset_x = transform_offset_x;
+    prepared_input->resize_offset_y = transform_offset_y;
+  }
 
   const auto sample_channel = [&](float fx, float fy, int channel) -> float {
     const float clamped_x =
@@ -1185,14 +1368,18 @@ bool PrepareInputForModel(const InferenceRequest& request,
     const bool inside_y =
         !apply_letterbox_padding ||
         (target_y >= letterbox_min_y && target_y < letterbox_max_y);
-    const float src_y = ((target_y + transform_offset_y) / safe_resize_scale) - 0.5F;
+    const float src_y = (direct_resize_mapping || use_stretch)
+                            ? (target_y * (src_height / tensor_height_f)) - 0.5F
+                            : ((target_y + transform_offset_y) / safe_resize_scale) - 0.5F;
     for (int x = 0; x < tensor_width; ++x) {
       const float target_x = static_cast<float>(x) + 0.5F;
       const bool inside_x =
           !apply_letterbox_padding ||
           (target_x >= letterbox_min_x && target_x < letterbox_max_x);
       const bool use_padding_value = apply_letterbox_padding && (!inside_x || !inside_y);
-      const float src_x = ((target_x + transform_offset_x) / safe_resize_scale) - 0.5F;
+      const float src_x = (direct_resize_mapping || use_stretch)
+                              ? (target_x * (src_width / tensor_width_f)) - 0.5F
+                              : ((target_x + transform_offset_x) / safe_resize_scale) - 0.5F;
       const std::size_t output_index =
           static_cast<std::size_t>(y) * static_cast<std::size_t>(tensor_width) + x;
 
@@ -1263,6 +1450,7 @@ bool PostprocessDepthForModel(const RawDepthOutput& raw_output,
                               const ModelPipelineProfile& profile,
                               const PreparedModelInput* prepared_input,
                               const zsoda::core::FrameDesc& target_desc,
+                              const zsoda::core::FrameBuffer* source_frame,
                               zsoda::core::FrameBuffer* out_depth,
                               std::string* error) {
   if (out_depth == nullptr) {
@@ -1328,6 +1516,12 @@ bool PostprocessDepthForModel(const RawDepthOutput& raw_output,
           ? static_cast<float>(raw_output.height) /
                 static_cast<float>(std::max(1, prepared_input->tensor_height))
           : 1.0F;
+  const bool has_alpha_channel = source_frame != nullptr && !source_frame->empty() &&
+                                 source_frame->desc().channels >= 4 &&
+                                 source_frame->desc().width == output_desc.width &&
+                                 source_frame->desc().height == output_desc.height;
+  const float alpha_mask_threshold =
+      ParseFloatEnvOrDefault("ZSODA_ALPHA_MASK_THRESHOLD", 0.01F, 0.0F, 1.0F);
 
   for (int y = 0; y < output_desc.height; ++y) {
     float src_y = 0.0F;
@@ -1379,8 +1573,16 @@ bool PostprocessDepthForModel(const RawDepthOutput& raw_output,
       if (profile.invert_depth) {
         depth_value = -depth_value;
       }
+      if (has_alpha_channel && source_frame->at(x, y, 3) <= alpha_mask_threshold) {
+        // Keep invalid/fully transparent regions out of depth mapping statistics.
+        depth_value = std::numeric_limits<float>::quiet_NaN();
+      }
       if (!std::isfinite(depth_value)) {
-        depth_value = 0.0F;
+        // Preserve NaN for invalid samples. Depth mapping logic skips non-finite values.
+        // Fallback to zero only when no alpha mask is available.
+        if (!has_alpha_channel || !std::isnan(depth_value)) {
+          depth_value = 0.0F;
+        }
       }
       out_depth->at(x, y, 0) = depth_value;
     }
@@ -1672,6 +1874,7 @@ bool ExtractDepthOutputFromOrtValue(const OrtApi* api,
                                     const OrtValue* output,
                                     std::size_t preferred_map_index,
                                     int temporal_frame_count_hint,
+                                    MultiviewReferenceStrategy strategy,
                                     RawDepthOutput* raw_output,
                                     std::string* error) {
   AppendOrtTrace("extract_fn_enter");
@@ -1862,7 +2065,7 @@ bool ExtractDepthOutputFromOrtValue(const OrtApi* api,
   }
 
   const std::size_t selected_map =
-      ResolveOutputMapIndex(preferred_map_index, map_count, temporal_frame_count_hint);
+      ResolveOutputMapIndex(preferred_map_index, map_count, temporal_frame_count_hint, strategy);
   if (selected_map >= map_count) {
     if (error != nullptr) {
       *error = "onnx runtime output tensor map index is out of range";
@@ -2124,6 +2327,7 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
 #if defined(ZSODA_WITH_ONNX_RUNTIME_API) && ZSODA_WITH_ONNX_RUNTIME_API
     input_has_image_dimension_ = false;
 #endif
+    input_has_dynamic_spatial_shape_ = false;
 
 #if defined(ZSODA_WITH_ONNX_RUNTIME_API) && ZSODA_WITH_ONNX_RUNTIME_API
     if (env_ == nullptr || session_options_ == nullptr) {
@@ -2173,6 +2377,7 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
       session_ = std::move(session);
       input_name_ = std::move(resolved_input_name);
       output_name_ = std::move(resolved_output_name);
+      input_has_dynamic_spatial_shape_ = resolved_input_width <= 0 || resolved_input_height <= 0;
       if (resolved_input_width > 0) {
         target_input_width = resolved_input_width;
       }
@@ -2188,6 +2393,7 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
       input_name_.clear();
       output_name_.clear();
       input_has_image_dimension_ = false;
+      input_has_dynamic_spatial_shape_ = false;
       if (error != nullptr) {
         *error = WithRuntimeDiagnostics(std::string("onnx runtime session create failed: ") +
                                         SafeCStr(ex.what()));
@@ -2207,11 +2413,16 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
     resolved_input_frame_count_ = std::max(1, model_input_frame_count_);
     multiview_active_ = resolved_input_frame_count_ > 1;
     multiview_warning_ = model_id_requests_multiview && !multiview_active_;
+    const MultiviewReferenceStrategy ref_strategy =
+        active_model_profile_.use_middle_reference_strategy
+            ? ResolveDa3MultiviewReferenceStrategy()
+            : MultiviewReferenceStrategy::kLatest;
     const std::string multiview_note =
         BuildMultiviewDiagnosticsNote(requested_multiview_,
                                       resolved_input_frame_count_,
                                       multiview_active_,
-                                      multiview_warning_);
+                                      multiview_warning_,
+                                      ref_strategy);
     provider_note_ = provider_note_base_;
     AppendNoteSegment(&provider_note_, multiview_note);
     {
@@ -2264,7 +2475,8 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
                               active_model_profile_,
                               model_input_width_,
                               model_input_height_,
-                              options_.preprocess_resize_mode,
+                              request.resize_mode,
+                              input_has_dynamic_spatial_shape_,
                               &prepared_input,
                               error)) {
       AppendOrtTrace("run_prepare_input_failed",
@@ -2279,16 +2491,31 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
 #endif
       const int frame_count = std::max(1, model_input_frame_count_);
       const std::string prepared_detail =
-          "tensor=" + std::to_string(prepared_input.tensor_width) + "x" +
+          "src=" + std::to_string(prepared_input.source_width) + "x" +
+          std::to_string(prepared_input.source_height) +
+          ", tensor=" + std::to_string(prepared_input.tensor_width) + "x" +
           std::to_string(prepared_input.tensor_height) + "x" +
           std::to_string(prepared_input.tensor_channels) +
+          ", process_res=" + std::to_string(prepared_input.process_res) +
+          ", patch_multiple=" + std::to_string(prepared_input.patch_multiple) +
+          ", dynamic_upper_bound=" +
+          std::string(prepared_input.dynamic_upper_bound_aspect ? "1" : "0") +
+          ", direct_resize_mapping=" +
+          std::string(prepared_input.direct_resize_mapping ? "1" : "0") +
+          ", resize_scale=" + std::to_string(prepared_input.resize_scale) +
+          ", resize_offset=(" + std::to_string(prepared_input.resize_offset_x) + "," +
+          std::to_string(prepared_input.resize_offset_y) + ")" +
+          ", normalized_luma_min=" + std::to_string(prepared_input.normalized_min) +
+          ", normalized_luma_max=" + std::to_string(prepared_input.normalized_max) +
+          ", normalized_luma_mean=" + std::to_string(prepared_input.normalized_mean) +
           ", frames=" + std::to_string(frame_count) +
           ", image_dim=" + std::string(has_image_dimension ? "1" : "0") +
           ", requested_multiview=" + std::string(requested_multiview_ ? "1" : "0") +
           ", resolved_input_frame_count=" + std::to_string(std::max(1, resolved_input_frame_count_)) +
           ", multiview_active=" + std::string(multiview_active_ ? "1" : "0") +
           ", multiview_warning=" + std::string(multiview_warning_ ? "1" : "0") +
-          ", preprocess_resize_mode=" + std::string(PreprocessResizeModeName(options_.preprocess_resize_mode));
+          ", preprocess_resize_mode=" + std::string(PreprocessResizeModeName(prepared_input.resize_mode)) +
+          ", dynamic_spatial=" + std::string(input_has_dynamic_spatial_shape_ ? "1" : "0");
       AppendOrtTrace("run_prepare_input_ok", prepared_detail.c_str());
     }
 
@@ -2462,8 +2689,18 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
       const std::size_t output_map_index =
           active_model_profile_.prefer_latest_output_map ? std::numeric_limits<std::size_t>::max()
                                                          : 0U;
+      const MultiviewReferenceStrategy output_ref_strategy =
+          active_model_profile_.use_middle_reference_strategy
+              ? ResolveDa3MultiviewReferenceStrategy()
+              : MultiviewReferenceStrategy::kLatest;
       if (!ExtractDepthOutputFromOrtValue(
-              api, output_tensor, output_map_index, input_frame_count, &raw_output, error)) {
+              api,
+              output_tensor,
+              output_map_index,
+              input_frame_count,
+              output_ref_strategy,
+              &raw_output,
+              error)) {
         AppendOrtTrace("extract_output_failed",
                        (error != nullptr && !error->empty()) ? error->c_str() : "<none>");
         release_run_resources();
@@ -2511,6 +2748,7 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
                                   active_model_profile_,
                                   &prepared_input,
                                   request.source->desc(),
+                                  request.source,
                                   out_depth,
                                   error)) {
       AppendOrtTrace("postprocess_failed",
@@ -2560,6 +2798,9 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
     temporal_history_head_index_ = 0;
     temporal_history_frame_plane_size_ = 0U;
     temporal_history_last_frame_hash_ = 0U;
+    temporal_scene_cut_diff_ema_ = -1.0F;
+    temporal_scene_cut_pending_hits_ = 0;
+    temporal_frames_since_scene_reset_ = 0;
   }
 
   bool BuildTemporalInput(const PreparedModelInput& prepared_input,
@@ -2595,9 +2836,8 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
         temporal_history_capacity_frames_ != clamped_frame_count ||
         temporal_history_frame_plane_size_ != frame_plane_size;
     if (requires_reset) {
+      ResetTemporalHistory();
       temporal_history_capacity_frames_ = clamped_frame_count;
-      temporal_history_valid_frames_ = 0;
-      temporal_history_head_index_ = 0;
       temporal_history_frame_plane_size_ = frame_plane_size;
       temporal_history_.assign(
           static_cast<std::size_t>(clamped_frame_count) * frame_plane_size, 0.0F);
@@ -2607,6 +2847,9 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
           static_cast<std::size_t>(clamped_frame_count) * frame_plane_size, 0.0F);
       temporal_history_valid_frames_ = 0;
       temporal_history_head_index_ = 0;
+      temporal_scene_cut_diff_ema_ = -1.0F;
+      temporal_scene_cut_pending_hits_ = 0;
+      temporal_frames_since_scene_reset_ = 0;
     }
 
     const bool duplicate_frame_hash =
@@ -2622,16 +2865,72 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
           temporal_history_.data() + static_cast<std::size_t>(latest_slot) * frame_plane_size;
       const float mean_abs_diff = ComputeSampledMeanAbsDiff(
           previous_frame, prepared_input.nchw_values.data(), frame_plane_size);
-      const float scene_cut_threshold =
-          ParseFloatEnvOrDefault("ZSODA_DA3_MULTIVIEW_SCENE_CUT", 0.20F, 0.0F, 1.0F);
-      if (mean_abs_diff >= scene_cut_threshold) {
-        temporal_history_valid_frames_ = 0;
-        temporal_history_head_index_ = 0;
-        std::fill(temporal_history_.begin(), temporal_history_.end(), 0.0F);
-        const std::string detail =
-            "diff=" + std::to_string(mean_abs_diff) + ", threshold=" +
-            std::to_string(scene_cut_threshold);
-        AppendOrtTrace("temporal_history_reset_scene_cut", detail.c_str());
+
+      const int min_history_for_scene_cut = ParseIntEnvOrDefault(
+          "ZSODA_DA3_MULTIVIEW_SCENE_CUT_MIN_HISTORY",
+          std::max(1, temporal_history_capacity_frames_),
+          1,
+          std::max(1, temporal_history_capacity_frames_));
+      const bool has_warm_history = temporal_history_valid_frames_ >= min_history_for_scene_cut;
+      if (has_warm_history) {
+        const float scene_cut_threshold_base =
+            ParseFloatEnvOrDefault("ZSODA_DA3_MULTIVIEW_SCENE_CUT", 0.35F, 0.0F, 1.0F);
+        const float ema_alpha = ParseFloatEnvOrDefault(
+            "ZSODA_DA3_MULTIVIEW_SCENE_CUT_EMA_ALPHA", 0.15F, 0.01F, 1.0F);
+        if (!std::isfinite(temporal_scene_cut_diff_ema_) || temporal_scene_cut_diff_ema_ < 0.0F) {
+          temporal_scene_cut_diff_ema_ = mean_abs_diff;
+        } else {
+          temporal_scene_cut_diff_ema_ +=
+              (mean_abs_diff - temporal_scene_cut_diff_ema_) * ema_alpha;
+        }
+        const float adaptive_multiplier = ParseFloatEnvOrDefault(
+            "ZSODA_DA3_MULTIVIEW_SCENE_CUT_ADAPTIVE_MULT", 2.2F, 1.0F, 8.0F);
+        const float scene_cut_threshold =
+            std::clamp(std::max(scene_cut_threshold_base,
+                                temporal_scene_cut_diff_ema_ * adaptive_multiplier),
+                       0.0F,
+                       1.0F);
+        const int required_hits = ParseIntEnvOrDefault("ZSODA_DA3_MULTIVIEW_SCENE_CUT_CONSEC",
+                                                       2,
+                                                       1,
+                                                       16);
+        const int cooldown_frames = ParseIntEnvOrDefault("ZSODA_DA3_MULTIVIEW_SCENE_CUT_COOLDOWN",
+                                                         clamped_frame_count,
+                                                         0,
+                                                         4096);
+        const bool cooldown_ready = temporal_frames_since_scene_reset_ >= cooldown_frames;
+        if (mean_abs_diff >= scene_cut_threshold && cooldown_ready) {
+          ++temporal_scene_cut_pending_hits_;
+        } else {
+          temporal_scene_cut_pending_hits_ = 0;
+        }
+
+        if (mean_abs_diff >= scene_cut_threshold) {
+          const std::string probe =
+              "diff=" + std::to_string(mean_abs_diff) +
+              ", ema=" + std::to_string(temporal_scene_cut_diff_ema_) +
+              ", threshold=" + std::to_string(scene_cut_threshold) +
+              ", hits=" + std::to_string(temporal_scene_cut_pending_hits_) + "/" +
+              std::to_string(required_hits) +
+              ", cooldown_ready=" + std::string(cooldown_ready ? "1" : "0");
+          AppendOrtTrace("temporal_scene_cut_probe", probe.c_str());
+        }
+
+        if (temporal_scene_cut_pending_hits_ >= required_hits) {
+          temporal_history_valid_frames_ = 0;
+          temporal_history_head_index_ = 0;
+          std::fill(temporal_history_.begin(), temporal_history_.end(), 0.0F);
+          temporal_scene_cut_pending_hits_ = 0;
+          temporal_frames_since_scene_reset_ = 0;
+          const std::string detail =
+              "diff=" + std::to_string(mean_abs_diff) +
+              ", ema=" + std::to_string(temporal_scene_cut_diff_ema_) +
+              ", threshold=" + std::to_string(scene_cut_threshold) +
+              ", required_hits=" + std::to_string(required_hits);
+          AppendOrtTrace("temporal_history_reset_scene_cut", detail.c_str());
+        }
+      } else {
+        temporal_scene_cut_pending_hits_ = 0;
       }
     }
 
@@ -2651,19 +2950,35 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
                 prepared_input.nchw_values.end(),
                 temporal_history_.begin() +
                     static_cast<std::size_t>(write_slot) * frame_plane_size);
+      if (temporal_frames_since_scene_reset_ < std::numeric_limits<int>::max()) {
+        ++temporal_frames_since_scene_reset_;
+      }
     } else {
       AppendOrtTrace("temporal_history_reuse_duplicate_frame");
     }
 
     out_temporal_input->assign(
         static_cast<std::size_t>(clamped_frame_count) * frame_plane_size, 0.0F);
-    const int pad_count = std::max(0, clamped_frame_count - temporal_history_valid_frames_);
+    const MultiviewReferenceStrategy ref_strategy =
+        active_model_profile_.use_middle_reference_strategy
+            ? ResolveDa3MultiviewReferenceStrategy()
+            : MultiviewReferenceStrategy::kLatest;
+    int reference_slot = clamped_frame_count - 1;
+    switch (ref_strategy) {
+      case MultiviewReferenceStrategy::kFirst:
+        reference_slot = 0;
+        break;
+      case MultiviewReferenceStrategy::kMiddle:
+        reference_slot = clamped_frame_count / 2;
+        break;
+      case MultiviewReferenceStrategy::kLatest:
+        reference_slot = clamped_frame_count - 1;
+        break;
+    }
+    const int latest_history_index = std::max(0, temporal_history_valid_frames_ - 1);
     for (int t = 0; t < clamped_frame_count; ++t) {
-      int history_index = 0;
-      if (t >= pad_count) {
-        history_index = t - pad_count;
-      }
-      history_index = std::clamp(history_index, 0, std::max(0, temporal_history_valid_frames_ - 1));
+      int history_index = latest_history_index + (t - reference_slot);
+      history_index = std::clamp(history_index, 0, latest_history_index);
       const int slot =
           (temporal_history_head_index_ + history_index) % temporal_history_capacity_frames_;
       const float* src =
@@ -2706,6 +3021,9 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
   mutable int temporal_history_head_index_ = 0;
   mutable std::size_t temporal_history_frame_plane_size_ = 0U;
   mutable std::uint64_t temporal_history_last_frame_hash_ = 0U;
+  mutable float temporal_scene_cut_diff_ema_ = -1.0F;
+  mutable int temporal_scene_cut_pending_hits_ = 0;
+  mutable int temporal_frames_since_scene_reset_ = 0;
 #if defined(ZSODA_WITH_ONNX_RUNTIME_API) && ZSODA_WITH_ONNX_RUNTIME_API
   std::unique_ptr<OrtDynamicLoader> loader_;
   std::unique_ptr<Ort::Env> env_;
@@ -2715,6 +3033,7 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
   std::string output_name_;
   bool input_has_image_dimension_ = false;
 #endif
+  bool input_has_dynamic_spatial_shape_ = false;
 };
 
 }  // namespace

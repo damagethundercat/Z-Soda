@@ -1,6 +1,7 @@
 #include "ae/AeParams.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
@@ -10,12 +11,30 @@
 namespace zsoda::ae {
 namespace {
 
+constexpr const char* kDefaultLockedModelId = "depth-anything-v3-large-multiview";
+constexpr std::array<int, 8> kQualityResolutions = {256, 512, 768, 1024, 1280, 1536, 1920, 2048};
+
+int ClampQualitySelectionInternal(int selection) {
+  return std::clamp(selection, 1, static_cast<int>(kQualityResolutions.size()));
+}
+
 std::string ReadEnvOrEmpty(const char* name) {
   const char* value = std::getenv(name);
   if (value == nullptr || value[0] == '\0') {
     return {};
   }
   return value;
+}
+
+std::string ResolveLockedModelId() {
+  std::string model_id = ReadEnvOrEmpty("ZSODA_LOCKED_MODEL_ID");
+  if (model_id.empty()) {
+    model_id = ReadEnvOrEmpty("ZSODA_HQ_MODEL_ID");
+  }
+  if (model_id.empty()) {
+    model_id = kDefaultLockedModelId;
+  }
+  return model_id;
 }
 
 bool TryParseFloat(std::string_view text, float* out_value) {
@@ -71,31 +90,43 @@ void ApplyQualityDefaults(zsoda::core::RenderParams* params) {
     return;
   }
 
-  switch (params->quality) {
-    case 1:
-      params->temporal_alpha = 0.72F;
-      params->edge_enhancement = 0.04F;
-      break;
-    case 2:
-      params->temporal_alpha = 0.56F;
-      params->edge_enhancement = 0.08F;
-      break;
-    case 3:
-    default:
-      params->temporal_alpha = 0.42F;
-      params->edge_enhancement = 0.14F;
-      break;
+  const int clamped_quality = ClampQualitySelectionInternal(params->quality);
+  params->quality = clamped_quality;
+
+  // Keep temporal post-smoothing off by default to avoid edge smearing.
+  params->temporal_alpha = 1.0F;
+  if (clamped_quality >= 6) {
+    params->edge_enhancement = 0.06F;
+    params->guided_low_percentile = 0.008F;
+    params->guided_high_percentile = 0.992F;
+  } else if (clamped_quality >= 3) {
+    params->edge_enhancement = 0.045F;
+    params->guided_low_percentile = 0.012F;
+    params->guided_high_percentile = 0.988F;
+  } else {
+    params->edge_enhancement = 0.03F;
+    params->guided_low_percentile = 0.02F;
+    params->guided_high_percentile = 0.98F;
   }
 
-  params->mapping_mode = zsoda::core::DepthMappingMode::kRaw;
-  params->guided_low_percentile = 0.05F;
-  params->guided_high_percentile = 0.95F;
-  params->guided_update_alpha = 0.15F;
-  params->temporal_edge_aware = true;
+  // V2-style disparity mapping is generally closer to QD3 display characteristics.
+  params->mapping_mode = zsoda::core::DepthMappingMode::kV2Style;
+  params->guided_update_alpha = 0.10F;
+  params->temporal_edge_aware = false;
   params->temporal_edge_threshold = 0.08F;
   params->temporal_scene_cut_threshold = 0.18F;
-  params->edge_guidance_sigma = 0.12F;
+  params->edge_guidance_sigma = 0.10F;
   params->edge_aware_upsample = true;
+}
+
+void ApplyTimeConsistencyDefaults(bool enabled, zsoda::core::RenderParams* params) {
+  if (!enabled || params == nullptr) {
+    return;
+  }
+  params->temporal_alpha = 0.72F;
+  params->temporal_edge_aware = true;
+  params->temporal_edge_threshold = 0.05F;
+  params->temporal_scene_cut_threshold = 0.12F;
 }
 
 void ApplyEnvironmentOverrides(zsoda::core::RenderParams* params) {
@@ -155,8 +186,13 @@ AeParamValues DefaultAeParams() {
 
 zsoda::core::RenderParams ToRenderParams(const AeParamValues& input) {
   zsoda::core::RenderParams params;
-  params.model_id = input.model_id;
-  params.quality = std::clamp(input.quality, 1, 3);
+  // Force a locked model path (overridable by environment), while allowing
+  // user-selected quality tiers.
+  params.model_id = ResolveLockedModelId();
+  params.quality = ClampQualitySelectionInternal(input.quality);
+  params.quality_boost =
+      input.quality_boost_enabled ? std::clamp(input.quality_boost_level, 2, 5) : 0;
+  params.preserve_aspect_ratio = input.preserve_ratio;
   params.invert = input.invert;
   params.output_mode =
       input.output_mode == AeOutputMode::kSlicing ? zsoda::core::OutputMode::kSlicing
@@ -174,12 +210,31 @@ zsoda::core::RenderParams ToRenderParams(const AeParamValues& input) {
   params.freeze_enabled = input.freeze_enabled;
   params.extract_token = std::max(0, input.extract_token);
   ApplyQualityDefaults(&params);
+  ApplyTimeConsistencyDefaults(input.time_consistency, &params);
   ApplyEnvironmentOverrides(&params);
   return params;
 }
 
 std::vector<std::string> BuildModelMenu(const zsoda::inference::IInferenceEngine& engine) {
-  return engine.ListModelIds();
+  const std::vector<std::string> available = engine.ListModelIds();
+  if (available.empty()) {
+    return {};
+  }
+
+  const std::string locked_model = ResolveLockedModelId();
+  if (std::find(available.begin(), available.end(), locked_model) != available.end()) {
+    return {locked_model};
+  }
+
+  return {available.front()};
+}
+
+int ClampQualitySelection(int selection) {
+  return ClampQualitySelectionInternal(selection);
+}
+
+int QualitySelectionToResolution(int selection) {
+  return kQualityResolutions[static_cast<std::size_t>(ClampQualitySelectionInternal(selection) - 1)];
 }
 
 }  // namespace zsoda::ae

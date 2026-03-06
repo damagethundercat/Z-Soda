@@ -105,7 +105,9 @@ bool AeCommandRouter::Handle(const AeCommandContext& context) {
       render_params.frame_hash = context.render_request->frame_hash;
 
       const std::string before_detail =
-          "model=" + render_params.model_id + ", quality=" + std::to_string(render_params.quality);
+          "model=" + render_params.model_id + ", quality=" + std::to_string(render_params.quality) +
+          ", preserve_ratio=" + std::to_string(render_params.preserve_aspect_ratio ? 1 : 0) +
+          ", quality_boost=" + std::to_string(render_params.quality_boost);
       AppendRouterTrace("render_before_pipeline", before_detail.c_str());
       const auto output = pipeline_->Render(context.render_request->source, render_params);
       const std::string after_detail =
@@ -131,6 +133,10 @@ bool AeCommandRouter::Handle(const AeCommandContext& context) {
 bool AeCommandRouter::UpdateParams(const AeParamValues& params, std::string* error) {
   const std::string update_detail =
       "model=" + params.model_id + ", quality=" + std::to_string(params.quality) +
+      ", preserve_ratio=" + std::to_string(params.preserve_ratio ? 1 : 0) +
+      ", quality_boost=" +
+      std::to_string(params.quality_boost_enabled ? params.quality_boost_level : 0) +
+      ", time_consistency=" + std::to_string(params.time_consistency ? 1 : 0) +
       ", freeze=" + std::to_string(params.freeze_enabled ? 1 : 0) +
       ", extract_token=" + std::to_string(std::max(0, params.extract_token));
   AppendRouterTrace("params_update_enter", update_detail.c_str());

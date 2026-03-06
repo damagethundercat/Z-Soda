@@ -9,19 +9,25 @@
 namespace zsoda::ae {
 
 enum class AeParamId {
-  kModel = 1,
-  kQuality = 2,
-  kOutputMode = 3,
-  kInvert = 4,
-  kMinDepth = 5,
-  kMaxDepth = 6,
-  kSoftness = 7,
-  kCacheEnable = 8,
-  kTileSize = 9,
-  kOverlap = 10,
-  kVramBudgetMb = 11,
-  kFreezeEnable = 12,
-  kExtractDepthMap = 13,
+  kQuality = 1,
+  kPreserveRatio = 2,
+  kQualityBoostEnable = 3,
+  kQualityBoostLevel = 4,
+  kTimeConsistency = 5,
+  kAdvancedGroupStart = 6,
+  kModel = 7,
+  kOutputMode = 8,
+  kInvert = 9,
+  kMinDepth = 10,
+  kMaxDepth = 11,
+  kSoftness = 12,
+  kCacheEnable = 13,
+  kTileSize = 14,
+  kOverlap = 15,
+  kVramBudgetMb = 16,
+  kFreezeEnable = 17,
+  kExtractDepthMap = 18,
+  kAdvancedGroupEnd = 19,
 };
 
 enum class AeOutputMode {
@@ -30,8 +36,12 @@ enum class AeOutputMode {
 };
 
 struct AeParamValues {
-  std::string model_id = "depth-anything-v3-small";
-  int quality = 1;
+  std::string model_id = "depth-anything-v3-large-multiview";
+  int quality = 2;
+  bool preserve_ratio = true;
+  bool quality_boost_enabled = false;
+  int quality_boost_level = 4;
+  bool time_consistency = false;
   AeOutputMode output_mode = AeOutputMode::kDepthMap;
   bool invert = false;
   float min_depth = 0.25F;
@@ -48,5 +58,7 @@ struct AeParamValues {
 AeParamValues DefaultAeParams();
 zsoda::core::RenderParams ToRenderParams(const AeParamValues& input);
 std::vector<std::string> BuildModelMenu(const zsoda::inference::IInferenceEngine& engine);
+int ClampQualitySelection(int selection);
+int QualitySelectionToResolution(int selection);
 
 }  // namespace zsoda::ae

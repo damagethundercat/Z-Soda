@@ -16,6 +16,8 @@ std::size_t RenderCacheKeyHash::operator()(const RenderCacheKey& key) const {
   std::size_t h = std::hash<int>{}(key.width);
   h = HashCombine(h, std::hash<int>{}(key.height));
   h = HashCombine(h, std::hash<int>{}(key.quality));
+  h = HashCombine(h, std::hash<int>{}(key.quality_boost));
+  h = HashCombine(h, std::hash<bool>{}(key.preserve_aspect_ratio));
   h = HashCombine(h, std::hash<bool>{}(key.invert));
   h = HashCombine(h, std::hash<int>{}(key.mapping_mode));
   h = HashCombine(h, std::hash<int>{}(key.guided_low_permille));

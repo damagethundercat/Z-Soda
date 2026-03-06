@@ -15,6 +15,8 @@ struct RenderCacheKey {
   int width = 0;
   int height = 0;
   int quality = 0;
+  int quality_boost = 0;
+  bool preserve_aspect_ratio = true;
   bool invert = false;
   int mapping_mode = 0;
   int guided_low_permille = 50;
@@ -40,6 +42,8 @@ struct RenderCacheKey {
 
   bool operator==(const RenderCacheKey& other) const {
     return width == other.width && height == other.height && quality == other.quality &&
+           quality_boost == other.quality_boost &&
+           preserve_aspect_ratio == other.preserve_aspect_ratio &&
            invert == other.invert && mapping_mode == other.mapping_mode &&
            guided_low_permille == other.guided_low_permille &&
            guided_high_permille == other.guided_high_permille &&

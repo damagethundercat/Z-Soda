@@ -20,6 +20,7 @@ enum class RuntimeBackend {
 enum class PreprocessResizeMode {
   kUpperBoundLetterbox,
   kLowerBoundCenterCrop,
+  kStretch,
 };
 
 struct RuntimeOptions {
@@ -98,6 +99,8 @@ struct RuntimeOptions {
       return "upper_bound_letterbox";
     case PreprocessResizeMode::kLowerBoundCenterCrop:
       return "lower_bound_center_crop";
+    case PreprocessResizeMode::kStretch:
+      return "stretch";
   }
   return "upper_bound_letterbox";
 }
@@ -120,6 +123,9 @@ struct RuntimeOptions {
       normalized == "lowerbound" || normalized == "lower" ||
       normalized == "centercrop" || normalized == "crop") {
     return PreprocessResizeMode::kLowerBoundCenterCrop;
+  }
+  if (normalized == "stretch" || normalized == "fill" || normalized == "directresize") {
+    return PreprocessResizeMode::kStretch;
   }
   return PreprocessResizeMode::kUpperBoundLetterbox;
 }

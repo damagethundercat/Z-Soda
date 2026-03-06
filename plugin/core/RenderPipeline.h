@@ -25,6 +25,8 @@ enum class OutputMode {
 struct RenderParams {
   std::string model_id = "depth-anything-v3-small";
   int quality = 1;
+  int quality_boost = 0;
+  bool preserve_aspect_ratio = true;
   bool invert = false;
   DepthMappingMode mapping_mode = DepthMappingMode::kRaw;
   float guided_low_percentile = 0.05F;
@@ -78,13 +80,17 @@ class RenderPipeline {
   static bool IsStatefulPostProcess(const RenderParams& params);
   std::uint64_t BuildPostprocessStateHash(const RenderParams& params) const;
   bool RunInference(const FrameBuffer& source,
+                    const RenderParams& params,
                     int quality,
-                    std::uint64_t frame_hash,
                     FrameBuffer* depth,
                     std::string* error) const;
+  bool ApplyDetailBoostRefinement(const FrameBuffer& source,
+                                  const RenderParams& params,
+                                  FrameBuffer* depth,
+                                  std::string* detail) const;
   bool RunTiledInference(const FrameBuffer& source,
+                         const RenderParams& params,
                          int quality,
-                         std::uint64_t frame_hash,
                          int tile_size,
                          int overlap,
                          FrameBuffer* depth,

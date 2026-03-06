@@ -83,16 +83,17 @@ void InitializeDefaultPixelFormatCandidates(
 #define AE_OS_WIN 1
 #endif
 #include "Param_Utils.h"
-constexpr int kAeSdkNumParams = static_cast<int>(AeParamId::kExtractDepthMap) + 1;
-constexpr int kModelPopupChoices = 6;
-constexpr int kQualityPopupChoices = 3;
+constexpr int kAeSdkNumParams = static_cast<int>(AeParamId::kAdvancedGroupEnd) + 1;
+constexpr int kModelPopupChoices = 1;
+constexpr int kQualityPopupChoices = 8;
+constexpr int kQualityBoostLevelPopupChoices = 4;
 constexpr int kOutputModePopupChoices = 2;
 constexpr std::uint32_t kAeGlobalOutFlags = ZSODA_AE_GLOBAL_OUTFLAGS;
 constexpr std::uint32_t kAeGlobalOutFlags2 = ZSODA_AE_GLOBAL_OUTFLAGS2;
 
-constexpr char kModelPopupLabels[] =
-    "Depth Small|Depth Base|Depth Large|Depth Large Multi-View (Alias/Exp Fallback)|MiDaS DPT Large|Depth Small Multi-View (True)";
-constexpr char kQualityPopupLabels[] = "Draft|Balanced|Best";
+constexpr char kModelPopupLabels[] = "Depth HQ (DA3 Large Multi-View, Locked)";
+constexpr char kQualityPopupLabels[] = "256 px|512 px|768 px|1024 px|1280 px|1536 px|1920 px|2048 px";
+constexpr char kQualityBoostLevelPopupLabels[] = "2x2|3x3|4x4|5x5";
 constexpr char kOutputModePopupLabels[] = "Depth Map|Slicing";
 
 #if defined(PF_Precision_HUNDREDTHS)
@@ -253,19 +254,61 @@ PF_Err RegisterParamsSetupScaffold(const AeSdkEntryPayload& payload) {
 
   clear_def();
   apply_supervise_flag();
+  PF_ADD_POPUP("Quality",
+               kQualityPopupChoices,
+               2,
+               kQualityPopupLabels,
+               static_cast<int>(AeParamId::kQuality));
+
+  clear_def();
+  apply_supervise_flag();
+  #if defined(PF_ADD_CHECKBOXX)
+  PF_ADD_CHECKBOXX("Preserve Ratio", 1, 0, static_cast<int>(AeParamId::kPreserveRatio));
+  #else
+  PF_ADD_CHECKBOX("Preserve Ratio", "Preserve Ratio", 1, 0,
+                  static_cast<int>(AeParamId::kPreserveRatio));
+  #endif
+
+  clear_def();
+  apply_supervise_flag();
+  #if defined(PF_ADD_CHECKBOXX)
+  PF_ADD_CHECKBOXX("Quality Boost", 0, 0, static_cast<int>(AeParamId::kQualityBoostEnable));
+  #else
+  PF_ADD_CHECKBOX("Quality Boost", "Quality Boost", 0, 0,
+                  static_cast<int>(AeParamId::kQualityBoostEnable));
+  #endif
+
+  clear_def();
+  apply_supervise_flag();
+  PF_ADD_POPUP("Boost",
+               kQualityBoostLevelPopupChoices,
+               3,
+               kQualityBoostLevelPopupLabels,
+               static_cast<int>(AeParamId::kQualityBoostLevel));
+
+  clear_def();
+  apply_supervise_flag();
+#if defined(PF_ADD_CHECKBOXX)
+  PF_ADD_CHECKBOXX("Time Consistency", 0, 0, static_cast<int>(AeParamId::kTimeConsistency));
+#else
+  PF_ADD_CHECKBOX("Time Consistency", "Time Consistency", 0, 0,
+                  static_cast<int>(AeParamId::kTimeConsistency));
+#endif
+
+  clear_def();
+  #if defined(PF_ADD_TOPICX) && defined(PF_ParamFlag_START_COLLAPSED)
+  PF_ADD_TOPICX("Advanced", PF_ParamFlag_START_COLLAPSED, static_cast<int>(AeParamId::kAdvancedGroupStart));
+  #elif defined(PF_ADD_TOPIC)
+  PF_ADD_TOPIC("Advanced", static_cast<int>(AeParamId::kAdvancedGroupStart));
+  #endif
+
+  clear_def();
+  apply_supervise_flag();
   PF_ADD_POPUP("Model",
                kModelPopupChoices,
                1,
                kModelPopupLabels,
                static_cast<int>(AeParamId::kModel));
-
-  clear_def();
-  apply_supervise_flag();
-  PF_ADD_POPUP("Quality",
-               kQualityPopupChoices,
-               1,
-               kQualityPopupLabels,
-               static_cast<int>(AeParamId::kQuality));
 
   clear_def();
   apply_supervise_flag();
@@ -278,9 +321,10 @@ PF_Err RegisterParamsSetupScaffold(const AeSdkEntryPayload& payload) {
   clear_def();
   apply_supervise_flag();
 #if defined(PF_ADD_CHECKBOXX)
-  PF_ADD_CHECKBOXX("Invert", 0, 0, static_cast<int>(AeParamId::kInvert));
+  PF_ADD_CHECKBOXX("Invert (Far Bright)", 0, 0, static_cast<int>(AeParamId::kInvert));
 #else
-  PF_ADD_CHECKBOX("Invert", "Invert", 0, 0, static_cast<int>(AeParamId::kInvert));
+  PF_ADD_CHECKBOX("Invert (Far Bright)", "Invert (Far Bright)", 0, 0,
+                  static_cast<int>(AeParamId::kInvert));
 #endif
 
   clear_def();
@@ -392,6 +436,11 @@ PF_Err RegisterParamsSetupScaffold(const AeSdkEntryPayload& payload) {
                 static_cast<int>(AeParamId::kExtractDepthMap));
 #endif
 
+  clear_def();
+  #if defined(PF_END_TOPIC)
+  PF_END_TOPIC(static_cast<int>(AeParamId::kAdvancedGroupEnd));
+  #endif
+
   return err;
 #else
   (void)payload;
@@ -480,13 +529,8 @@ bool TryCopyLayerWorldPassThrough(const PF_LayerDef* source_world, PF_LayerDef* 
   return true;
 }
 
-constexpr std::array<const char*, 6> kFallbackModelIdOrder = {
-    "depth-anything-v3-small",
-    "depth-anything-v3-base",
-    "depth-anything-v3-large",
+constexpr std::array<const char*, 1> kFallbackModelIdOrder = {
     "depth-anything-v3-large-multiview",
-    "midas-dpt-large",
-    "depth-anything-v3-small-multiview",
 };
 
 zsoda::core::CompatMutex& AeParamSnapshotMutex() {
@@ -659,7 +703,12 @@ bool TryExtractPfCmdParamValues(const AeSdkEntryPayload& payload,
 
   if (TryReadPopupValue(GetParam(payload, AeParamId::kQuality), &popup_value)) {
     any_param_read = true;
-    values.quality = std::clamp(popup_value, 1, 3);
+    values.quality = ClampQualitySelection(popup_value);
+  }
+
+  if (TryReadPopupValue(GetParam(payload, AeParamId::kQualityBoostLevel), &popup_value)) {
+    any_param_read = true;
+    values.quality_boost_level = std::clamp(popup_value + 1, 2, 5);
   }
 
   if (TryReadPopupValue(GetParam(payload, AeParamId::kOutputMode), &popup_value)) {
@@ -671,6 +720,18 @@ bool TryExtractPfCmdParamValues(const AeSdkEntryPayload& payload,
   if (TryReadCheckboxValue(GetParam(payload, AeParamId::kInvert), &checkbox_value)) {
     any_param_read = true;
     values.invert = checkbox_value;
+  }
+  if (TryReadCheckboxValue(GetParam(payload, AeParamId::kPreserveRatio), &checkbox_value)) {
+    any_param_read = true;
+    values.preserve_ratio = checkbox_value;
+  }
+  if (TryReadCheckboxValue(GetParam(payload, AeParamId::kQualityBoostEnable), &checkbox_value)) {
+    any_param_read = true;
+    values.quality_boost_enabled = checkbox_value;
+  }
+  if (TryReadCheckboxValue(GetParam(payload, AeParamId::kTimeConsistency), &checkbox_value)) {
+    any_param_read = true;
+    values.time_consistency = checkbox_value;
   }
   if (TryReadCheckboxValue(GetParam(payload, AeParamId::kCacheEnable), &checkbox_value)) {
     any_param_read = true;

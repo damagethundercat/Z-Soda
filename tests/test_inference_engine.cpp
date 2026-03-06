@@ -329,6 +329,8 @@ void TestRuntimeBackendOptions() {
          zsoda::inference::PreprocessResizeMode::kLowerBoundCenterCrop);
   assert(zsoda::inference::ParsePreprocessResizeMode("crop") ==
          zsoda::inference::PreprocessResizeMode::kLowerBoundCenterCrop);
+  assert(zsoda::inference::ParsePreprocessResizeMode("stretch") ==
+         zsoda::inference::PreprocessResizeMode::kStretch);
 
   zsoda::inference::RuntimeOptions options;
   options.preferred_backend = zsoda::inference::RuntimeBackend::kCuda;
@@ -662,7 +664,14 @@ void TestOnnxPreprocessAspectRatioForNonSquareInput() {
     zsoda::inference::PreparedModelInput prepared;
     std::string error;
     assert(zsoda::inference::PrepareInputForModel(
-        request, profile, profile.input_width, profile.input_height, resize_mode, &prepared, &error));
+        request,
+        profile,
+        profile.input_width,
+        profile.input_height,
+        resize_mode,
+        false,
+        &prepared,
+        &error));
     assert(error.empty());
 
     const float spread_ratio = MeasureChannelSpreadAspectRatio(prepared, 0);
@@ -676,6 +685,70 @@ void TestOnnxPreprocessAspectRatioForNonSquareInput() {
     run_case(16, 8, mode);
     run_case(8, 16, mode);
   }
+}
+
+void TestOnnxPreprocessStretchModeDistortsAspectRatio() {
+  const auto source = MakeRgbCenteredSquareSource(16, 8, 4);
+  zsoda::inference::InferenceRequest request;
+  request.source = &source;
+  request.quality = 2;
+  request.resize_mode = zsoda::inference::PreprocessResizeMode::kStretch;
+
+  zsoda::inference::ModelPipelineProfile profile;
+  profile.input_width = 12;
+  profile.input_height = 12;
+  profile.normalize_mean = {0.0F, 0.0F, 0.0F};
+  profile.normalize_std = {1.0F, 1.0F, 1.0F};
+  profile.invert_depth = false;
+
+  zsoda::inference::PreparedModelInput prepared;
+  std::string error;
+  assert(zsoda::inference::PrepareInputForModel(request,
+                                                profile,
+                                                profile.input_width,
+                                                profile.input_height,
+                                                zsoda::inference::PreprocessResizeMode::kStretch,
+                                                false,
+                                                &prepared,
+                                                &error));
+  assert(error.empty());
+
+  const float spread_ratio = MeasureChannelSpreadAspectRatio(prepared, 0);
+  assert(spread_ratio > 0.0F);
+  assert(spread_ratio <= 0.7F || spread_ratio >= 1.4F);
+}
+
+void TestDa3UpperBoundResizeUsesAspectAndPatchAlignment() {
+  const auto source = MakeRgbCenteredSquareSource(192, 108, 24);
+  zsoda::inference::InferenceRequest request;
+  request.source = &source;
+  request.quality = 1;
+
+  zsoda::inference::ModelPipelineProfile profile =
+      zsoda::inference::ResolvePipelineProfile("depth-anything-v3-small");
+  profile.normalize_mean = {0.0F, 0.0F, 0.0F};
+  profile.normalize_std = {1.0F, 1.0F, 1.0F};
+
+  ScopedEnvironmentOverride process_res("ZSODA_DA3_PROCESS_RES", "518");
+  zsoda::inference::PreparedModelInput prepared;
+  std::string error;
+  assert(zsoda::inference::PrepareInputForModel(request,
+                                                profile,
+                                                profile.input_width,
+                                                profile.input_height,
+                                                zsoda::inference::PreprocessResizeMode::
+                                                    kUpperBoundLetterbox,
+                                                true,
+                                                &prepared,
+                                                &error));
+  assert(error.empty());
+  assert(prepared.tensor_width == 518);
+  assert(prepared.tensor_height == 294);
+  assert(prepared.process_res == 518);
+  assert(prepared.patch_multiple == 14);
+  assert(prepared.dynamic_upper_bound_aspect);
+  assert(prepared.direct_resize_mapping);
+  assert(prepared.resize_scale == 0.0F);
 }
 
 void TestDa3ProfileRespectsMultiviewEnvToggle() {
@@ -818,6 +891,8 @@ void RunInferenceEngineTests() {
   TestMissingModelFileDiagnostics();
 #if defined(ZSODA_WITH_ONNX_RUNTIME)
   TestOnnxPreprocessAspectRatioForNonSquareInput();
+  TestOnnxPreprocessStretchModeDistortsAspectRatio();
+  TestDa3UpperBoundResizeUsesAspectAndPatchAlignment();
   TestDa3ProfileRespectsMultiviewEnvToggle();
   TestOnnxBackendValidationScaffold();
 #endif

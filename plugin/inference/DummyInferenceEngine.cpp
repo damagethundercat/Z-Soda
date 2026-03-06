@@ -50,7 +50,7 @@ bool DummyInferenceEngine::Run(const InferenceRequest& request,
   desc.format = zsoda::core::PixelFormat::kGray32F;
   out_depth->Resize(desc);
 
-  const float quality_scale = std::clamp(static_cast<float>(request.quality), 1.0F, 3.0F);
+  const float quality_scale = std::clamp(static_cast<float>(request.quality), 1.0F, 8.0F);
   const float inv_w = 1.0F / static_cast<float>(std::max(1, desc.width - 1));
   const float inv_h = 1.0F / static_cast<float>(std::max(1, desc.height - 1));
 

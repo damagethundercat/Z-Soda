@@ -6,12 +6,14 @@
 #include <vector>
 
 #include "core/Frame.h"
+#include "inference/RuntimeOptions.h"
 
 namespace zsoda::inference {
 
 struct InferenceRequest {
   const zsoda::core::FrameBuffer* source = nullptr;
   int quality = 1;
+  PreprocessResizeMode resize_mode = PreprocessResizeMode::kUpperBoundLetterbox;
   std::uint64_t frame_hash = 0;
 };
 
