@@ -193,6 +193,125 @@ class SequenceInferenceEngine final : public zsoda::inference::IInferenceEngine 
   std::string active_model_id_ = "depth-anything-v3-small";
 };
 
+class LowFrequencyBiasInferenceEngine final : public zsoda::inference::IInferenceEngine {
+ public:
+  const char* Name() const override { return "LowFrequencyBiasInferenceEngine"; }
+
+  bool Initialize(const std::string& model_id, std::string* error) override {
+    active_model_id_ = model_id.empty() ? "depth-anything-v3-small" : model_id;
+    if (error != nullptr) {
+      error->clear();
+    }
+    return true;
+  }
+
+  bool SelectModel(const std::string& model_id, std::string* error) override {
+    return Initialize(model_id, error);
+  }
+
+  std::vector<std::string> ListModelIds() const override {
+    return {"depth-anything-v3-small"};
+  }
+
+  std::string ActiveModelId() const override { return active_model_id_; }
+
+  bool Run(const zsoda::inference::InferenceRequest& request,
+           zsoda::core::FrameBuffer* out_depth,
+           std::string* error) const override {
+    if (request.source == nullptr || out_depth == nullptr) {
+      if (error != nullptr) {
+        *error = "invalid inference request";
+      }
+      return false;
+    }
+
+    auto desc = request.source->desc();
+    desc.channels = 1;
+    desc.format = zsoda::core::PixelFormat::kGray32F;
+    out_depth->Resize(desc);
+
+    const bool reference_pass = request.quality <= 2;
+    for (int y = 0; y < desc.height; ++y) {
+      for (int x = 0; x < desc.width; ++x) {
+        if (reference_pass) {
+          out_depth->at(x, y, 0) = 0.5F;
+          continue;
+        }
+        const float source_value = request.source->at(x, y, 0);
+        out_depth->at(x, y, 0) = 0.5F + source_value * 0.02F;
+      }
+    }
+
+    if (error != nullptr) {
+      error->clear();
+    }
+    return true;
+  }
+
+ private:
+  std::string active_model_id_ = "depth-anything-v3-small";
+};
+
+class HighFrequencyDetailInferenceEngine final : public zsoda::inference::IInferenceEngine {
+ public:
+  const char* Name() const override { return "HighFrequencyDetailInferenceEngine"; }
+
+  bool Initialize(const std::string& model_id, std::string* error) override {
+    active_model_id_ = model_id.empty() ? "depth-anything-v3-small" : model_id;
+    if (error != nullptr) {
+      error->clear();
+    }
+    return true;
+  }
+
+  bool SelectModel(const std::string& model_id, std::string* error) override {
+    return Initialize(model_id, error);
+  }
+
+  std::vector<std::string> ListModelIds() const override {
+    return {"depth-anything-v3-small"};
+  }
+
+  std::string ActiveModelId() const override { return active_model_id_; }
+
+  bool Run(const zsoda::inference::InferenceRequest& request,
+           zsoda::core::FrameBuffer* out_depth,
+           std::string* error) const override {
+    if (request.source == nullptr || out_depth == nullptr) {
+      if (error != nullptr) {
+        *error = "invalid inference request";
+      }
+      return false;
+    }
+
+    auto desc = request.source->desc();
+    desc.channels = 1;
+    desc.format = zsoda::core::PixelFormat::kGray32F;
+    out_depth->Resize(desc);
+
+    const bool reference_pass = request.quality <= 2;
+    for (int y = 0; y < desc.height; ++y) {
+      for (int x = 0; x < desc.width; ++x) {
+        if (reference_pass) {
+          out_depth->at(x, y, 0) = 0.5F;
+          continue;
+        }
+        const int parity =
+            static_cast<int>(std::lround(request.source->at(x, y, 0))) & 1;
+        out_depth->at(x, y, 0) = parity == 0 ? 0.35F : 0.65F;
+      }
+    }
+
+    if (error != nullptr) {
+      error->clear();
+    }
+    return true;
+  }
+
+ private:
+  std::string active_model_id_ = "depth-anything-v3-small";
+};
+
 zsoda::core::FrameBuffer MakeSourceFrame(int width, int height) {
   zsoda::core::FrameDesc desc;
   desc.width = width;
@@ -468,6 +587,61 @@ void TestQualityBoostUsesReferenceAndTilePasses() {
   for (std::size_t i = 1; i < run_qualities.size(); ++i) {
     assert(run_qualities[i] == 3);
   }
+}
+
+void TestQualityBoostResidualFusionSuppressesLowFrequencyTileBias() {
+  auto engine = std::make_shared<LowFrequencyBiasInferenceEngine>();
+  std::string error;
+  assert(engine->Initialize("depth-anything-v3-small", &error));
+
+  zsoda::core::RenderPipeline pipeline(engine);
+  const auto src = MakeSourceFrame(16, 16);
+
+  zsoda::core::RenderParams params;
+  params.model_id = "depth-anything-v3-small";
+  params.frame_hash = 9015;
+  params.cache_enabled = false;
+  params.mapping_mode = zsoda::core::DepthMappingMode::kRaw;
+  params.temporal_alpha = 1.0F;
+  params.edge_enhancement = 0.0F;
+  params.quality = 3;
+  params.quality_boost = 2;
+
+  const auto output = pipeline.Render(src, params);
+  assert(output.status == zsoda::core::RenderStatus::kInference);
+  assert(Contains(output.message, "fusion=residual"));
+
+  const float center = output.frame.at(8, 8, 0);
+  const float lower_right = output.frame.at(13, 13, 0);
+  assert(std::fabs(center - 0.5F) < 0.05F);
+  assert(std::fabs(lower_right - 0.5F) < 0.08F);
+}
+
+void TestQualityBoostResidualFusionPreservesHighFrequencyDetail() {
+  auto engine = std::make_shared<HighFrequencyDetailInferenceEngine>();
+  std::string error;
+  assert(engine->Initialize("depth-anything-v3-small", &error));
+
+  zsoda::core::RenderPipeline pipeline(engine);
+  const auto src = MakeSourceFrame(16, 16);
+
+  zsoda::core::RenderParams params;
+  params.model_id = "depth-anything-v3-small";
+  params.frame_hash = 9016;
+  params.cache_enabled = false;
+  params.mapping_mode = zsoda::core::DepthMappingMode::kRaw;
+  params.temporal_alpha = 1.0F;
+  params.edge_enhancement = 0.0F;
+  params.quality = 3;
+  params.quality_boost = 2;
+
+  const auto output = pipeline.Render(src, params);
+  assert(output.status == zsoda::core::RenderStatus::kInference);
+  assert(Contains(output.message, "fusion=residual"));
+
+  const float even = output.frame.at(7, 7, 0);
+  const float odd = output.frame.at(8, 7, 0);
+  assert(std::fabs(even - odd) > 0.08F);
 }
 
 void TestQualityBoostSkipsTemporalSequenceModels() {
@@ -811,6 +985,8 @@ void RunRenderPipelineTests() {
   TestSliceParametersInvalidateCacheKey();
   TestTileParametersInvalidateCacheKey();
   TestQualityBoostUsesReferenceAndTilePasses();
+  TestQualityBoostResidualFusionSuppressesLowFrequencyTileBias();
+  TestQualityBoostResidualFusionPreservesHighFrequencyDetail();
   TestQualityBoostSkipsTemporalSequenceModels();
   TestQualityBoostInvalidatesCacheKey();
   TestExtractTokenInvalidatesCacheKey();

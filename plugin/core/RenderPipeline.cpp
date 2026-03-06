@@ -428,6 +428,21 @@ float ResolveDetailBoostVarianceFloor() {
   return ParseFloatEnvOrDefault("ZSODA_QUALITY_BOOST_VARIANCE_FLOOR", 1.0e-4F, 1.0e-6F, 1.0F);
 }
 
+int ResolveDetailBoostResidualBlurRadius() {
+  return ParseIntEnvOrDefault("ZSODA_QUALITY_BOOST_RESIDUAL_RADIUS", 2, 1, 6);
+}
+
+float ResolveDetailBoostResidualGain() {
+  return ParseFloatEnvOrDefault("ZSODA_QUALITY_BOOST_RESIDUAL_GAIN", 1.0F, 0.0F, 4.0F);
+}
+
+float ResolveDetailBoostResidualClampSigma() {
+  return ParseFloatEnvOrDefault("ZSODA_QUALITY_BOOST_RESIDUAL_CLAMP_SIGMA",
+                                2.5F,
+                                0.0F,
+                                8.0F);
+}
+
 struct DetailBoostStats {
   float mean = 0.0F;
   float stddev = 0.0F;
@@ -520,6 +535,36 @@ float ComputeDetailBoostFeatherWeight(int x,
   }
 
   return std::max(1.0e-3F, weight);
+}
+
+float ComputeFiniteBoxBlur(const FrameBuffer& frame, int x, int y, int radius) {
+  if (frame.empty()) {
+    return 0.0F;
+  }
+
+  const int begin_x = std::max(0, x - radius);
+  const int end_x = std::min(frame.desc().width - 1, x + radius);
+  const int begin_y = std::max(0, y - radius);
+  const int end_y = std::min(frame.desc().height - 1, y + radius);
+
+  double sum = 0.0;
+  std::size_t count = 0U;
+  for (int sample_y = begin_y; sample_y <= end_y; ++sample_y) {
+    for (int sample_x = begin_x; sample_x <= end_x; ++sample_x) {
+      const float value = frame.at(sample_x, sample_y, 0);
+      if (!std::isfinite(value)) {
+        continue;
+      }
+      sum += static_cast<double>(value);
+      ++count;
+    }
+  }
+
+  if (count == 0U) {
+    const float fallback = frame.at(x, y, 0);
+    return std::isfinite(fallback) ? fallback : 0.0F;
+  }
+  return static_cast<float>(sum / static_cast<double>(count));
 }
 
 FrameBuffer UpsampleDepthWithGuide(const FrameBuffer& lowres_depth,
@@ -1059,6 +1104,9 @@ bool RenderPipeline::ApplyDetailBoostRefinement(const FrameBuffer& source,
   const int reference_quality = ResolveDetailBoostReferenceQuality(params);
   const float padding_ratio = ResolveDetailBoostPaddingRatio();
   const float variance_floor = ResolveDetailBoostVarianceFloor();
+  const int residual_blur_radius = ResolveDetailBoostResidualBlurRadius();
+  const float residual_gain = ResolveDetailBoostResidualGain();
+  const float residual_clamp_sigma = ResolveDetailBoostResidualClampSigma();
   const int source_width = source.desc().width;
   const int source_height = source.desc().height;
   const int tile_w = std::max(1, source_width / n_tiles);
@@ -1066,8 +1114,8 @@ bool RenderPipeline::ApplyDetailBoostRefinement(const FrameBuffer& source,
   const int padding = static_cast<int>(
       std::lround(static_cast<float>(std::min(tile_w, tile_h)) * padding_ratio));
 
-  FrameBuffer accumulated(desc);
-  accumulated.Fill(0.0F);
+  FrameBuffer accumulated_residual(desc);
+  accumulated_residual.Fill(0.0F);
   FrameBuffer weights(desc);
   weights.Fill(0.0F);
 
@@ -1100,6 +1148,8 @@ bool RenderPipeline::ApplyDetailBoostRefinement(const FrameBuffer& source,
       tile_desc.channels = 1;
       tile_desc.format = PixelFormat::kGray32F;
       FrameBuffer tile_depth(tile_desc);
+      FrameBuffer aligned_tile(tile_desc);
+      aligned_tile.Fill(std::numeric_limits<float>::quiet_NaN());
 
       std::string tile_error;
       if (!RunInference(tile_source, params, params.quality, &tile_depth, &tile_error)) {
@@ -1128,8 +1178,30 @@ bool RenderPipeline::ApplyDetailBoostRefinement(const FrameBuffer& source,
           if (!std::isfinite(tile_value)) {
             continue;
           }
+          aligned_tile.at(local_x, local_y, 0) = tile_value * scale + offset;
+        }
+      }
+
+      float residual_limit = std::numeric_limits<float>::infinity();
+      if (residual_clamp_sigma > 0.0F && ref_stats.valid) {
+        residual_limit = std::max(variance_floor, ref_stats.stddev * residual_clamp_sigma);
+      }
+
+      for (int local_y = 0; local_y < padded_tile.height; ++local_y) {
+        for (int local_x = 0; local_x < padded_tile.width; ++local_x) {
+          const float aligned_value = aligned_tile.at(local_x, local_y, 0);
+          if (!std::isfinite(aligned_value)) {
+            continue;
+          }
           const int out_x = pad_x1 + local_x;
           const int out_y = pad_y1 + local_y;
+          float residual =
+              (aligned_value -
+               ComputeFiniteBoxBlur(aligned_tile, local_x, local_y, residual_blur_radius)) *
+              residual_gain;
+          if (std::isfinite(residual_limit)) {
+            residual = std::clamp(residual, -residual_limit, residual_limit);
+          }
           const float weight = ComputeDetailBoostFeatherWeight(out_x,
                                                                out_y,
                                                                core_x1,
@@ -1140,7 +1212,7 @@ bool RenderPipeline::ApplyDetailBoostRefinement(const FrameBuffer& source,
                                                                pad_y1,
                                                                pad_x2,
                                                                pad_y2);
-          accumulated.at(out_x, out_y, 0) += (tile_value * scale + offset) * weight;
+          accumulated_residual.at(out_x, out_y, 0) += residual * weight;
           weights.at(out_x, out_y, 0) += weight;
         }
       }
@@ -1150,11 +1222,13 @@ bool RenderPipeline::ApplyDetailBoostRefinement(const FrameBuffer& source,
 
   for (int y = 0; y < desc.height; ++y) {
     for (int x = 0; x < desc.width; ++x) {
+      const float reference_value = reference_depth.at(x, y, 0);
       const float weight = weights.at(x, y, 0);
       if (weight > 0.0F) {
-        depth->at(x, y, 0) = accumulated.at(x, y, 0) / weight;
+        const float refined = reference_value + accumulated_residual.at(x, y, 0) / weight;
+        depth->at(x, y, 0) = std::isfinite(refined) ? refined : reference_value;
       } else {
-        depth->at(x, y, 0) = reference_depth.at(x, y, 0);
+        depth->at(x, y, 0) = reference_value;
       }
     }
   }
@@ -1170,7 +1244,8 @@ bool RenderPipeline::ApplyDetailBoostRefinement(const FrameBuffer& source,
     *detail = "quality boost applied (" + std::to_string(n_tiles) + "x" +
               std::to_string(n_tiles) + " tiles, ref_quality=" +
               std::to_string(reference_quality) + ", padding=" +
-              std::to_string(padding) + ")";
+              std::to_string(padding) + ", fusion=residual, blur_radius=" +
+              std::to_string(residual_blur_radius) + ")";
   }
   return true;
 }
