@@ -91,7 +91,7 @@ constexpr int kOutputModePopupChoices = 2;
 constexpr std::uint32_t kAeGlobalOutFlags = ZSODA_AE_GLOBAL_OUTFLAGS;
 constexpr std::uint32_t kAeGlobalOutFlags2 = ZSODA_AE_GLOBAL_OUTFLAGS2;
 
-constexpr char kModelPopupLabels[] = "Depth HQ (DA3 Large Multi-View, Locked)";
+constexpr char kModelPopupLabels[] = "Depth HQ (DA3 Large, Locked)";
 constexpr char kQualityPopupLabels[] = "256 px|512 px|768 px|1024 px|1280 px|1536 px|1920 px|2048 px";
 constexpr char kQualityBoostLevelPopupLabels[] = "2x2|3x3|4x4|5x5";
 constexpr char kOutputModePopupLabels[] = "Depth Map|Slicing";
@@ -530,7 +530,7 @@ bool TryCopyLayerWorldPassThrough(const PF_LayerDef* source_world, PF_LayerDef* 
 }
 
 constexpr std::array<const char*, 1> kFallbackModelIdOrder = {
-    "depth-anything-v3-large-multiview",
+    "depth-anything-v3-large",
 };
 
 zsoda::core::CompatMutex& AeParamSnapshotMutex() {
@@ -1263,14 +1263,11 @@ bool TryExtractPfCmdRenderPayload(const AeSdkEntryPayload& payload,
   scaffold->frame_hash = ComputeSafeFrameHash(frame_hash_seed);
   scaffold->host_render.frame_hash = scaffold->frame_hash;
 
-  AeParamValues params_override = DefaultAeParams();
-  std::string params_error;
-  if (TryExtractPfCmdParamValues(payload, &params_override, &params_error)) {
-    scaffold->host_render.params_override = params_override;
-    scaffold->has_params_override = true;
-  } else if (!params_error.empty()) {
-    SetError(error, "render params override unavailable: " + params_error);
-  }
+  // PF_Cmd_RENDER param tables are not stable enough to be the source of truth
+  // for effect settings. Use the router's last supervised params update instead
+  // of re-reading SDK params here, or render can silently reset toggles like
+  // Quality Boost back to defaults.
+  scaffold->has_params_override = false;
 
   int candidate_width = 0;
   std::size_t candidate_row_bytes = 0;

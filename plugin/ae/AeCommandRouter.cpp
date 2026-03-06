@@ -98,14 +98,16 @@ bool AeCommandRouter::Handle(const AeCommandContext& context) {
         return false;
       }
 
-      const AeParamValues params = context.render_request->params_override.has_value()
-                                       ? *context.render_request->params_override
-                                       : current_params_;
+      const bool using_params_override = context.render_request->params_override.has_value();
+      const AeParamValues params =
+          using_params_override ? *context.render_request->params_override : current_params_;
       auto render_params = ToRenderParams(params);
       render_params.frame_hash = context.render_request->frame_hash;
 
       const std::string before_detail =
-          "model=" + render_params.model_id + ", quality=" + std::to_string(render_params.quality) +
+          "param_source=" + std::string(using_params_override ? "override" : "current") +
+          ", model=" + render_params.model_id + ", quality=" +
+          std::to_string(render_params.quality) +
           ", preserve_ratio=" + std::to_string(render_params.preserve_aspect_ratio ? 1 : 0) +
           ", quality_boost=" + std::to_string(render_params.quality_boost);
       AppendRouterTrace("render_before_pipeline", before_detail.c_str());

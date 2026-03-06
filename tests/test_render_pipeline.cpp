@@ -440,6 +440,94 @@ void TestTileParametersInvalidateCacheKey() {
   assert(engine->RunCount() > run_count_after_first);
 }
 
+void TestQualityBoostUsesReferenceAndTilePasses() {
+  auto engine = std::make_shared<ScriptedInferenceEngine>();
+  std::string error;
+  assert(engine->Initialize("depth-anything-v3-small", &error));
+
+  zsoda::core::RenderPipeline pipeline(engine);
+  const auto src = MakeSourceFrame(16, 16);
+
+  zsoda::core::RenderParams params;
+  params.model_id = "depth-anything-v3-small";
+  params.frame_hash = 9005;
+  params.cache_enabled = false;
+  params.mapping_mode = zsoda::core::DepthMappingMode::kRaw;
+  params.temporal_alpha = 1.0F;
+  params.edge_enhancement = 0.0F;
+  params.quality = 3;
+  params.quality_boost = 4;
+
+  const auto output = pipeline.Render(src, params);
+  assert(output.status == zsoda::core::RenderStatus::kInference);
+  assert(Contains(output.message, "quality boost applied"));
+
+  const auto& run_qualities = engine->RunQualities();
+  assert(run_qualities.size() == 17U);
+  assert(run_qualities.front() == 2);
+  for (std::size_t i = 1; i < run_qualities.size(); ++i) {
+    assert(run_qualities[i] == 3);
+  }
+}
+
+void TestQualityBoostSkipsTemporalSequenceModels() {
+  auto engine = std::make_shared<ScriptedInferenceEngine>();
+  std::string error;
+  assert(engine->Initialize("depth-anything-v3-large-multiview", &error));
+
+  zsoda::core::RenderPipeline pipeline(engine);
+  const auto src = MakeSourceFrame(16, 16);
+
+  zsoda::core::RenderParams params;
+  params.model_id = "depth-anything-v3-large-multiview";
+  params.frame_hash = 9007;
+  params.cache_enabled = false;
+  params.mapping_mode = zsoda::core::DepthMappingMode::kRaw;
+  params.temporal_alpha = 1.0F;
+  params.edge_enhancement = 0.0F;
+  params.quality = 3;
+  params.quality_boost = 4;
+
+  const auto output = pipeline.Render(src, params);
+  assert(output.status == zsoda::core::RenderStatus::kInference);
+  assert(Contains(output.message, "detail boost skipped: temporal sequence model"));
+
+  const auto& run_qualities = engine->RunQualities();
+  assert(run_qualities.size() == 1U);
+  assert(run_qualities.front() == 3);
+}
+
+void TestQualityBoostInvalidatesCacheKey() {
+  auto engine = std::make_shared<ScriptedInferenceEngine>();
+  std::string error;
+  assert(engine->Initialize("depth-anything-v3-small", &error));
+
+  zsoda::core::RenderPipeline pipeline(engine);
+  const auto src = MakeSourceFrame(16, 16);
+
+  zsoda::core::RenderParams params;
+  params.model_id = "depth-anything-v3-small";
+  params.frame_hash = 9006;
+  params.mapping_mode = zsoda::core::DepthMappingMode::kRaw;
+  params.temporal_alpha = 1.0F;
+  params.edge_enhancement = 0.0F;
+  params.quality = 3;
+  params.quality_boost = 0;
+
+  const auto first = pipeline.Render(src, params);
+  assert(first.status == zsoda::core::RenderStatus::kInference);
+  const int run_count_after_first = engine->RunCount();
+
+  const auto second = pipeline.Render(src, params);
+  assert(second.status == zsoda::core::RenderStatus::kCacheHit);
+  assert(engine->RunCount() == run_count_after_first);
+
+  params.quality_boost = 2;
+  const auto third = pipeline.Render(src, params);
+  assert(third.status != zsoda::core::RenderStatus::kCacheHit);
+  assert(engine->RunCount() > run_count_after_first);
+}
+
 void TestExtractTokenInvalidatesCacheKey() {
   auto engine = std::make_shared<ScriptedInferenceEngine>();
   std::string error;
@@ -722,6 +810,9 @@ void RunRenderPipelineTests() {
   TestFallbackOutputCachingSeparatedByModel();
   TestSliceParametersInvalidateCacheKey();
   TestTileParametersInvalidateCacheKey();
+  TestQualityBoostUsesReferenceAndTilePasses();
+  TestQualityBoostSkipsTemporalSequenceModels();
+  TestQualityBoostInvalidatesCacheKey();
   TestExtractTokenInvalidatesCacheKey();
   TestStatefulPostProcessDisablesCache();
   TestZeroFrameHashDisablesCache();

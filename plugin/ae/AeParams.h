@@ -36,7 +36,7 @@ enum class AeOutputMode {
 };
 
 struct AeParamValues {
-  std::string model_id = "depth-anything-v3-large-multiview";
+  std::string model_id = "depth-anything-v3-large";
   int quality = 2;
   bool preserve_ratio = true;
   bool quality_boost_enabled = false;

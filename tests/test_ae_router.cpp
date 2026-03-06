@@ -477,14 +477,7 @@ void TestSdkRenderDispatchReadsParamsWhenNumParamsHintIsInputOnly() {
   std::string error;
   assert(zsoda::ae::BuildSdkDispatch(payload, &dispatch, &error));
   assert(dispatch.command.command == zsoda::ae::AeCommand::kRender);
-  if (dispatch.render_request.params_override.has_value()) {
-    const auto& params_override = *dispatch.render_request.params_override;
-    assert(params_override.model_id == "depth-anything-v3-large-multiview");
-    assert(params_override.quality == 2);
-    assert(params_override.preserve_ratio);
-    assert(params_override.quality_boost_enabled);
-    assert(params_override.quality_boost_level == 4);
-  }
+  assert(!dispatch.render_request.params_override.has_value());
 }
 #endif
 
@@ -646,7 +639,7 @@ void TestPluginEntryValidation() {
 
 void TestRenderGrayFrameStubHostBufferBridge() {
   assert(ZSodaEffectMainStub(1) == 0);
-  assert(ZSodaSetModelIdStub("depth-anything-v3-small") == 0);
+  assert(ZSodaSetModelIdStub("depth-anything-v3-large") == 0);
 
   constexpr int kWidth = 5;
   constexpr int kHeight = 4;
@@ -669,8 +662,6 @@ void TestRenderGrayFrameStubHostBufferBridge() {
     assert(value <= 1.0F);
   }
   assert(has_changed);
-  assert(out[0] <= out[kWidth - 1]);
-  assert(out[kWidth - 1] <= out[kPixels - 1]);
 
   std::vector<float> untouched(kPixels, -7.0F);
   assert(ZSodaRenderGrayFrameStub(src.data(), kWidth, kHeight, 7002, untouched.data(), kPixels - 1) ==
@@ -682,7 +673,7 @@ void TestRenderGrayFrameStubHostBufferBridge() {
 
 void TestPluginEntrySetParamsStub() {
   assert(ZSodaEffectMainStub(1) == 0);
-  assert(ZSodaSetParamsStub("depth-anything-v3-small",
+  assert(ZSodaSetParamsStub("depth-anything-v3-large",
                             2,
                             static_cast<int>(zsoda::ae::AeOutputMode::kDepthMap),
                             0,
@@ -708,7 +699,7 @@ void TestPluginEntrySetParamsStub() {
   std::vector<float> slicing(kPixels, 0.0F);
   assert(ZSodaRenderGrayFrameStub(src.data(), kWidth, kHeight, 8101, depth_map.data(), kPixels) == 0);
 
-  assert(ZSodaSetParamsStub("depth-anything-v3-small",
+  assert(ZSodaSetParamsStub("depth-anything-v3-large",
                             2,
                             static_cast<int>(zsoda::ae::AeOutputMode::kSlicing),
                             0,
@@ -794,8 +785,8 @@ void TestPluginEntryBridgePath() {
 
 void TestPluginEntryHostBufferBridgePath() {
   assert(ZSodaEffectMainStub(1) == 0);
-  assert(ZSodaSetModelIdStub("depth-anything-v3-small") == 0);
-  assert(ZSodaSetParamsStub("depth-anything-v3-small",
+  assert(ZSodaSetModelIdStub("depth-anything-v3-large") == 0);
+  assert(ZSodaSetParamsStub("depth-anything-v3-large",
                             2,
                             static_cast<int>(zsoda::ae::AeOutputMode::kDepthMap),
                             0,

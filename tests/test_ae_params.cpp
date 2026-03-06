@@ -26,7 +26,7 @@ void TestRenderParamConversion() {
   ae.extract_token = -11;
 
   const auto render = zsoda::ae::ToRenderParams(ae);
-  assert(render.model_id == "depth-anything-v3-large-multiview");
+  assert(render.model_id == "depth-anything-v3-large");
   assert(render.quality == 8);
   assert(render.quality_boost == 5);
   assert(!render.preserve_aspect_ratio);
@@ -60,7 +60,7 @@ void TestModelMenu() {
   zsoda::inference::ManagedInferenceEngine engine("models");
   const auto menu = zsoda::ae::BuildModelMenu(engine);
   assert(!menu.empty());
-  assert(menu[0] == "depth-anything-v3-large-multiview");
+  assert(menu[0] == "depth-anything-v3-large");
 }
 
 }  // namespace

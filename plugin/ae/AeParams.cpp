@@ -11,7 +11,7 @@
 namespace zsoda::ae {
 namespace {
 
-constexpr const char* kDefaultLockedModelId = "depth-anything-v3-large-multiview";
+constexpr const char* kDefaultLockedModelId = "depth-anything-v3-large";
 constexpr std::array<int, 8> kQualityResolutions = {256, 512, 768, 1024, 1280, 1536, 1920, 2048};
 
 int ClampQualitySelectionInternal(int selection) {
