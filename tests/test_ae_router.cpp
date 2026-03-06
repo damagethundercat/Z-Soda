@@ -477,7 +477,13 @@ void TestSdkRenderDispatchReadsParamsWhenNumParamsHintIsInputOnly() {
   std::string error;
   assert(zsoda::ae::BuildSdkDispatch(payload, &dispatch, &error));
   assert(dispatch.command.command == zsoda::ae::AeCommand::kRender);
-  assert(!dispatch.render_request.params_override.has_value());
+  assert(dispatch.render_request.params_override.has_value());
+  const auto& override = *dispatch.render_request.params_override;
+  assert(override.model_id == "depth-anything-v3-large");
+  assert(override.quality == 2);
+  assert(override.preserve_ratio);
+  assert(override.quality_boost_enabled);
+  assert(override.quality_boost_level == 4);
 }
 
 void TestSdkSequenceResetupBootstrapsRouterParams() {

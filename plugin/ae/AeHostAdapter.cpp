@@ -553,6 +553,21 @@ void WriteAeParamSnapshot(const AeParamValues& values) {
   AeParamSnapshotStorage() = values;
 }
 
+bool& AeSupervisedParamsSeenStorage() {
+  static bool seen = false;
+  return seen;
+}
+
+bool ReadAeSupervisedParamsSeen() {
+  zsoda::core::CompatLockGuard lock(AeParamSnapshotMutex());
+  return AeSupervisedParamsSeenStorage();
+}
+
+void WriteAeSupervisedParamsSeen(bool seen) {
+  zsoda::core::CompatLockGuard lock(AeParamSnapshotMutex());
+  AeSupervisedParamsSeenStorage() = seen;
+}
+
 bool AllowsSdkParamTableCount(PF_Cmd command) {
   bool allowed = command == PF_Cmd_PARAMS_SETUP;
 #if defined(PF_Cmd_USER_CHANGED_PARAM)
@@ -892,6 +907,7 @@ bool WireParamUpdatePayload(const AeSdkEntryPayload& payload,
     return true;
   }
 
+  WriteAeSupervisedParamsSeen(true);
   dispatch->params_update = params;
   dispatch->command.params_update = &dispatch->params_update;
   return true;
@@ -1293,11 +1309,19 @@ bool TryExtractPfCmdRenderPayload(const AeSdkEntryPayload& payload,
   scaffold->frame_hash = ComputeSafeFrameHash(frame_hash_seed);
   scaffold->host_render.frame_hash = scaffold->frame_hash;
 
-  // PF_Cmd_RENDER param tables are not stable enough to be the source of truth
-  // for effect settings. Use the router's last supervised params update instead
-  // of re-reading SDK params here, or render can silently reset toggles like
-  // Quality Boost back to defaults.
+  // Prefer supervised update commands once AE has started emitting them.
+  // Some sessions never send USER_CHANGED/UPDATE_PARAMS_UI/SEQUENCE_RESETUP for
+  // saved effect state, so allow render-table bootstrap only until the first
+  // supervised params update has been observed.
   scaffold->has_params_override = false;
+  if (!ReadAeSupervisedParamsSeen()) {
+    AeParamValues params_override = DefaultAeParams();
+    std::string params_error;
+    if (TryExtractPfCmdParamValues(payload, &params_override, &params_error)) {
+      scaffold->host_render.params_override = params_override;
+      scaffold->has_params_override = true;
+    }
+  }
 
   int candidate_width = 0;
   std::size_t candidate_row_bytes = 0;
