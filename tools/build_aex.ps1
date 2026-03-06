@@ -548,6 +548,78 @@ function Resolve-OrtProvidersSharedDll {
   return $null
 }
 
+function Resolve-OrtRuntimeBundleDlls {
+  param(
+    [string]$OrtRuntimeDllPath
+  )
+
+  if ([string]::IsNullOrWhiteSpace($OrtRuntimeDllPath)) {
+    return @()
+  }
+
+  $runtimeDir = Split-Path -Path $OrtRuntimeDllPath -Parent
+  if ([string]::IsNullOrWhiteSpace($runtimeDir) -or
+      -not (Test-Path -LiteralPath $runtimeDir -PathType Container)) {
+    return @()
+  }
+
+  $patterns = @(
+    "onnxruntime_providers_*.dll",
+    "nvinfer*.dll",
+    "nvonnxparser*.dll",
+    "myelin*.dll",
+    "cudart*.dll",
+    "cublas*.dll",
+    "cufft*.dll",
+    "curand*.dll",
+    "cusolver*.dll",
+    "cusparse*.dll",
+    "cudnn*.dll",
+    "nvrtc*.dll",
+    "zlibwapi.dll"
+  )
+
+  $results = @()
+  foreach ($pattern in $patterns) {
+    $matches = @(Get-ChildItem -LiteralPath $runtimeDir -Filter $pattern -File -ErrorAction SilentlyContinue |
+        Where-Object {
+          $_.Name -ine "onnxruntime.dll" -and
+          $_.Name -ine "onnxruntime_providers_shared.dll"
+        })
+    foreach ($match in $matches) {
+      $results += (Resolve-Path -LiteralPath $match.FullName).Path
+    }
+  }
+
+  return @($results | Select-Object -Unique)
+}
+
+function Stage-DllBundle {
+  param(
+    [string[]]$Files,
+
+    [Parameter(Mandatory = $true)]
+    [string]$DestinationDir,
+
+    [Parameter(Mandatory = $true)]
+    [string]$LabelPrefix
+  )
+
+  if ($null -eq $Files -or $Files.Count -eq 0) {
+    return
+  }
+
+  New-Item -ItemType Directory -Path $DestinationDir -Force | Out-Null
+  foreach ($file in ($Files | Select-Object -Unique)) {
+    if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+      continue
+    }
+    $destinationPath = Join-Path $DestinationDir ([System.IO.Path]::GetFileName($file))
+    Copy-Item -LiteralPath $file -Destination $destinationPath -Force
+    Print-ArtifactInfo -Label $LabelPrefix -Path $destinationPath
+  }
+}
+
 function Sync-ModelAssets {
   param(
     [Parameter(Mandatory = $true)]
@@ -642,6 +714,7 @@ $ortProvidersSharedAbs = Resolve-OrtProvidersSharedDll -OrtLibraryPath $ortLibra
 if ($null -eq $ortProvidersSharedAbs) {
   Write-Warning "onnxruntime_providers_shared.dll was not resolved. ORT initialization may fail at runtime."
 }
+$ortRuntimeBundleDlls = Resolve-OrtRuntimeBundleDlls -OrtRuntimeDllPath $ortRuntimeDllAbs
 
 if ($Clean -and (Test-Path -LiteralPath $buildDirAbs)) {
   Remove-Item -LiteralPath $buildDirAbs -Recurse -Force
@@ -862,6 +935,7 @@ if ($ortProvidersSharedAbs) {
   Copy-Item -LiteralPath $ortProvidersSharedAbs -Destination $stagedOrtProvidersPath -Force
   Print-ArtifactInfo -Label "staged_ort_providers_shared_dll" -Path $stagedOrtProvidersPath
 }
+Stage-DllBundle -Files $ortRuntimeBundleDlls -DestinationDir (Join-Path $aexDir "zsoda_ort") -LabelPrefix "staged_ort_runtime_bundle_dll"
 
 Print-LoaderEvidence -AexPath $aex
 if ($BuildLoaderProbe) {
@@ -916,6 +990,7 @@ if ($CopyToMediaCore) {
   } else {
     Write-Warning "MediaCore copy requested but onnxruntime_providers_shared.dll is unavailable."
   }
+  Stage-DllBundle -Files $ortRuntimeBundleDlls -DestinationDir (Join-Path $MediaCoreDir "zsoda_ort") -LabelPrefix "mediacore_ort_runtime_bundle_dll"
 
   $repoModelsRoot = Join-Path $repoRoot "models"
   $mediaCoreModelsRoot = Join-Path $MediaCoreDir "models"
