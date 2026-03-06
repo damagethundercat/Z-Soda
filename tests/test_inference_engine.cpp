@@ -454,6 +454,24 @@ void TestRemoteBackendSafeFallbackWithManagedEngine() {
   assert(Contains(engine.BackendStatusString(), "last_run_fallback=true"));
 }
 
+void TestRemoteBackendEndpointInitialization() {
+  zsoda::inference::RuntimeOptions options;
+  options.preferred_backend = zsoda::inference::RuntimeBackend::kRemote;
+  options.remote_inference_enabled = true;
+  options.remote_endpoint = "http://127.0.0.1:8345/zsoda/depth";
+
+  ScopedEnvironmentOverride clear_remote_command("ZSODA_REMOTE_INFERENCE_COMMAND", "");
+  ScopedEnvironmentOverride clear_legacy_remote_command("ZSODA_REMOTE_BACKEND_COMMAND", "");
+
+  std::string error;
+  auto backend = zsoda::inference::CreateRemoteInferenceBackendWithCommand(
+      options, {.command_template = ""}, &error);
+  assert(backend != nullptr);
+  assert(error.empty());
+  assert(backend->ActiveBackend() == zsoda::inference::RuntimeBackend::kRemote);
+  assert(Contains(backend->Name(), "RemoteInferenceBackend"));
+}
+
 void TestRunRequiresSelectedModel() {
   zsoda::inference::ManagedInferenceEngine engine("models");
   const auto source = MakeSource();
@@ -882,6 +900,7 @@ void RunInferenceEngineTests() {
   TestRuntimeBackendOptions();
   TestRemoteBackendCommandValidation();
   TestRemoteBackendSafeFallbackWithManagedEngine();
+  TestRemoteBackendEndpointInitialization();
   TestRunRequiresSelectedModel();
   TestBackendStatusDiagnostics();
   TestManifestLoadingAndDefaults();

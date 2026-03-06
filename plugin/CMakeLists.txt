@@ -259,6 +259,6 @@ foreach(target_name IN LISTS ZSODA_PLUGIN_TARGETS)
   target_compile_features(${target_name} PUBLIC cxx_std_20)
 
   if(WIN32)
-    target_link_libraries(${target_name} PRIVATE urlmon)
+    target_link_libraries(${target_name} PRIVATE urlmon winhttp)
   endif()
 endforeach()

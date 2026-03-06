@@ -108,6 +108,18 @@ def _require_int(payload: Dict[str, Any], key: str, minimum: int = 0) -> int:
     return value
 
 
+def _resolve_dimensions(payload: Dict[str, Any]) -> tuple[int, int]:
+    source = payload.get("source")
+    if isinstance(source, dict):
+        width = source.get("width")
+        height = source.get("height")
+        if isinstance(width, int) and isinstance(height, int) and width > 0 and height > 0:
+            return width, height
+    width = _require_int(payload, "width", minimum=1)
+    height = _require_int(payload, "height", minimum=1)
+    return width, height
+
+
 def _resolve_pattern(payload: Dict[str, Any], default_pattern: str) -> str:
     raw = payload.get("pattern", default_pattern)
     if not isinstance(raw, str):
@@ -210,8 +222,7 @@ def main() -> int:
             raise RequestError("'request_id' must be a string when provided")
         request_id = raw_request_id
 
-        width = _require_int(request, "width", minimum=1)
-        height = _require_int(request, "height", minimum=1)
+        width, height = _resolve_dimensions(request)
         frame_index = _require_int(request, "frame_index", minimum=0) if "frame_index" in request else 0
         pattern = _resolve_pattern(request, default_pattern)
 

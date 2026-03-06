@@ -1,6 +1,7 @@
 #include "inference/RemoteInferenceBackend.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cctype>
 #include <cerrno>
@@ -22,6 +23,7 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+#include <winhttp.h>
 #include <windows.h>
 #else
 #include <sys/wait.h>
@@ -33,7 +35,7 @@ namespace {
 
 constexpr char kRemoteCommandEnv[] = "ZSODA_REMOTE_INFERENCE_COMMAND";
 constexpr char kRemoteCommandEnvLegacy[] = "ZSODA_REMOTE_BACKEND_COMMAND";
-constexpr char kRequestSchema[] = "zsoda.remote_depth.v1";
+constexpr char kRequestSchema[] = "zsoda.remote_depth.v2";
 
 std::atomic<std::uint64_t> g_temp_file_counter{0U};
 
@@ -98,6 +100,83 @@ float SanitizeFinite(float value) {
   return std::isfinite(value) ? value : 0.0F;
 }
 
+const char* ResizeModeName(PreprocessResizeMode mode) {
+  switch (mode) {
+    case PreprocessResizeMode::kUpperBoundLetterbox:
+      return "upper_bound_letterbox";
+    case PreprocessResizeMode::kLowerBoundCenterCrop:
+      return "lower_bound_center_crop";
+    case PreprocessResizeMode::kStretch:
+      return "stretch";
+  }
+  return "upper_bound_letterbox";
+}
+
+unsigned char QuantizeUnitFloat(float value) {
+  const float sanitized = std::clamp(SanitizeFinite(value), 0.0F, 1.0F);
+  return static_cast<unsigned char>(std::lround(sanitized * 255.0F));
+}
+
+bool WritePortablePixmap(const zsoda::core::FrameBuffer& source,
+                         const std::filesystem::path& path,
+                         std::string* error) {
+  const auto& desc = source.desc();
+  if (desc.width <= 0 || desc.height <= 0 || desc.channels <= 0) {
+    if (error != nullptr) {
+      *error = "source frame descriptor is invalid for ppm serialization";
+    }
+    return false;
+  }
+
+  std::ofstream stream(path, std::ios::binary | std::ios::trunc);
+  if (!stream.is_open()) {
+    if (error != nullptr) {
+      *error = "failed to open source image temp file: " + path.string();
+    }
+    return false;
+  }
+
+  stream << "P6\n" << desc.width << " " << desc.height << "\n255\n";
+  if (!stream.good()) {
+    if (error != nullptr) {
+      *error = "failed to write source image header: " + path.string();
+    }
+    return false;
+  }
+
+  std::array<char, 3> pixel = {};
+  for (int y = 0; y < desc.height; ++y) {
+    for (int x = 0; x < desc.width; ++x) {
+      float red = 0.0F;
+      float green = 0.0F;
+      float blue = 0.0F;
+      if (desc.channels == 1) {
+        red = green = blue = source.at(x, y, 0);
+      } else {
+        red = source.at(x, y, 0);
+        green = source.at(x, y, std::min(1, desc.channels - 1));
+        blue = source.at(x, y, std::min(2, desc.channels - 1));
+      }
+
+      pixel[0] = static_cast<char>(QuantizeUnitFloat(red));
+      pixel[1] = static_cast<char>(QuantizeUnitFloat(green));
+      pixel[2] = static_cast<char>(QuantizeUnitFloat(blue));
+      stream.write(pixel.data(), static_cast<std::streamsize>(pixel.size()));
+      if (!stream.good()) {
+        if (error != nullptr) {
+          *error = "failed to write source image pixel data: " + path.string();
+        }
+        return false;
+      }
+    }
+  }
+
+  if (error != nullptr) {
+    error->clear();
+  }
+  return true;
+}
+
 std::string EscapeJsonString(std::string_view value) {
   std::string escaped;
   escaped.reserve(value.size() + 8U);
@@ -139,6 +218,7 @@ std::string EscapeJsonString(std::string_view value) {
 bool SerializeRequestPayload(const InferenceRequest& request,
                              std::string_view model_id,
                              std::string_view model_path,
+                             std::string_view source_path,
                              std::string* out_payload,
                              std::string* error) {
   if (out_payload == nullptr) {
@@ -163,19 +243,14 @@ bool SerializeRequestPayload(const InferenceRequest& request,
   payload << "\"model_id\":\"" << EscapeJsonString(model_id) << "\",";
   payload << "\"model_path\":\"" << EscapeJsonString(model_path) << "\",";
   payload << "\"quality\":" << request.quality << ",";
+  payload << "\"resize_mode\":\"" << EscapeJsonString(ResizeModeName(request.resize_mode)) << "\",";
+  payload << "\"frame_hash\":" << request.frame_hash << ",";
   payload << "\"source\":{";
   payload << "\"width\":" << source_desc.width << ",";
   payload << "\"height\":" << source_desc.height << ",";
   payload << "\"channels\":" << source_desc.channels << ",";
-  payload << "\"format\":\"gray32f\",";
-  payload << "\"data\":[";
-  for (std::size_t index = 0; index < source.size(); ++index) {
-    if (index != 0U) {
-      payload << ",";
-    }
-    payload << SanitizeFinite(source.data()[index]);
-  }
-  payload << "]";
+  payload << "\"format\":\"ppm\",";
+  payload << "\"path\":\"" << EscapeJsonString(source_path) << "\"";
   payload << "}";
   payload << "}";
 
@@ -323,6 +398,307 @@ std::string QuoteShellArgument(std::string_view argument) {
   quoted.push_back('"');
   return quoted;
 }
+
+#if defined(_WIN32)
+bool WideToUtf8(const std::wstring& wide, std::string* utf8, std::string* error) {
+  if (utf8 == nullptr) {
+    if (error != nullptr) {
+      *error = "internal error: utf8 output pointer is null";
+    }
+    return false;
+  }
+  utf8->clear();
+  if (wide.empty()) {
+    if (error != nullptr) {
+      error->clear();
+    }
+    return true;
+  }
+
+  const int required = ::WideCharToMultiByte(CP_UTF8,
+                                             0,
+                                             wide.data(),
+                                             static_cast<int>(wide.size()),
+                                             nullptr,
+                                             0,
+                                             nullptr,
+                                             nullptr);
+  if (required <= 0) {
+    if (error != nullptr) {
+      *error = "WideCharToMultiByte failed: " + std::to_string(::GetLastError());
+    }
+    return false;
+  }
+
+  utf8->assign(static_cast<std::size_t>(required), '\0');
+  const int written = ::WideCharToMultiByte(CP_UTF8,
+                                            0,
+                                            wide.data(),
+                                            static_cast<int>(wide.size()),
+                                            utf8->data(),
+                                            required,
+                                            nullptr,
+                                            nullptr);
+  if (written != required) {
+    if (error != nullptr) {
+      *error = "WideCharToMultiByte produced unexpected length";
+    }
+    return false;
+  }
+
+  if (error != nullptr) {
+    error->clear();
+  }
+  return true;
+}
+
+bool Utf8ToWide(std::string_view utf8, std::wstring* wide, std::string* error) {
+  if (wide == nullptr) {
+    if (error != nullptr) {
+      *error = "internal error: wide output pointer is null";
+    }
+    return false;
+  }
+  wide->clear();
+  if (utf8.empty()) {
+    if (error != nullptr) {
+      error->clear();
+    }
+    return true;
+  }
+
+  const int required = ::MultiByteToWideChar(CP_UTF8,
+                                             0,
+                                             utf8.data(),
+                                             static_cast<int>(utf8.size()),
+                                             nullptr,
+                                             0);
+  if (required <= 0) {
+    if (error != nullptr) {
+      *error = "MultiByteToWideChar failed: " + std::to_string(::GetLastError());
+    }
+    return false;
+  }
+
+  wide->assign(static_cast<std::size_t>(required), L'\0');
+  const int written = ::MultiByteToWideChar(CP_UTF8,
+                                            0,
+                                            utf8.data(),
+                                            static_cast<int>(utf8.size()),
+                                            wide->data(),
+                                            required);
+  if (written != required) {
+    if (error != nullptr) {
+      *error = "MultiByteToWideChar produced unexpected length";
+    }
+    return false;
+  }
+
+  if (error != nullptr) {
+    error->clear();
+  }
+  return true;
+}
+
+bool PostJsonToEndpoint(std::string_view endpoint,
+                        std::string_view payload,
+                        std::string_view api_key,
+                        int timeout_ms,
+                        std::string* response_payload,
+                        std::string* error) {
+  if (response_payload == nullptr) {
+    if (error != nullptr) {
+      *error = "internal error: response payload output is null";
+    }
+    return false;
+  }
+
+  std::wstring endpoint_wide;
+  if (!Utf8ToWide(endpoint, &endpoint_wide, error)) {
+    return false;
+  }
+
+  URL_COMPONENTS components = {};
+  components.dwStructSize = sizeof(components);
+  components.dwSchemeLength = static_cast<DWORD>(-1);
+  components.dwHostNameLength = static_cast<DWORD>(-1);
+  components.dwUrlPathLength = static_cast<DWORD>(-1);
+  components.dwExtraInfoLength = static_cast<DWORD>(-1);
+  if (!::WinHttpCrackUrl(endpoint_wide.c_str(),
+                         static_cast<DWORD>(endpoint_wide.size()),
+                         0,
+                         &components)) {
+    if (error != nullptr) {
+      *error = "WinHttpCrackUrl failed for endpoint: " + std::string(endpoint) +
+               " (" + std::to_string(::GetLastError()) + ")";
+    }
+    return false;
+  }
+
+  const bool secure = components.nScheme == INTERNET_SCHEME_HTTPS;
+  const std::wstring host(components.lpszHostName,
+                          static_cast<std::size_t>(components.dwHostNameLength));
+  std::wstring path(components.lpszUrlPath,
+                    static_cast<std::size_t>(components.dwUrlPathLength));
+  if (path.empty()) {
+    path = L"/";
+  }
+  if (components.dwExtraInfoLength > 0U && components.lpszExtraInfo != nullptr) {
+    path.append(components.lpszExtraInfo, static_cast<std::size_t>(components.dwExtraInfoLength));
+  }
+
+  HINTERNET session = ::WinHttpOpen(L"ZSoda/1.0",
+                                    WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                                    WINHTTP_NO_PROXY_NAME,
+                                    WINHTTP_NO_PROXY_BYPASS,
+                                    0);
+  if (session == nullptr) {
+    if (error != nullptr) {
+      *error = "WinHttpOpen failed (" + std::to_string(::GetLastError()) + ")";
+    }
+    return false;
+  }
+
+  const int effective_timeout = timeout_ms > 0 ? timeout_ms : 30000;
+  ::WinHttpSetTimeouts(session,
+                       effective_timeout,
+                       effective_timeout,
+                       effective_timeout,
+                       effective_timeout);
+
+  HINTERNET connection = ::WinHttpConnect(session, host.c_str(), components.nPort, 0);
+  if (connection == nullptr) {
+    const DWORD win_error = ::GetLastError();
+    ::WinHttpCloseHandle(session);
+    if (error != nullptr) {
+      *error = "WinHttpConnect failed (" + std::to_string(win_error) + ")";
+    }
+    return false;
+  }
+
+  const DWORD request_flags = secure ? WINHTTP_FLAG_SECURE : 0U;
+  HINTERNET request_handle = ::WinHttpOpenRequest(connection,
+                                                  L"POST",
+                                                  path.c_str(),
+                                                  nullptr,
+                                                  WINHTTP_NO_REFERER,
+                                                  WINHTTP_DEFAULT_ACCEPT_TYPES,
+                                                  request_flags);
+  if (request_handle == nullptr) {
+    const DWORD win_error = ::GetLastError();
+    ::WinHttpCloseHandle(connection);
+    ::WinHttpCloseHandle(session);
+    if (error != nullptr) {
+      *error = "WinHttpOpenRequest failed (" + std::to_string(win_error) + ")";
+    }
+    return false;
+  }
+
+  std::wstring headers = L"Content-Type: application/json\r\n";
+  if (!api_key.empty()) {
+    std::wstring api_key_wide;
+    if (!Utf8ToWide(api_key, &api_key_wide, error)) {
+      ::WinHttpCloseHandle(request_handle);
+      ::WinHttpCloseHandle(connection);
+      ::WinHttpCloseHandle(session);
+      return false;
+    }
+    headers.append(L"Authorization: Bearer ");
+    headers.append(api_key_wide);
+    headers.append(L"\r\n");
+  }
+
+  const BOOL send_ok = ::WinHttpSendRequest(request_handle,
+                                            headers.c_str(),
+                                            static_cast<DWORD>(headers.size()),
+                                            const_cast<char*>(payload.data()),
+                                            static_cast<DWORD>(payload.size()),
+                                            static_cast<DWORD>(payload.size()),
+                                            0);
+  if (!send_ok) {
+    const DWORD win_error = ::GetLastError();
+    ::WinHttpCloseHandle(request_handle);
+    ::WinHttpCloseHandle(connection);
+    ::WinHttpCloseHandle(session);
+    if (error != nullptr) {
+      *error = "WinHttpSendRequest failed (" + std::to_string(win_error) + ")";
+    }
+    return false;
+  }
+
+  if (!::WinHttpReceiveResponse(request_handle, nullptr)) {
+    const DWORD win_error = ::GetLastError();
+    ::WinHttpCloseHandle(request_handle);
+    ::WinHttpCloseHandle(connection);
+    ::WinHttpCloseHandle(session);
+    if (error != nullptr) {
+      *error = "WinHttpReceiveResponse failed (" + std::to_string(win_error) + ")";
+    }
+    return false;
+  }
+
+  DWORD status_code = 0;
+  DWORD status_code_size = sizeof(status_code);
+  if (!::WinHttpQueryHeaders(request_handle,
+                             WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                             WINHTTP_HEADER_NAME_BY_INDEX,
+                             &status_code,
+                             &status_code_size,
+                             WINHTTP_NO_HEADER_INDEX)) {
+    status_code = 0U;
+  }
+
+  response_payload->clear();
+  while (true) {
+    DWORD available = 0;
+    if (!::WinHttpQueryDataAvailable(request_handle, &available)) {
+      const DWORD win_error = ::GetLastError();
+      ::WinHttpCloseHandle(request_handle);
+      ::WinHttpCloseHandle(connection);
+      ::WinHttpCloseHandle(session);
+      if (error != nullptr) {
+        *error = "WinHttpQueryDataAvailable failed (" + std::to_string(win_error) + ")";
+      }
+      return false;
+    }
+    if (available == 0U) {
+      break;
+    }
+
+    std::string chunk(static_cast<std::size_t>(available), '\0');
+    DWORD read = 0;
+    if (!::WinHttpReadData(request_handle, chunk.data(), available, &read)) {
+      const DWORD win_error = ::GetLastError();
+      ::WinHttpCloseHandle(request_handle);
+      ::WinHttpCloseHandle(connection);
+      ::WinHttpCloseHandle(session);
+      if (error != nullptr) {
+        *error = "WinHttpReadData failed (" + std::to_string(win_error) + ")";
+      }
+      return false;
+    }
+    chunk.resize(static_cast<std::size_t>(read));
+    response_payload->append(chunk);
+  }
+
+  ::WinHttpCloseHandle(request_handle);
+  ::WinHttpCloseHandle(connection);
+  ::WinHttpCloseHandle(session);
+
+  if (status_code < 200U || status_code >= 300U) {
+    if (error != nullptr) {
+      *error = "remote endpoint returned HTTP " + std::to_string(status_code) +
+               (response_payload->empty() ? std::string() : ": " + *response_payload);
+    }
+    return false;
+  }
+
+  if (error != nullptr) {
+    error->clear();
+  }
+  return true;
+}
+#endif
 
 bool ReplaceToken(std::string* text, std::string_view token, std::string_view replacement) {
   if (text == nullptr || token.empty()) {
@@ -1006,6 +1382,14 @@ bool RemoteInferenceBackend::Initialize(std::string* error) {
     return true;
   }
 
+  if (!options_.remote_endpoint.empty()) {
+    initialized_ = true;
+    if (error != nullptr) {
+      error->clear();
+    }
+    return true;
+  }
+
   command_config_.command_template = ResolveCommandTemplate(command_config_);
   if (command_config_.command_template.empty()) {
     if (error != nullptr) {
@@ -1054,6 +1438,9 @@ bool RemoteInferenceBackend::Run(const InferenceRequest& request,
   std::string model_id;
   std::string model_path;
   std::string backend_name;
+  std::string remote_endpoint;
+  std::string remote_api_key;
+  int remote_timeout_ms = 0;
   {
     zsoda::core::CompatLockGuard lock(mutex_);
     if (!initialized_) {
@@ -1066,6 +1453,9 @@ bool RemoteInferenceBackend::Run(const InferenceRequest& request,
     model_id = active_model_id_;
     model_path = active_model_path_;
     backend_name = backend_name_;
+    remote_endpoint = options_.remote_endpoint;
+    remote_api_key = options_.remote_api_key;
+    remote_timeout_ms = options_.remote_timeout_ms;
   }
 
   if (model_id.empty()) {
@@ -1074,9 +1464,9 @@ bool RemoteInferenceBackend::Run(const InferenceRequest& request,
     }
     return false;
   }
-  if (command_template.empty()) {
+  if (command_template.empty() && remote_endpoint.empty()) {
     if (error != nullptr) {
-      *error = "remote backend command is empty";
+      *error = "remote backend has neither command nor endpoint configured";
     }
     return false;
   }
@@ -1084,11 +1474,10 @@ bool RemoteInferenceBackend::Run(const InferenceRequest& request,
     return false;
   }
 
-  std::string request_payload;
-  if (!SerializeRequestPayload(request, model_id, model_path, &request_payload, error)) {
+  std::filesystem::path source_path;
+  if (!MakeUniqueTempFilePath("zsoda-remote-source", ".ppm", &source_path, error)) {
     return false;
   }
-
   std::filesystem::path request_path;
   if (!MakeUniqueTempFilePath("zsoda-remote-request", ".json", &request_path, error)) {
     return false;
@@ -1097,8 +1486,19 @@ bool RemoteInferenceBackend::Run(const InferenceRequest& request,
   if (!MakeUniqueTempFilePath("zsoda-remote-response", ".json", &response_path, error)) {
     return false;
   }
+  ScopedTempFile source_file(source_path);
   ScopedTempFile request_file(request_path);
   ScopedTempFile response_file(response_path);
+
+  if (!WritePortablePixmap(*request.source, source_file.path(), error)) {
+    return false;
+  }
+
+  std::string request_payload;
+  if (!SerializeRequestPayload(
+          request, model_id, model_path, source_file.path().string(), &request_payload, error)) {
+    return false;
+  }
 
   if (!WriteTextFile(request_file.path(), request_payload, error)) {
     return false;
@@ -1106,31 +1506,48 @@ bool RemoteInferenceBackend::Run(const InferenceRequest& request,
   std::error_code remove_error;
   std::filesystem::remove(response_file.path(), remove_error);
 
-  std::string command_line;
-  if (!BuildCommandLine(
-          command_template, request_file.path(), response_file.path(), &command_line, error)) {
-    return false;
-  }
-
-  const int raw_exit_code = std::system(command_line.c_str());
-  if (raw_exit_code == -1) {
-    if (error != nullptr) {
-      *error = backend_name + ": failed to invoke remote command";
-    }
-    return false;
-  }
-  const int exit_code = NormalizeProcessExitCode(raw_exit_code);
-  if (exit_code != 0) {
-    if (error != nullptr) {
-      *error = backend_name + ": remote command failed (exit_code=" +
-               std::to_string(exit_code) + ")";
-    }
-    return false;
-  }
-
   std::string response_payload;
-  if (!ReadTextFile(response_file.path(), &response_payload, error)) {
+  if (!remote_endpoint.empty()) {
+#if defined(_WIN32)
+    if (!PostJsonToEndpoint(
+            remote_endpoint, request_payload, remote_api_key, remote_timeout_ms, &response_payload, error)) {
+      if (error != nullptr && !error->empty()) {
+        *error = backend_name + ": " + *error;
+      }
+      return false;
+    }
+#else
+    if (error != nullptr) {
+      *error = backend_name + ": remote endpoint mode is only implemented on Windows";
+    }
     return false;
+#endif
+  } else {
+    std::string command_line;
+    if (!BuildCommandLine(
+            command_template, request_file.path(), response_file.path(), &command_line, error)) {
+      return false;
+    }
+
+    const int raw_exit_code = std::system(command_line.c_str());
+    if (raw_exit_code == -1) {
+      if (error != nullptr) {
+        *error = backend_name + ": failed to invoke remote command";
+      }
+      return false;
+    }
+    const int exit_code = NormalizeProcessExitCode(raw_exit_code);
+    if (exit_code != 0) {
+      if (error != nullptr) {
+        *error = backend_name + ": remote command failed (exit_code=" +
+                 std::to_string(exit_code) + ")";
+      }
+      return false;
+    }
+
+    if (!ReadTextFile(response_file.path(), &response_payload, error)) {
+      return false;
+    }
   }
 
   ParsedDepthResponse parsed_response;

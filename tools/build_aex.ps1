@@ -620,6 +620,19 @@ function Stage-DllBundle {
   }
 }
 
+function Reset-StagedOrtDirectory {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$Path
+  )
+
+  if (Test-Path -LiteralPath $Path -PathType Container) {
+    Get-ChildItem -LiteralPath $Path -Force | Remove-Item -Recurse -Force -ErrorAction Stop
+  } else {
+    New-Item -ItemType Directory -Path $Path -Force | Out-Null
+  }
+}
+
 function Sync-ModelAssets {
   param(
     [Parameter(Mandatory = $true)]
@@ -917,6 +930,9 @@ if ($BuildLoaderProbe) {
 
 $stagedOrtRuntimePath = $null
 $stagedOrtProvidersPath = $null
+if ($ortRuntimeDllAbs -or $ortProvidersSharedAbs -or ($ortRuntimeBundleDlls.Count -gt 0)) {
+  Reset-StagedOrtDirectory -Path (Join-Path $aexDir "zsoda_ort")
+}
 if ($ortRuntimeDllAbs) {
   # Deploy into isolated subdirectory to avoid LoadLibraryW conflict with
   # Adobe AE's preloaded onnxruntime.dll. The loader checks zsoda_ort/ first.
@@ -958,6 +974,7 @@ if ($CopyToMediaCore) {
     # Deploy into isolated subdirectory to avoid same-name collision with
     # Adobe AE's preloaded onnxruntime.dll in the host process.
     $mediaCoreOrtDir = Join-Path $MediaCoreDir "zsoda_ort"
+    Reset-StagedOrtDirectory -Path $mediaCoreOrtDir
     New-Item -ItemType Directory -Path $mediaCoreOrtDir -Force | Out-Null
     $mediaCoreDllOutput = Join-Path $mediaCoreOrtDir "onnxruntime.dll"
     Copy-Item -LiteralPath $ortRuntimeDllAbs -Destination $mediaCoreDllOutput -Force
