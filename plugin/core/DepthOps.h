@@ -10,6 +10,7 @@ enum class DepthMappingMode {
   kRaw,
   kNormalize,
   kGuided,
+  kV2Style,
 };
 
 struct GuidedDepthMappingState {

@@ -159,6 +159,46 @@ void TestApplyDepthMappingGuidedModeWithState() {
   assert(second.at(0, 0, 0) < 0.3F);
 }
 
+void TestDepthMappingModeParserRecognizesV2Style() {
+  assert(zsoda::core::ParseDepthMappingMode("v2_style") ==
+         zsoda::core::DepthMappingMode::kV2Style);
+  assert(zsoda::core::ParseDepthMappingMode("v2style") ==
+         zsoda::core::DepthMappingMode::kV2Style);
+  assert(zsoda::core::ParseDepthMappingMode("disparity") ==
+         zsoda::core::DepthMappingMode::kV2Style);
+}
+
+void TestApplyDepthMappingV2StyleNearBrightByDefault() {
+  zsoda::core::FrameDesc desc;
+  desc.width = 8;
+  desc.height = 1;
+  desc.channels = 1;
+  desc.format = zsoda::core::PixelFormat::kGray32F;
+
+  zsoda::core::DepthMappingParams params;
+  params.mode = zsoda::core::DepthMappingMode::kV2Style;
+  params.guided_low_percentile = 0.0F;
+  params.guided_high_percentile = 1.0F;
+  params.invert = false;
+
+  zsoda::core::FrameBuffer depth(desc);
+  for (int x = 0; x < desc.width; ++x) {
+    depth.at(x, 0, 0) = static_cast<float>(desc.width - x);  // far -> near
+  }
+  zsoda::core::ApplyDepthMapping(&depth, params, nullptr);
+  assert(depth.at(7, 0, 0) > depth.at(4, 0, 0));
+  assert(depth.at(4, 0, 0) > depth.at(0, 0, 0));
+
+  zsoda::core::FrameBuffer inverted(desc);
+  for (int x = 0; x < desc.width; ++x) {
+    inverted.at(x, 0, 0) = static_cast<float>(desc.width - x);
+  }
+  params.invert = true;
+  zsoda::core::ApplyDepthMapping(&inverted, params, nullptr);
+  assert(inverted.at(0, 0, 0) > inverted.at(4, 0, 0));
+  assert(inverted.at(4, 0, 0) > inverted.at(7, 0, 0));
+}
+
 void TestApplyDepthMappingSanitizesNonFiniteInputs() {
   zsoda::core::FrameDesc desc;
   desc.width = 3;
@@ -367,14 +407,16 @@ void TestConvertHostToRgb32FRgba8AndUnpremultiply() {
   zsoda::core::FrameBuffer rgb;
   auto status = zsoda::core::ConvertHostToRgb32F(view, &rgb);
   assert(status == zsoda::core::PixelConversionStatus::kOk);
-  assert(rgb.desc().channels == 3);
+  assert(rgb.desc().channels == 4);
   assert(rgb.desc().format == zsoda::core::PixelFormat::kRGBA32F);
   assert(NearlyEqual(rgb.at(0, 0, 0), 0.5F, 2e-2F));
   assert(NearlyEqual(rgb.at(0, 0, 1), 0.0F, 1e-5F));
   assert(NearlyEqual(rgb.at(0, 0, 2), 0.0F, 1e-5F));
+  assert(NearlyEqual(rgb.at(0, 0, 3), 128.0F / 255.0F, 1e-5F));
   assert(NearlyEqual(rgb.at(1, 0, 0), 0.0F, 1e-5F));
   assert(NearlyEqual(rgb.at(1, 0, 1), 1.0F, 1e-5F));
   assert(NearlyEqual(rgb.at(1, 0, 2), 0.0F, 1e-5F));
+  assert(NearlyEqual(rgb.at(1, 0, 3), 1.0F, 1e-5F));
 
   zsoda::core::FrameBuffer rgb_premult;
   status = zsoda::core::ConvertHostToRgb32F(view, &rgb_premult, false);
@@ -550,6 +592,8 @@ void RunDepthOpsTests() {
   TestApplyDepthMappingRawAndNormalizeModes();
   TestApplyDepthMappingRawHandlesUnboundedInput();
   TestApplyDepthMappingGuidedModeWithState();
+  TestDepthMappingModeParserRecognizesV2Style();
+  TestApplyDepthMappingV2StyleNearBrightByDefault();
   TestApplyDepthMappingSanitizesNonFiniteInputs();
   TestSliceMatte();
   TestPixelConversionStatusStrings();

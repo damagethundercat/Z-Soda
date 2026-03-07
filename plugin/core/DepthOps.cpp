@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdlib>
 #include <limits>
 #include <string>
 #include <vector>
@@ -72,6 +73,25 @@ float ComputeQuantile(std::vector<float>* values, float quantile) {
 
 float Lerp(float a, float b, float t) {
   return a + (b - a) * t;
+}
+
+float ParseFloatEnvOrDefault(const char* name,
+                             float default_value,
+                             float min_value,
+                             float max_value) {
+  if (name == nullptr || name[0] == '\0') {
+    return default_value;
+  }
+  const char* raw = std::getenv(name);
+  if (raw == nullptr || raw[0] == '\0') {
+    return default_value;
+  }
+  char* end = nullptr;
+  const float parsed = std::strtof(raw, &end);
+  if (end == raw || (end != nullptr && *end != '\0') || !std::isfinite(parsed)) {
+    return default_value;
+  }
+  return std::clamp(parsed, min_value, max_value);
 }
 
 bool IsDepthWithinUnitRange(const FrameBuffer& depth) {
@@ -158,6 +178,65 @@ void ApplyQuantileDepthMapping(FrameBuffer* depth,
   }
 }
 
+void ApplyV2StyleDepthMapping(FrameBuffer* depth, const DepthMappingParams& params) {
+  if (depth == nullptr || depth->empty()) {
+    return;
+  }
+
+  std::vector<float> depth_samples = CollectDepthSamples(*depth);
+  if (depth_samples.empty()) {
+    NormalizeDepth(depth, params.invert);
+    return;
+  }
+
+  std::vector<float> disparity_samples;
+  disparity_samples.reserve(depth_samples.size());
+  for (const float value : depth_samples) {
+    if (!std::isfinite(value) || value <= 1e-6F) {
+      continue;
+    }
+    disparity_samples.push_back(1.0F / value);
+  }
+  if (disparity_samples.size() < 8U) {
+    NormalizeDepth(depth, params.invert);
+    return;
+  }
+
+  const float low_q = std::clamp(params.guided_low_percentile, 0.0F, 1.0F);
+  const float high_q = std::clamp(params.guided_high_percentile, 0.0F, 1.0F);
+  const float quantile_low = std::min(low_q, high_q);
+  const float quantile_high = std::max(low_q, high_q);
+  float disp_min = ComputeQuantile(&disparity_samples, quantile_low);
+  float disp_max = ComputeQuantile(&disparity_samples, quantile_high);
+  if (!std::isfinite(disp_min) || !std::isfinite(disp_max)) {
+    NormalizeDepth(depth, params.invert);
+    return;
+  }
+  if (disp_max <= disp_min + 1e-6F) {
+    disp_max = disp_min + 1e-6F;
+  }
+
+  const float gamma = ParseFloatEnvOrDefault("ZSODA_V2STYLE_GAMMA", 1.35F, 0.2F, 4.0F);
+  const float range = std::max(disp_max - disp_min, 1e-6F);
+  const auto& desc = depth->desc();
+  for (int y = 0; y < desc.height; ++y) {
+    for (int x = 0; x < desc.width; ++x) {
+      const float raw_depth = depth->at(x, y, 0);
+      float disparity = disp_min;
+      if (std::isfinite(raw_depth) && raw_depth > 1e-6F) {
+        disparity = 1.0F / raw_depth;
+      }
+      float normalized = (disparity - disp_min) / range;
+      normalized = Clamp01(normalized);
+      normalized = std::pow(normalized, gamma);
+      if (!std::isfinite(normalized)) {
+        normalized = 0.0F;
+      }
+      depth->at(x, y, 0) = params.invert ? (1.0F - normalized) : normalized;
+    }
+  }
+}
+
 }  // namespace
 
 const char* DepthMappingModeName(DepthMappingMode mode) {
@@ -168,6 +247,8 @@ const char* DepthMappingModeName(DepthMappingMode mode) {
       return "normalize";
     case DepthMappingMode::kGuided:
       return "guided";
+    case DepthMappingMode::kV2Style:
+      return "v2_style";
   }
   return "raw";
 }
@@ -187,6 +268,10 @@ DepthMappingMode ParseDepthMappingMode(std::string_view value) {
   }
   if (normalized == "guided" || normalized == "guide") {
     return DepthMappingMode::kGuided;
+  }
+  if (normalized == "v2style" || normalized == "v2" || normalized == "qd3style" ||
+      normalized == "disparity") {
+    return DepthMappingMode::kV2Style;
   }
   return DepthMappingMode::kRaw;
 }
@@ -270,7 +355,12 @@ void ApplyDepthMapping(FrameBuffer* depth,
     return;
   }
 
-  ApplyQuantileDepthMapping(depth, params, guided_state);
+  if (params.mode == DepthMappingMode::kGuided) {
+    ApplyQuantileDepthMapping(depth, params, guided_state);
+    return;
+  }
+
+  ApplyV2StyleDepthMapping(depth, params);
 }
 
 FrameBuffer BuildSliceMatte(const FrameBuffer& normalized_depth,

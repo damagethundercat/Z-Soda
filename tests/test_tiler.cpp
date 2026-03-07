@@ -1,4 +1,5 @@
 #include <cassert>
+#include <cmath>
 
 #include "core/Tiler.h"
 
@@ -15,6 +16,25 @@ namespace {
 void TestBuildTiles() {
   const auto tiles = zsoda::core::BuildTiles(1920, 1080, 512, 32);
   assert(!tiles.empty());
+}
+
+void TestBuildTilesAvoidsSkinnyEdgeTiles() {
+  const int tile_size = 624;
+  const auto tiles = zsoda::core::BuildTiles(1366, 768, tile_size, 124);
+  assert(!tiles.empty());
+  for (const auto& tile : tiles) {
+    assert(tile.width == tile_size);
+    assert(tile.height == tile_size);
+  }
+}
+
+void TestBuildTilesSmallFrameStaysSingleTile() {
+  const auto tiles = zsoda::core::BuildTiles(320, 180, 624, 124);
+  assert(tiles.size() == 1U);
+  assert(tiles[0].x == 0);
+  assert(tiles[0].y == 0);
+  assert(tiles[0].width == 320);
+  assert(tiles[0].height == 180);
 }
 
 void TestComposeTiles() {
@@ -37,8 +57,8 @@ void TestComposeTiles() {
   right.depth.at(1, 0, 0) = 0.8F;
 
   const auto composed = zsoda::core::ComposeTiles(desc, {left, right});
-  assert(composed.at(0, 0, 0) == 0.2F);
-  assert(composed.at(3, 0, 0) == 0.8F);
+  assert(std::fabs(composed.at(0, 0, 0) - 0.2F) < 1e-6F);
+  assert(std::fabs(composed.at(3, 0, 0) - 0.8F) < 1e-6F);
 }
 
 }  // namespace
@@ -52,6 +72,8 @@ int main() {
   RunRenderPipelineTests();
   RunRuntimePathResolverTests();
   TestBuildTiles();
+  TestBuildTilesAvoidsSkinnyEdgeTiles();
+  TestBuildTilesSmallFrameStaysSingleTile();
   TestComposeTiles();
   return 0;
 }

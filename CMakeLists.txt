@@ -19,8 +19,13 @@ if(MSVC)
 endif()
 
 option(ZSODA_BUILD_TESTS "Build unit tests" ON)
+option(ZSODA_BUILD_TOOLS "Build developer tools" ON)
 
 add_subdirectory(plugin)
+
+if(ZSODA_BUILD_TOOLS)
+  add_subdirectory(tools)
+endif()
 
 if(ZSODA_BUILD_TESTS)
   enable_testing()

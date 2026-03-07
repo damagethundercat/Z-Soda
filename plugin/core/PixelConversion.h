@@ -168,7 +168,7 @@ template <typename TView>
 
 }  // namespace detail
 
-// Converts host RGBA8/16/32F into normalized RGB32F.
+// Converts host RGBA8/16/32F into normalized RGBA32F (RGB used for inference; alpha preserved for masking).
 // Integer inputs map full-range [0..max] to [0..1]. Float inputs are sanitized
 // (NaN/inf -> 0). When `unpremultiply_alpha` is true, RGB is unpremultiplied by
 // alpha (with zero-alpha pixels forced to black) to preserve color cues for
@@ -189,7 +189,7 @@ template <typename TView>
   FrameDesc rgb_desc;
   rgb_desc.width = source.width;
   rgb_desc.height = source.height;
-  rgb_desc.channels = 3;
+  rgb_desc.channels = 4;
   rgb_desc.format = PixelFormat::kRGBA32F;
   out_rgb->Resize(rgb_desc);
 
@@ -266,6 +266,7 @@ template <typename TView>
       out_rgb->at(x, y, 0) = r;
       out_rgb->at(x, y, 1) = g;
       out_rgb->at(x, y, 2) = b;
+      out_rgb->at(x, y, 3) = a;
     }
   }
 

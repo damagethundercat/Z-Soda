@@ -940,7 +940,7 @@ void TestPluginEntryValidation() {
 
 void TestRenderGrayFrameStubHostBufferBridge() {
   assert(ZSodaEffectMainStub(1) == 0);
-  assert(ZSodaSetModelIdStub("depth-anything-v3-large") == 0);
+  assert(ZSodaSetModelIdStub("depth-anything-v3-base") == 0);
 
   constexpr int kWidth = 5;
   constexpr int kHeight = 4;
@@ -974,7 +974,7 @@ void TestRenderGrayFrameStubHostBufferBridge() {
 
 void TestPluginEntrySetParamsStub() {
   assert(ZSodaEffectMainStub(1) == 0);
-  assert(ZSodaSetParamsStub("depth-anything-v3-large",
+  assert(ZSodaSetParamsStub("depth-anything-v3-base",
                             2,
                             static_cast<int>(zsoda::ae::AeOutputMode::kDepthMap),
                             0,
@@ -1000,7 +1000,7 @@ void TestPluginEntrySetParamsStub() {
   std::vector<float> slicing(kPixels, 0.0F);
   assert(ZSodaRenderGrayFrameStub(src.data(), kWidth, kHeight, 8101, depth_map.data(), kPixels) == 0);
 
-  assert(ZSodaSetParamsStub("depth-anything-v3-large",
+  assert(ZSodaSetParamsStub("depth-anything-v3-base",
                             2,
                             static_cast<int>(zsoda::ae::AeOutputMode::kSlicing),
                             0,
@@ -1043,8 +1043,8 @@ void TestPluginEntrySetParamsStub() {
 
 void TestPluginEntryBridgePath() {
   assert(ZSodaEffectMainStub(1) == 0);
-  assert(ZSodaSetModelIdStub("depth-anything-v3-large") == 0);
-  assert(ZSodaSetParamsStub("depth-anything-v3-large",
+  assert(ZSodaSetModelIdStub("depth-anything-v3-base") == 0);
+  assert(ZSodaSetParamsStub("depth-anything-v3-base",
                             2,
                             static_cast<int>(zsoda::ae::AeOutputMode::kDepthMap),
                             0,
@@ -1086,8 +1086,8 @@ void TestPluginEntryBridgePath() {
 
 void TestPluginEntryHostBufferBridgePath() {
   assert(ZSodaEffectMainStub(1) == 0);
-  assert(ZSodaSetModelIdStub("depth-anything-v3-large") == 0);
-  assert(ZSodaSetParamsStub("depth-anything-v3-large",
+  assert(ZSodaSetModelIdStub("depth-anything-v3-base") == 0);
+  assert(ZSodaSetParamsStub("depth-anything-v3-base",
                             2,
                             static_cast<int>(zsoda::ae::AeOutputMode::kDepthMap),
                             0,
