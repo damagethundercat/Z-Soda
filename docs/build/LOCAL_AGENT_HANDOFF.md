@@ -875,3 +875,26 @@ artifacts/diagnostics/ae_loader_diag_YYYYMMDD_HHMMSS/
      - `extract_after_tensor_data`
      - `extract_before_first_access`
      - `extract_after_first_access` (or `extract_first_access_seh`)
+
+### Session update (2026-03-07 14:40, strategic backbone reassessment)
+- New reference document:
+  - `docs/research/2026-03-07-model-backbone-reassessment.md`
+- Key conclusion:
+  - Z-Soda's main goal is closer to "single-image monocular depth for compositing"
+    than to "general visual geometry."
+  - `Depth Anything v3 Main Series` may be a poor default match even if integrated
+    correctly.
+  - `Depth Anything v2`, `Distill Any Depth`, and `Depth Anything 3 Monocular Series`
+    should be treated as the main comparison set for the default backbone.
+- What the next agent should do:
+  1. Keep runtime/ORT fallback debugging separate from backbone selection.
+  2. Do not spend another full cycle tuning DA3-main-only boost/tiling logic before
+     a backbone comparison is defined.
+  3. Build a small AE-oriented still-image evaluation corpus and compare raw
+     single-frame outputs first.
+  4. Treat temporal consistency as a later layer, not as the first evaluation axis.
+- Important current workspace note:
+  - There is an unfinished ORT loader rename/staging experiment in the worktree
+    (`plugin/inference/OrtDynamicLoader.cpp`, `plugin/inference/RuntimePathResolver.cpp`,
+    `tools/build_aex.ps1`) that was not validated to completion in AE. Do not assume
+    that part is stable or intentionally finalized.
