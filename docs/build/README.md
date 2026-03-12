@@ -23,6 +23,7 @@ shipping `Z-Soda` After Effects effect.
 ## Related Files
 
 - [LOCAL_AGENT_HANDOFF.md](/Users/Yongkyu/code/Z-Soda/docs/build/LOCAL_AGENT_HANDOFF.md)
+- [MAC_SILICON_HANDOFF.md](MAC_SILICON_HANDOFF.md)
 - [AE_SMOKE_TEST.md](/Users/Yongkyu/code/Z-Soda/docs/build/AE_SMOKE_TEST.md)
 - [ORT_RUNTIME_DEPLOY.md](/Users/Yongkyu/code/Z-Soda/docs/build/ORT_RUNTIME_DEPLOY.md)
 - [ORT_RUNTIME_ISOLATION_PLAN.md](/Users/Yongkyu/code/Z-Soda/docs/build/ORT_RUNTIME_ISOLATION_PLAN.md)

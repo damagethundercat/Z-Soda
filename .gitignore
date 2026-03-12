@@ -1,4 +1,6 @@
 build/
+!docs/build/
+!docs/build/**
 build-*/
 dist/
 Microsoft/

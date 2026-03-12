@@ -90,3 +90,12 @@
 - 기존 MediaCore 플러그인은 `C:\\Program Files\\Adobe\\Common\\Plug-ins\\7.0\\MediaCore\\ZSoda.aex.bak-20260312-232516`로 백업했다.
 - 배포 후 대상 `ZSoda.aex`의 SHA256은
   `F3F9E3C30D7530D409EFAAD97E1DC908558C3060885CDA98896E5E31CF923DD8`로 확인했다.
+
+### D233 (2026-03-13)
+- Apple Silicon macOS용 AE 빌드/배포 준비를 위한 handoff 문서
+  `docs/build/MAC_SILICON_HANDOFF.md`를 추가했다.
+- 현재 repo 기준으로 이미 준비된 항목, 실제 blocker, 권장 구현 순서,
+  패키징/서명/노타리제이션, 성능 최적화 포인트를 한 문서에 묶었다.
+- Adobe/Apple/ONNX Runtime/PyTorch 공식 참고 링크와 함께 mac bring-up에
+  바로 필요한 `PiPL`, `EffectMain` export, MediaCore 경로, `mps`/CoreML
+  검토 지점을 정리했다.
