@@ -11,6 +11,7 @@ void TestRenderParamConversion() {
   ae.quality = 12;
   ae.preserve_ratio = false;
   ae.output = zsoda::ae::AeOutputSelection::kDepthSlice;
+  ae.color_map = zsoda::ae::AeDepthColorMapSelection::kMagma;
   ae.slice_mode = zsoda::ae::AeSliceModeSelection::kBand;
   ae.slice_position = 0.68F;
   ae.slice_range = 0.02F;
@@ -21,6 +22,7 @@ void TestRenderParamConversion() {
   assert(render.quality == 8);
   assert(!render.preserve_aspect_ratio);
   assert(render.output_mode == zsoda::core::OutputMode::kSlicing);
+  assert(render.depth_colormap == zsoda::core::DepthColorMap::kMagma);
   assert(render.slice_normalize);
   assert(std::fabs(render.slice_absolute_depth - 500.0F) < 1e-6F);
   assert(!render.invert);
@@ -60,6 +62,11 @@ void TestQualitySelectionHelpers() {
   assert(zsoda::ae::QualitySelectionToResolution(8) == 2048);
   assert(zsoda::ae::ClampOutputSelection(-1) == zsoda::ae::AeOutputSelection::kDepthMap);
   assert(zsoda::ae::ClampOutputSelection(99) == zsoda::ae::AeOutputSelection::kDepthSlice);
+  assert(zsoda::ae::ClampDepthColorMapSelection(-1) == zsoda::ae::AeDepthColorMapSelection::kGray);
+  assert(zsoda::ae::ClampDepthColorMapSelection(2) == zsoda::ae::AeDepthColorMapSelection::kTurbo);
+  assert(zsoda::ae::ClampDepthColorMapSelection(3) == zsoda::ae::AeDepthColorMapSelection::kViridis);
+  assert(zsoda::ae::ClampDepthColorMapSelection(4) == zsoda::ae::AeDepthColorMapSelection::kInferno);
+  assert(zsoda::ae::ClampDepthColorMapSelection(99) == zsoda::ae::AeDepthColorMapSelection::kMagma);
   assert(zsoda::ae::ClampSliceModeSelection(1) == zsoda::ae::AeSliceModeSelection::kNear);
   assert(zsoda::ae::ClampSliceModeSelection(2) == zsoda::ae::AeSliceModeSelection::kFar);
   assert(zsoda::ae::ClampSliceModeSelection(99) == zsoda::ae::AeSliceModeSelection::kBand);

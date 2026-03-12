@@ -30,6 +30,7 @@ std::size_t RenderCacheKeyHash::operator()(const RenderCacheKey& key) const {
   h = HashCombine(h, std::hash<int>{}(key.edge_guidance_sigma_permille));
   h = HashCombine(h, std::hash<bool>{}(key.edge_aware_upsample));
   h = HashCombine(h, std::hash<bool>{}(key.slice_mode));
+  h = HashCombine(h, std::hash<int>{}(key.depth_colormap));
   h = HashCombine(h, std::hash<bool>{}(key.slice_normalize));
   h = HashCombine(h, std::hash<int>{}(key.slice_absolute_depth));
   h = HashCombine(h, std::hash<int>{}(key.slice_min_permille));

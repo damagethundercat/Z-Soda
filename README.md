@@ -13,14 +13,17 @@ After Effects depth effect plugin focused on a single production path:
   - `Quality`
   - `Preserve Ratio`
   - `Output`
+  - `Color Map`
   - `Slice Mode`
   - `Position (%)`
   - `Range (%)`
   - `Soft Border (%)`
 - The plugin always runs the single production DAD path.
+- `Color Map` affects `Depth Map` only and currently offers `Gray`, `Turbo`,
+  `Viridis`, `Inferno`, and `Magma`.
 - Depth slicing is part of the shipping UI and uses the internal slice-matte path.
 - Quality boost, preview/final mode switches, and time-consistency toggles are no longer part of the shipping UI.
-- The default display mapping for DistillAnyDepth is raw/linear.
+- The default display mapping for DistillAnyDepth is raw/linear grayscale.
 
 ## Repository Layout
 

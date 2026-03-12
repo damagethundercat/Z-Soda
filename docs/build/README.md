@@ -8,15 +8,17 @@ shipping `Z-Soda` After Effects effect.
 - Production model: `distill-any-depth-base`
 - Default runtime path: local Python remote service
 - Transport: binary localhost HTTP
-- Public AE UI: 7 shipping controls
+- Public AE UI: 8 shipping controls
   - `Quality`
   - `Preserve Ratio`
   - `Output`
+  - `Color Map`
   - `Slice Mode`
   - `Position (%)`
   - `Range (%)`
   - `Soft Border (%)`
 - Primary host target: Windows + After Effects
+- `Color Map` presets: `Gray`, `Turbo`, `Viridis`, `Inferno`, `Magma`
 
 ## Related Files
 
@@ -115,10 +117,10 @@ The Windows package should contain:
 1. Build succeeds without loader signature warnings.
 2. `ZSoda.aex` is copied into MediaCore.
 3. After Effects shows `Z-Soda` in the effect list.
-4. New instances expose `Quality`, `Preserve Ratio`, `Output`, `Slice Mode`,
-   `Position (%)`, `Range (%)`, and `Soft Border (%)`.
+4. New instances expose `Quality`, `Preserve Ratio`, `Output`, `Color Map`,
+   `Slice Mode`, `Position (%)`, `Range (%)`, and `Soft Border (%)`.
 5. `Quality` changes alter the render resolution/path as expected.
-6. `Output`, `Slice Mode`, `Position (%)`, `Range (%)`, and `Soft Border (%)`
+6. `Output`, `Color Map`, `Slice Mode`, `Position (%)`, `Range (%)`, and `Soft Border (%)`
    update the visible result immediately, including arrow-button adjustments.
 7. Rendering runs through the DAD remote path without falling back to the dummy engine.
 

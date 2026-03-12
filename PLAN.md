@@ -13,6 +13,7 @@ the shipping path directly.
   - `Quality`
   - `Preserve Ratio`
   - `Output`
+  - `Color Map`
   - `Slice Mode`
   - `Position (%)`
   - `Range (%)`
@@ -71,6 +72,7 @@ the shipping path directly.
 
 ### `RF-04` Slicing UX
 - Keep the shipping baseline centered on DAD-base.
+- Expose depth-map display as `Output` plus `Color Map`.
 - Expose slicing as `Output`, `Slice Mode`, `Position (%)`, `Range (%)`, and `Soft Border (%)`.
 - Do not reintroduce UI-facing quality boost or temporal toggles in the shipping path.
 
@@ -87,6 +89,7 @@ the shipping path directly.
   - slicing controls are shown in the main UI
 - Playback:
   - quality changes alter render resolution
+  - `Color Map` changes the depth-map visualization immediately
   - slice parameters alter the matte/output immediately
 
 ## Progress Tracking Contract

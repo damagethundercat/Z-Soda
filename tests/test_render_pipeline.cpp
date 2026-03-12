@@ -578,6 +578,98 @@ void TestFallbackOutputCachingSeparatedByModel() {
   assert(third.status != zsoda::core::RenderStatus::kCacheHit);
   assert(engine->RunCount() > run_count_after_first);
 }
+
+void TestDepthColorMapFalseColorPresetsProduceColorOutput() {
+  auto engine = std::make_shared<ScriptedInferenceEngine>();
+  std::string error;
+  assert(engine->Initialize("distill-any-depth-base", &error));
+
+  zsoda::core::RenderPipeline pipeline(engine);
+  const auto src = MakeSourceFrame(8, 8);
+
+  const zsoda::core::DepthColorMap presets[] = {zsoda::core::DepthColorMap::kTurbo,
+                                                zsoda::core::DepthColorMap::kViridis,
+                                                zsoda::core::DepthColorMap::kInferno,
+                                                zsoda::core::DepthColorMap::kMagma};
+  int frame_hash = 8801;
+  for (const auto preset : presets) {
+    zsoda::core::RenderParams params;
+    params.model_id = "distill-any-depth-base";
+    params.frame_hash = frame_hash++;
+    params.cache_enabled = false;
+    params.mapping_mode = zsoda::core::DepthMappingMode::kNormalize;
+    params.depth_colormap = preset;
+
+    const auto output = pipeline.Render(src, params);
+    assert(output.status == zsoda::core::RenderStatus::kInference);
+    assert(output.frame.desc().channels == 4);
+    assert(output.frame.desc().format == zsoda::core::PixelFormat::kRGBA32F);
+    assert(std::fabs(output.frame.at(0, 0, 3) - 1.0F) < 1.0e-6F);
+    const float r = output.frame.at(0, 0, 0);
+    const float g = output.frame.at(0, 0, 1);
+    const float b = output.frame.at(0, 0, 2);
+    assert(std::fabs(r - g) > 1.0e-3F || std::fabs(g - b) > 1.0e-3F);
+  }
+}
+
+void TestDepthColorMapInvalidatesCacheKeyForDepthMap() {
+  auto engine = std::make_shared<ScriptedInferenceEngine>();
+  std::string error;
+  assert(engine->Initialize("distill-any-depth-base", &error));
+
+  zsoda::core::RenderPipeline pipeline(engine);
+  const auto src = MakeSourceFrame(10, 10);
+
+  zsoda::core::RenderParams params;
+  params.model_id = "distill-any-depth-base";
+  params.frame_hash = 9000;
+  params.depth_colormap = zsoda::core::DepthColorMap::kGray;
+
+  const auto first = pipeline.Render(src, params);
+  assert(first.status == zsoda::core::RenderStatus::kInference);
+  const int run_count_after_first = engine->RunCount();
+
+  const auto second = pipeline.Render(src, params);
+  assert(second.status == zsoda::core::RenderStatus::kCacheHit);
+  assert(engine->RunCount() == run_count_after_first);
+
+  params.depth_colormap = zsoda::core::DepthColorMap::kTurbo;
+  const auto third = pipeline.Render(src, params);
+  assert(third.status != zsoda::core::RenderStatus::kCacheHit);
+  assert(engine->RunCount() > run_count_after_first);
+}
+
+void TestDepthColorMapDoesNotInvalidateSliceCacheKey() {
+  auto engine = std::make_shared<ScriptedInferenceEngine>();
+  std::string error;
+  assert(engine->Initialize("distill-any-depth-base", &error));
+
+  zsoda::core::RenderPipeline pipeline(engine);
+  const auto src = MakeSourceFrame(10, 10);
+
+  zsoda::core::RenderParams params;
+  params.model_id = "distill-any-depth-base";
+  params.frame_hash = 9001;
+  params.output_mode = zsoda::core::OutputMode::kSlicing;
+  params.depth_colormap = zsoda::core::DepthColorMap::kGray;
+  params.min_depth = 0.2F;
+  params.max_depth = 0.8F;
+  params.softness = 0.05F;
+
+  const auto first = pipeline.Render(src, params);
+  assert(first.status == zsoda::core::RenderStatus::kInference);
+  const int run_count_after_first = engine->RunCount();
+
+  const auto second = pipeline.Render(src, params);
+  assert(second.status == zsoda::core::RenderStatus::kCacheHit);
+  assert(engine->RunCount() == run_count_after_first);
+
+  params.depth_colormap = zsoda::core::DepthColorMap::kTurbo;
+  const auto third = pipeline.Render(src, params);
+  assert(third.status == zsoda::core::RenderStatus::kCacheHit);
+  assert(engine->RunCount() == run_count_after_first);
+}
+
 void TestSliceParametersInvalidateCacheKey() {
   auto engine = std::make_shared<ScriptedInferenceEngine>();
   std::string error;
@@ -1048,6 +1140,9 @@ void RunRenderPipelineTests() {
   TestAdaptiveFallbackHandlesInvalidTileConfiguration();
   TestDownscaledFallbackUsesVramBudgetHint();
   TestFallbackOutputCachingSeparatedByModel();
+  TestDepthColorMapFalseColorPresetsProduceColorOutput();
+  TestDepthColorMapInvalidatesCacheKeyForDepthMap();
+  TestDepthColorMapDoesNotInvalidateSliceCacheKey();
   TestSliceParametersInvalidateCacheKey();
   TestTileParametersInvalidateCacheKey();
   TestExtractTokenInvalidatesCacheKey();

@@ -87,14 +87,16 @@ constexpr int RuntimeParamTableIndexInternal(AeParamId id) {
       return 2;
     case AeParamId::kOutput:
       return 3;
-    case AeParamId::kSliceMode:
+    case AeParamId::kColorMap:
       return 4;
-    case AeParamId::kSlicePosition:
+    case AeParamId::kSliceMode:
       return 5;
-    case AeParamId::kSliceRange:
+    case AeParamId::kSlicePosition:
       return 6;
-    case AeParamId::kSliceSoftness:
+    case AeParamId::kSliceRange:
       return 7;
+    case AeParamId::kSliceSoftness:
+      return 8;
     default:
       return -1;
   }
@@ -109,12 +111,14 @@ std::optional<AeParamId> AeParamIdFromRuntimeParamIndexInternal(int runtime_inde
     case 3:
       return AeParamId::kOutput;
     case 4:
-      return AeParamId::kSliceMode;
+      return AeParamId::kColorMap;
     case 5:
-      return AeParamId::kSlicePosition;
+      return AeParamId::kSliceMode;
     case 6:
-      return AeParamId::kSliceRange;
+      return AeParamId::kSlicePosition;
     case 7:
+      return AeParamId::kSliceRange;
+    case 8:
       return AeParamId::kSliceSoftness;
     default:
       return std::nullopt;
@@ -160,12 +164,14 @@ void InitializeDefaultPixelFormatCandidates(
 constexpr int kAeSdkNumParams = static_cast<int>(AeParamId::kLast) + 1;
 constexpr int kQualityPopupChoices = 8;
 constexpr int kOutputPopupChoices = 2;
+constexpr int kColorMapPopupChoices = 5;
 constexpr int kSliceModePopupChoices = 3;
 constexpr std::uint32_t kAeGlobalOutFlags = ZSODA_AE_GLOBAL_OUTFLAGS;
 constexpr std::uint32_t kAeGlobalOutFlags2 = ZSODA_AE_GLOBAL_OUTFLAGS2;
 
 constexpr char kQualityPopupLabels[] = "256 px|512 px|768 px|1024 px|1280 px|1536 px|1920 px|2048 px";
 constexpr char kOutputPopupLabels[] = "Depth Map|Depth Slice";
+constexpr char kColorMapPopupLabels[] = "Gray|Turbo|Viridis|Inferno|Magma";
 constexpr char kSliceModePopupLabels[] = "Near|Far|Band";
 
 #if defined(PF_Precision_HUNDREDTHS)
@@ -406,6 +412,13 @@ PF_Err RegisterParamsSetupScaffold(const AeSdkEntryPayload& payload) {
                static_cast<int>(AeParamId::kOutput));
 
   clear_def();
+  PF_ADD_POPUP("Color Map",
+               kColorMapPopupChoices,
+               static_cast<int>(AeDepthColorMapSelection::kGray),
+               kColorMapPopupLabels,
+               static_cast<int>(AeParamId::kColorMap));
+
+  clear_def();
   PF_ADD_POPUP("Slice Mode",
                kSliceModePopupChoices,
                static_cast<int>(AeSliceModeSelection::kBand),
@@ -545,6 +558,8 @@ std::string FormatRuntimeStateKeys(const AeSdkEntryPayload& payload) {
 bool ParamsAffectRenderedOutput(const AeParamValues& previous, const AeParamValues& current) {
   return previous.model_id != current.model_id || previous.quality != current.quality ||
          previous.preserve_ratio != current.preserve_ratio || previous.output != current.output ||
+         (previous.output == AeOutputSelection::kDepthMap &&
+          current.output == AeOutputSelection::kDepthMap && previous.color_map != current.color_map) ||
          previous.slice_mode != current.slice_mode ||
          std::fabs(previous.slice_position - current.slice_position) > 1e-4F ||
          std::fabs(previous.slice_range - current.slice_range) > 1e-4F ||
@@ -804,6 +819,16 @@ bool TryExtractPfCmdParamValues(const AeSdkEntryPayload& payload,
   }
 
   if (TryReadPopupValue(
+          ResolveParamForRead(payload, AeParamId::kColorMap, &checked_out_param, &used_checkout),
+          &popup_value)) {
+    any_param_read = true;
+    if (meta != nullptr && used_checkout) {
+      meta->used_checkout_fallback = true;
+    }
+    values.color_map = ClampDepthColorMapSelection(popup_value);
+  }
+
+  if (TryReadPopupValue(
           ResolveParamForRead(payload, AeParamId::kSliceMode, &checked_out_param, &used_checkout),
           &popup_value)) {
     any_param_read = true;
@@ -920,6 +945,7 @@ bool WireParamUpdatePayload(const AeSdkEntryPayload& payload,
       std::string(meta.has_quality_popup ? std::to_string(meta.raw_quality_popup) : "<none>") +
       ", resolved_quality=" + std::to_string(params.quality) +
       ", output=" + std::to_string(static_cast<int>(params.output)) +
+      ", color_map=" + std::to_string(static_cast<int>(params.color_map)) +
       ", slice_mode=" + std::to_string(static_cast<int>(params.slice_mode)) +
       ", slice_position=" + std::to_string(params.slice_position) +
       ", slice_range=" + std::to_string(params.slice_range) +
@@ -1419,6 +1445,7 @@ bool TryExtractPfCmdRenderPayload(const AeSdkEntryPayload& payload,
       std::string(params_meta.has_quality_popup ? std::to_string(params_meta.raw_quality_popup)
                                                 : "<none>") +
       ", output=" + std::to_string(static_cast<int>(params_override.output)) +
+      ", color_map=" + std::to_string(static_cast<int>(params_override.color_map)) +
       ", slice_mode=" + std::to_string(static_cast<int>(params_override.slice_mode)) +
       ", slice_position=" + std::to_string(params_override.slice_position) +
       ", slice_range=" + std::to_string(params_override.slice_range) +

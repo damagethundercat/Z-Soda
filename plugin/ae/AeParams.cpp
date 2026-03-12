@@ -24,6 +24,16 @@ AeOutputSelection ClampOutputSelectionInternal(int selection) {
              : AeOutputSelection::kDepthSlice;
 }
 
+AeDepthColorMapSelection ClampDepthColorMapSelectionInternal(int selection) {
+  if (selection <= static_cast<int>(AeDepthColorMapSelection::kGray)) {
+    return AeDepthColorMapSelection::kGray;
+  }
+  if (selection >= static_cast<int>(AeDepthColorMapSelection::kMagma)) {
+    return AeDepthColorMapSelection::kMagma;
+  }
+  return static_cast<AeDepthColorMapSelection>(selection);
+}
+
 AeSliceModeSelection ClampSliceModeSelectionInternal(int selection) {
   switch (selection) {
     case static_cast<int>(AeSliceModeSelection::kNear):
@@ -148,6 +158,22 @@ void ApplySliceDefaults(const AeParamValues& input, zsoda::core::RenderParams* p
   params->output_mode = input.output == AeOutputSelection::kDepthSlice
                             ? zsoda::core::OutputMode::kSlicing
                             : zsoda::core::OutputMode::kDepthMap;
+  params->depth_colormap =
+      [&input]() {
+        switch (ClampDepthColorMapSelectionInternal(static_cast<int>(input.color_map))) {
+          case AeDepthColorMapSelection::kTurbo:
+            return zsoda::core::DepthColorMap::kTurbo;
+          case AeDepthColorMapSelection::kViridis:
+            return zsoda::core::DepthColorMap::kViridis;
+          case AeDepthColorMapSelection::kInferno:
+            return zsoda::core::DepthColorMap::kInferno;
+          case AeDepthColorMapSelection::kMagma:
+            return zsoda::core::DepthColorMap::kMagma;
+          case AeDepthColorMapSelection::kGray:
+          default:
+            return zsoda::core::DepthColorMap::kGray;
+        }
+      }();
   params->slice_normalize = true;
   params->slice_absolute_depth = 500.0F;
   params->softness = std::clamp(input.slice_softness, 0.0F, 1.0F);
@@ -268,6 +294,10 @@ int QualitySelectionToResolution(int selection) {
 
 AeOutputSelection ClampOutputSelection(int selection) {
   return ClampOutputSelectionInternal(selection);
+}
+
+AeDepthColorMapSelection ClampDepthColorMapSelection(int selection) {
+  return ClampDepthColorMapSelectionInternal(selection);
 }
 
 AeSliceModeSelection ClampSliceModeSelection(int selection) {

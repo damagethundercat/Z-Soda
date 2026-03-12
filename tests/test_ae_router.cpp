@@ -154,6 +154,7 @@ void TestParamSetupAndModelMenu() {
   auto params = router.CurrentParams();
   params.model_id = router.ModelMenu().front();
   params.output = zsoda::ae::AeOutputSelection::kDepthSlice;
+  params.color_map = zsoda::ae::AeDepthColorMapSelection::kTurbo;
   params.slice_mode = zsoda::ae::AeSliceModeSelection::kBand;
   params.slice_position = 0.68F;
   params.slice_range = 0.02F;
@@ -165,6 +166,7 @@ void TestParamSetupAndModelMenu() {
   assert(router.Handle(update_context));
   assert(router.CurrentParams().model_id == router.ModelMenu().front());
   assert(router.CurrentParams().output == zsoda::ae::AeOutputSelection::kDepthSlice);
+  assert(router.CurrentParams().color_map == zsoda::ae::AeDepthColorMapSelection::kTurbo);
   assert(router.CurrentParams().slice_mode == zsoda::ae::AeSliceModeSelection::kBand);
 }
 
@@ -201,6 +203,7 @@ void TestRenderUsesCurrentAndOverrideParams() {
   auto override_params = router.CurrentParams();
   override_params.quality = 5;
   override_params.output = zsoda::ae::AeOutputSelection::kDepthSlice;
+  override_params.color_map = zsoda::ae::AeDepthColorMapSelection::kTurbo;
   override_params.slice_mode = zsoda::ae::AeSliceModeSelection::kBand;
   override_params.slice_position = 0.44F;
   override_params.slice_range = 0.08F;
@@ -217,14 +220,16 @@ void TestRuntimeParamSlotMapping() {
   assert(RuntimeParamSlot(zsoda::ae::AeParamId::kQuality) == 1);
   assert(RuntimeParamSlot(zsoda::ae::AeParamId::kPreserveRatio) == 2);
   assert(RuntimeParamSlot(zsoda::ae::AeParamId::kOutput) == 3);
-  assert(RuntimeParamSlot(zsoda::ae::AeParamId::kSliceMode) == 4);
-  assert(RuntimeParamSlot(zsoda::ae::AeParamId::kSlicePosition) == 5);
-  assert(RuntimeParamSlot(zsoda::ae::AeParamId::kSliceRange) == 6);
-  assert(RuntimeParamSlot(zsoda::ae::AeParamId::kSliceSoftness) == 7);
+  assert(RuntimeParamSlot(zsoda::ae::AeParamId::kColorMap) == 4);
+  assert(RuntimeParamSlot(zsoda::ae::AeParamId::kSliceMode) == 5);
+  assert(RuntimeParamSlot(zsoda::ae::AeParamId::kSlicePosition) == 6);
+  assert(RuntimeParamSlot(zsoda::ae::AeParamId::kSliceRange) == 7);
+  assert(RuntimeParamSlot(zsoda::ae::AeParamId::kSliceSoftness) == 8);
   assert(zsoda::ae::AeParamIdFromRuntimeParamIndex(1) == zsoda::ae::AeParamId::kQuality);
   assert(zsoda::ae::AeParamIdFromRuntimeParamIndex(3) == zsoda::ae::AeParamId::kOutput);
-  assert(zsoda::ae::AeParamIdFromRuntimeParamIndex(7) == zsoda::ae::AeParamId::kSliceSoftness);
-  assert(!zsoda::ae::AeParamIdFromRuntimeParamIndex(8).has_value());
+  assert(zsoda::ae::AeParamIdFromRuntimeParamIndex(4) == zsoda::ae::AeParamId::kColorMap);
+  assert(zsoda::ae::AeParamIdFromRuntimeParamIndex(8) == zsoda::ae::AeParamId::kSliceSoftness);
+  assert(!zsoda::ae::AeParamIdFromRuntimeParamIndex(9).has_value());
 }
 
 void TestRenderBridgeFrameHashCacheBehavior() {
@@ -304,6 +309,7 @@ void TestSdkRenderDispatchReadsCoreParams() {
   params[RuntimeParamSlot(zsoda::ae::AeParamId::kQuality)].u.pd.value = 6;
   params[RuntimeParamSlot(zsoda::ae::AeParamId::kPreserveRatio)].u.bd.value = 1;
   params[RuntimeParamSlot(zsoda::ae::AeParamId::kOutput)].u.pd.value = 2;
+  params[RuntimeParamSlot(zsoda::ae::AeParamId::kColorMap)].u.pd.value = 2;
   params[RuntimeParamSlot(zsoda::ae::AeParamId::kSliceMode)].u.pd.value = 3;
   params[RuntimeParamSlot(zsoda::ae::AeParamId::kSlicePosition)].u.fs_d.value = 68.0;
   params[RuntimeParamSlot(zsoda::ae::AeParamId::kSliceRange)].u.fs_d.value = 2.0;
@@ -327,6 +333,7 @@ void TestSdkRenderDispatchReadsCoreParams() {
   assert(scaffold.has_params_override);
   assert(scaffold.host_render.params_override.has_value());
   assert(scaffold.host_render.params_override->output == zsoda::ae::AeOutputSelection::kDepthSlice);
+  assert(scaffold.host_render.params_override->color_map == zsoda::ae::AeDepthColorMapSelection::kTurbo);
   assert(scaffold.host_render.params_override->slice_mode == zsoda::ae::AeSliceModeSelection::kBand);
 }
 
@@ -343,6 +350,7 @@ void TestSdkUserChangedParamDispatchRequestsRerenderWithoutMutatingChangeFlags()
   params[RuntimeParamSlot(zsoda::ae::AeParamId::kQuality)].u.pd.value = 6;
   params[RuntimeParamSlot(zsoda::ae::AeParamId::kPreserveRatio)].u.bd.value = 1;
   params[RuntimeParamSlot(zsoda::ae::AeParamId::kOutput)].u.pd.value = 2;
+  params[RuntimeParamSlot(zsoda::ae::AeParamId::kColorMap)].u.pd.value = 2;
   params[RuntimeParamSlot(zsoda::ae::AeParamId::kSliceMode)].u.pd.value = 3;
   params[RuntimeParamSlot(zsoda::ae::AeParamId::kSlicePosition)].u.fs_d.value = 76.0;
   params[RuntimeParamSlot(zsoda::ae::AeParamId::kSliceRange)].u.fs_d.value = 14.0;
@@ -369,6 +377,7 @@ void TestSdkUserChangedParamDispatchRequestsRerenderWithoutMutatingChangeFlags()
   assert(dispatch.command.command == zsoda::ae::AeCommand::kUpdateParams);
   assert(dispatch.command.params_update == &dispatch.params_update);
   assert(dispatch.params_update.output == zsoda::ae::AeOutputSelection::kDepthSlice);
+  assert(dispatch.params_update.color_map == zsoda::ae::AeDepthColorMapSelection::kTurbo);
   assert(dispatch.params_update.slice_mode == zsoda::ae::AeSliceModeSelection::kBand);
   assert(std::fabs(dispatch.params_update.slice_position - 0.76F) < 1.0e-6F);
   assert(std::fabs(dispatch.params_update.slice_range - 0.14F) < 1.0e-6F);
@@ -443,6 +452,7 @@ void TestSdkSequenceResetupKeepsSequenceDataDisabled() {
   params[RuntimeParamSlot(zsoda::ae::AeParamId::kQuality)].u.pd.value = 4;
   params[RuntimeParamSlot(zsoda::ae::AeParamId::kPreserveRatio)].u.bd.value = 0;
   params[RuntimeParamSlot(zsoda::ae::AeParamId::kOutput)].u.pd.value = 2;
+  params[RuntimeParamSlot(zsoda::ae::AeParamId::kColorMap)].u.pd.value = 2;
   params[RuntimeParamSlot(zsoda::ae::AeParamId::kSliceMode)].u.pd.value = 3;
   params[RuntimeParamSlot(zsoda::ae::AeParamId::kSlicePosition)].u.fs_d.value = 50.0;
   params[RuntimeParamSlot(zsoda::ae::AeParamId::kSliceRange)].u.fs_d.value = 20.0;

@@ -44,6 +44,7 @@ Expected controls:
 - `Quality`
 - `Preserve Ratio`
 - `Output`
+- `Color Map`
 - `Slice Mode`
 - `Position (%)`
 - `Range (%)`
@@ -75,13 +76,16 @@ Fail:
 
 Steps:
 1. Keep `Output` on `Depth Map`.
-2. Move across multiple frames in the comp.
+2. Switch `Color Map` across `Gray`, `Turbo`, `Viridis`, `Inferno`, and `Magma`.
+3. Move across multiple frames in the comp.
 
 Pass:
+- Multiple `Color Map` presets produce visibly different depth-map looks.
 - Output behaves like a depth visualization rather than a flat constant image.
 - Frame changes update the result normally.
 
 Fail:
+- `Color Map` changes have no visible effect in `Depth Map`.
 - Output stays flat or invalid.
 - Frame updates stop or produce unstable flashing.
 

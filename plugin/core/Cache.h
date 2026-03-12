@@ -29,6 +29,7 @@ struct RenderCacheKey {
   int edge_guidance_sigma_permille = 120;
   bool edge_aware_upsample = true;
   bool slice_mode = false;
+  int depth_colormap = 0;
   bool slice_normalize = true;
   int slice_absolute_depth = 500;
   int slice_min_permille = 250;
@@ -56,7 +57,7 @@ struct RenderCacheKey {
            edge_enhancement_permille == other.edge_enhancement_permille &&
            edge_guidance_sigma_permille == other.edge_guidance_sigma_permille &&
            edge_aware_upsample == other.edge_aware_upsample &&
-           slice_mode == other.slice_mode &&
+           slice_mode == other.slice_mode && depth_colormap == other.depth_colormap &&
            slice_normalize == other.slice_normalize &&
            slice_absolute_depth == other.slice_absolute_depth &&
            slice_min_permille == other.slice_min_permille &&

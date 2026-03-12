@@ -22,6 +22,14 @@ enum class OutputMode {
   kSlicing,
 };
 
+enum class DepthColorMap {
+  kGray,
+  kTurbo,
+  kViridis,
+  kInferno,
+  kMagma,
+};
+
 struct RenderParams {
   std::string model_id = "distill-any-depth-base";
   int quality = 1;
@@ -39,6 +47,7 @@ struct RenderParams {
   float edge_guidance_sigma = 0.12F;
   bool edge_aware_upsample = true;
   OutputMode output_mode = OutputMode::kDepthMap;
+  DepthColorMap depth_colormap = DepthColorMap::kGray;
   bool slice_normalize = true;
   float slice_absolute_depth = 500.0F;
   float min_depth = 0.25F;

@@ -122,6 +122,7 @@ bool AeCommandRouter::Handle(const AeCommandContext& context) {
           std::to_string(render_params.render_state_token) +
           ", preserve_ratio=" + std::to_string(render_params.preserve_aspect_ratio ? 1 : 0) +
           ", output=" + std::to_string(static_cast<int>(params.output)) +
+          ", color_map=" + std::to_string(static_cast<int>(params.color_map)) +
           ", slice_mode=" + std::to_string(static_cast<int>(params.slice_mode)) +
           ", slice_position=" + std::to_string(params.slice_position) +
           ", slice_range=" + std::to_string(params.slice_range) +
@@ -155,6 +156,7 @@ bool AeCommandRouter::UpdateParams(const AeParamValues& params, std::string* err
       "model=" + params.model_id + ", quality=" + std::to_string(params.quality) +
       ", preserve_ratio=" + std::to_string(params.preserve_ratio ? 1 : 0) +
       ", output=" + std::to_string(static_cast<int>(params.output)) +
+      ", color_map=" + std::to_string(static_cast<int>(params.color_map)) +
       ", slice_mode=" + std::to_string(static_cast<int>(params.slice_mode)) +
       ", slice_position=" + std::to_string(params.slice_position) +
       ", slice_range=" + std::to_string(params.slice_range) +

@@ -278,19 +278,37 @@ void ApplySourceAlphaMask(FrameBuffer* output, const FrameBuffer& source, float 
   const bool soft_blend =
       ParseBoolEnvOrDefault("ZSODA_ALPHA_MASK_SOFT_BLEND", true);
   const float clamped_outside = std::clamp(outside_value, 0.0F, 1.0F);
+  const bool rgba_output = out_desc.channels >= 4 && out_desc.format == PixelFormat::kRGBA32F;
   for (int y = 0; y < out_desc.height; ++y) {
     for (int x = 0; x < out_desc.width; ++x) {
       float alpha = source.at(x, y, 3);
+      const auto write_outside = [&]() {
+        if (rgba_output) {
+          output->at(x, y, 0) = clamped_outside;
+          output->at(x, y, 1) = clamped_outside;
+          output->at(x, y, 2) = clamped_outside;
+          output->at(x, y, 3) = 0.0F;
+        } else {
+          output->at(x, y, 0) = clamped_outside;
+        }
+      };
       if (!std::isfinite(alpha)) {
-        output->at(x, y, 0) = clamped_outside;
+        write_outside();
         continue;
       }
       alpha = std::clamp(alpha, 0.0F, 1.0F);
       if (alpha <= alpha_threshold) {
-        output->at(x, y, 0) = clamped_outside;
+        write_outside();
       } else if (soft_blend && alpha < 1.0F) {
-        const float value = output->at(x, y, 0);
-        output->at(x, y, 0) = value * alpha + clamped_outside * (1.0F - alpha);
+        if (rgba_output) {
+          output->at(x, y, 0) = output->at(x, y, 0) * alpha + clamped_outside * (1.0F - alpha);
+          output->at(x, y, 1) = output->at(x, y, 1) * alpha + clamped_outside * (1.0F - alpha);
+          output->at(x, y, 2) = output->at(x, y, 2) * alpha + clamped_outside * (1.0F - alpha);
+          output->at(x, y, 3) *= alpha;
+        } else {
+          const float value = output->at(x, y, 0);
+          output->at(x, y, 0) = value * alpha + clamped_outside * (1.0F - alpha);
+        }
       }
     }
   }
@@ -387,6 +405,127 @@ FrameBuffer ApplySliceMatteToSource(const FrameBuffer& source, const FrameBuffer
     }
   }
   return output;
+}
+
+struct RgbColor {
+  float r = 0.0F;
+  float g = 0.0F;
+  float b = 0.0F;
+};
+
+struct ColorStop {
+  float position = 0.0F;
+  RgbColor color{};
+};
+
+RgbColor LerpColor(const RgbColor& lhs, const RgbColor& rhs, float t) {
+  const float clamped_t = std::clamp(t, 0.0F, 1.0F);
+  return {lhs.r + (rhs.r - lhs.r) * clamped_t,
+          lhs.g + (rhs.g - lhs.g) * clamped_t,
+          lhs.b + (rhs.b - lhs.b) * clamped_t};
+}
+
+RgbColor SamplePaletteColor(const ColorStop* stops, std::size_t stop_count, float value) {
+  if (stops == nullptr || stop_count == 0U) {
+    return {};
+  }
+  const float clamped_value = std::clamp(value, 0.0F, 1.0F);
+  for (std::size_t i = 1; i < stop_count; ++i) {
+    const ColorStop& upper = stops[i];
+    if (clamped_value <= upper.position) {
+      const ColorStop& lower = stops[i - 1];
+      const float span = std::max(1.0e-6F, upper.position - lower.position);
+      const float t = (clamped_value - lower.position) / span;
+      return LerpColor(lower.color, upper.color, t);
+    }
+  }
+  return stops[stop_count - 1].color;
+}
+
+RgbColor SampleColorMap(float value, DepthColorMap color_map) {
+  static constexpr ColorStop kTurboStops[] = {
+      {0.00F, {0.18995F, 0.07176F, 0.23217F}},
+      {0.13F, {0.27628F, 0.42118F, 0.89123F}},
+      {0.25F, {0.24427F, 0.60937F, 0.99697F}},
+      {0.38F, {0.15323F, 0.82177F, 0.64573F}},
+      {0.50F, {0.64362F, 0.98999F, 0.23356F}},
+      {0.63F, {0.98360F, 0.83926F, 0.13950F}},
+      {0.75F, {0.97690F, 0.52260F, 0.05810F}},
+      {0.88F, {0.81200F, 0.21400F, 0.04300F}},
+      {1.00F, {0.47960F, 0.01583F, 0.01055F}},
+  };
+  static constexpr ColorStop kViridisStops[] = {
+      {0.00F, {0.26700F, 0.00487F, 0.32941F}},
+      {0.13F, {0.28229F, 0.14591F, 0.46151F}},
+      {0.25F, {0.25394F, 0.26525F, 0.52998F}},
+      {0.38F, {0.20676F, 0.37176F, 0.55312F}},
+      {0.50F, {0.16363F, 0.47113F, 0.55815F}},
+      {0.63F, {0.12757F, 0.56695F, 0.55056F}},
+      {0.75F, {0.13469F, 0.65864F, 0.51765F}},
+      {0.88F, {0.47750F, 0.82144F, 0.31820F}},
+      {1.00F, {0.99325F, 0.90616F, 0.14394F}},
+  };
+  static constexpr ColorStop kInfernoStops[] = {
+      {0.00F, {0.00146F, 0.00047F, 0.01387F}},
+      {0.13F, {0.11309F, 0.04777F, 0.27232F}},
+      {0.25F, {0.28773F, 0.09161F, 0.38954F}},
+      {0.38F, {0.47233F, 0.11167F, 0.42833F}},
+      {0.50F, {0.66586F, 0.13274F, 0.38009F}},
+      {0.63F, {0.85138F, 0.22108F, 0.16639F}},
+      {0.75F, {0.96916F, 0.44237F, 0.12183F}},
+      {0.88F, {0.98762F, 0.73223F, 0.23009F}},
+      {1.00F, {0.98836F, 0.99836F, 0.64492F}},
+  };
+  static constexpr ColorStop kMagmaStops[] = {
+      {0.00F, {0.00146F, 0.00047F, 0.01387F}},
+      {0.13F, {0.11002F, 0.06686F, 0.27496F}},
+      {0.25F, {0.26545F, 0.06024F, 0.46184F}},
+      {0.38F, {0.44516F, 0.12272F, 0.50690F}},
+      {0.50F, {0.63174F, 0.20060F, 0.48544F}},
+      {0.63F, {0.81608F, 0.31641F, 0.44132F}},
+      {0.75F, {0.94401F, 0.50786F, 0.30221F}},
+      {0.88F, {0.99133F, 0.73920F, 0.47139F}},
+      {1.00F, {0.98705F, 0.99144F, 0.74950F}},
+  };
+
+  switch (color_map) {
+    case DepthColorMap::kTurbo:
+      return SamplePaletteColor(kTurboStops, sizeof(kTurboStops) / sizeof(kTurboStops[0]), value);
+    case DepthColorMap::kViridis:
+      return SamplePaletteColor(kViridisStops, sizeof(kViridisStops) / sizeof(kViridisStops[0]), value);
+    case DepthColorMap::kInferno:
+      return SamplePaletteColor(kInfernoStops, sizeof(kInfernoStops) / sizeof(kInfernoStops[0]), value);
+    case DepthColorMap::kMagma:
+      return SamplePaletteColor(kMagmaStops, sizeof(kMagmaStops) / sizeof(kMagmaStops[0]), value);
+    case DepthColorMap::kGray:
+    default:
+      return {value, value, value};
+  }
+}
+
+FrameBuffer BuildColorMappedDepthOutput(const FrameBuffer& normalized_depth, DepthColorMap color_map) {
+  if (normalized_depth.empty() || color_map == DepthColorMap::kGray) {
+    return normalized_depth;
+  }
+
+  FrameDesc color_desc;
+  color_desc.width = normalized_depth.desc().width;
+  color_desc.height = normalized_depth.desc().height;
+  color_desc.channels = 4;
+  color_desc.format = PixelFormat::kRGBA32F;
+  FrameBuffer colorized(color_desc);
+
+  for (int y = 0; y < color_desc.height; ++y) {
+    for (int x = 0; x < color_desc.width; ++x) {
+      const float depth = std::clamp(normalized_depth.at(x, y, 0), 0.0F, 1.0F);
+      const RgbColor rgb = SampleColorMap(depth, color_map);
+      colorized.at(x, y, 0) = rgb.r;
+      colorized.at(x, y, 1) = rgb.g;
+      colorized.at(x, y, 2) = rgb.b;
+      colorized.at(x, y, 3) = 1.0F;
+    }
+  }
+  return colorized;
 }
 
 struct SliceWindow {
@@ -1177,6 +1316,8 @@ RenderCacheKey RenderPipeline::BuildCacheKey(const FrameBuffer& source, const Re
   key.edge_guidance_sigma_permille = to_permille(params.edge_guidance_sigma);
   key.edge_aware_upsample = params.edge_aware_upsample;
   key.slice_mode = params.output_mode == OutputMode::kSlicing;
+  key.depth_colormap =
+      params.output_mode == OutputMode::kDepthMap ? static_cast<int>(params.depth_colormap) : 0;
   key.slice_normalize = params.slice_normalize;
   key.slice_absolute_depth =
       static_cast<int>(std::lround(std::clamp(params.slice_absolute_depth, 0.0F, 1000.0F)));
@@ -1390,6 +1531,10 @@ std::uint64_t RenderPipeline::BuildFrozenStateHash(const FrameBuffer& source,
   hash = HashCombine64(hash, HashFromPermille(params.edge_guidance_sigma));
   hash = HashCombine64(hash, HashFromBool(params.edge_aware_upsample));
   hash = HashCombine64(hash, HashFromInt(static_cast<int>(params.output_mode)));
+  hash = HashCombine64(hash,
+                       HashFromInt(params.output_mode == OutputMode::kDepthMap
+                                       ? static_cast<int>(params.depth_colormap)
+                                       : 0));
   hash = HashCombine64(hash, HashFromBool(params.slice_normalize));
   hash = HashCombine64(hash, HashFromInt(static_cast<int>(
                                    std::lround(std::clamp(params.slice_absolute_depth, 0.0F, 1000.0F)))));
@@ -1583,7 +1728,7 @@ FrameBuffer RenderPipeline::BuildOutput(const FrameBuffer& normalized_depth,
         BuildSliceMatte(slice_depth, slice_window.min_depth, slice_window.max_depth, params.softness);
     return ApplySliceMatteToSource(source, slice_matte);
   }
-  return normalized_depth;
+  return BuildColorMappedDepthOutput(normalized_depth, params.depth_colormap);
 }
 
 RenderOutput RenderPipeline::SafeOutput(const FrameBuffer& source, const std::string& message) const {
