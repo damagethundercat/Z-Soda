@@ -60,3 +60,9 @@
 ## D227 (2026-03-12)
 - cleanup pass 이후 `cmake --build build-cleanup --config Debug --target zsoda_tests -- /m:1 /p:UseMultiToolTask=false /p:CL_MPCount=1`와 `cmake --build build-win --config Release --target zsoda_aex -- /m:1 /p:UseMultiToolTask=false /p:CL_MPCount=1`를 다시 통과했다.
 - `build-cleanup\tests\Debug\zsoda_tests.exe` 실행은 기존과 동일하게 `tests/test_inference_engine.cpp:633`의 `assert(error.empty())`에서 실패했고, 이번 cleanup으로 새 실패는 추가되지 않았다.
+
+## D228 (2026-03-12)
+- `main` CI red 원인을 stale test expectation으로 정리했다.
+- `tests/test_inference_engine.cpp`에서 fallback 진단 문자열이 정상인 경로를 반영하도록 manifest/custom-model 관련 expectation을 수정했고, ONNX scaffold build에서 `ActiveBackend()`가 `CPU`로 남는 현재 계약도 허용했다.
+- `tests/test_render_pipeline.cpp`에서는 새 temporal stabilization 구현(저주파 정렬 + current detail 유지)에 맞게 기대값을 갱신했다.
+- `tools/run_local_ci.sh`는 bash 실행 호환성을 위해 LF/no-BOM 상태로 정리했고, `bash tools/run_local_ci.sh`를 끝까지 통과해 local CI green을 확인했다.

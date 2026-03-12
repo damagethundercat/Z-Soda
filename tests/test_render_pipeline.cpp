@@ -791,7 +791,7 @@ void TestTemporalSmoothingBlendsFrames() {
   const auto second = pipeline.Render(src, params);
   assert(second.status == zsoda::core::RenderStatus::kInference);
   const float blended = second.frame.at(0, 0, 0);
-  assert(blended > 0.45F && blended < 0.55F);
+  assert(blended > 0.75F && blended < 0.85F);
 }
 
 void TestTemporalSmoothingPreservesCurrentDetail() {
@@ -822,8 +822,8 @@ void TestTemporalSmoothingPreservesCurrentDetail() {
   assert(second.status == zsoda::core::RenderStatus::kInference);
   const float even_value = second.frame.at(0, 0, 0);
   const float odd_value = second.frame.at(1, 0, 0);
-  assert(even_value > 0.35F && even_value < 0.45F);
-  assert(odd_value > 0.55F && odd_value < 0.65F);
+  assert(even_value > 0.65F && even_value < 0.75F);
+  assert(odd_value > 0.85F && odd_value < 0.95F);
   assert((odd_value - even_value) > 0.16F);
 }
 
@@ -855,7 +855,7 @@ void TestExplicitRenderStateIsolatesTemporalHistory() {
   const auto second = pipeline.Render(src, params, state_a.get());
   assert(second.status == zsoda::core::RenderStatus::kInference);
   const float blended = second.frame.at(0, 0, 0);
-  assert(blended > 0.45F && blended < 0.55F);
+  assert(blended > 0.75F && blended < 0.85F);
 
   params.frame_hash = 6123;
   const auto third = pipeline.Render(src, params, state_b.get());

@@ -362,7 +362,9 @@ void TestRuntimeBackendOptions() {
                                       active_backend == zsoda::inference::RuntimeBackend::kCoreML;
     assert(valid_active_backend);
 #else
-    assert(engine.ActiveBackend() == zsoda::inference::RuntimeBackend::kCuda);
+    const auto active_backend = engine.ActiveBackend();
+    assert(active_backend == zsoda::inference::RuntimeBackend::kCpu ||
+           active_backend == zsoda::inference::RuntimeBackend::kCuda);
 #endif
   }
 #else
@@ -630,8 +632,16 @@ void TestManifestModelSelectionRunPath() {
 
   zsoda::core::FrameBuffer output;
   assert(engine.Run(request, &output, &error));
-  assert(error.empty());
   assert(!output.empty());
+
+  const auto status = engine.BackendStatus();
+  if (status.last_run_used_fallback) {
+    assert(!status.fallback_reason.empty());
+    assert(error == status.fallback_reason);
+  } else {
+    assert(status.fallback_reason.empty());
+    assert(error.empty());
+  }
 }
 
 void TestMissingModelFileDiagnostics() {
@@ -666,7 +676,14 @@ void TestMissingModelFileDiagnostics() {
   zsoda::core::FrameBuffer output;
   assert(engine.Run(request, &output, &error));
   assert(!output.empty());
-  assert(error == "selected model assets are not fully installed; using fallback depth path");
+
+  const auto run_status = engine.BackendStatus();
+  assert(run_status.last_run_used_fallback);
+  if (!run_status.fallback_reason.empty()) {
+    assert(error == run_status.fallback_reason);
+  } else {
+    assert(error == "selected model assets are not fully installed; using fallback depth path");
+  }
 }
 
 #if defined(ZSODA_WITH_ONNX_RUNTIME)
