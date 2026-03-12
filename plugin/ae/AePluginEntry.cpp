@@ -1,4 +1,5 @@
-#include "ae/AeHostAdapter.h"
+﻿#include "ae/AeHostAdapter.h"
+#include "ae/AeDiagnostics.h"
 #include "ae/ZSodaAeFlags.h"
 #include "ae/ZSodaVersion.h"
 
@@ -31,7 +32,7 @@
 #endif
 
 // ---------------------------------------------------------------------------
-// Diagnostics — thin file-append logger, used sparingly (not in render hot path)
+// Diagnostics: thin file-append logger, used sparingly and gated by env.
 // ---------------------------------------------------------------------------
 
 namespace zsoda::ae {
@@ -45,6 +46,10 @@ const char* SafeCStr(const char* value, const char* fallback = "<null>") {
 
 #if defined(_WIN32)
 void AppendDiagnosticsLine(const char* tag, const char* detail) {
+  if (!AeDiagnosticsEnabled()) {
+    return;
+  }
+
   char temp_path[MAX_PATH] = {};
   const DWORD written = ::GetTempPathA(MAX_PATH, temp_path);
   if (written == 0 || written >= MAX_PATH) {
@@ -80,7 +85,7 @@ void AppendDiagnosticsLine(const char* /*tag*/, const char* /*detail*/) {}
 #endif
 
 // ---------------------------------------------------------------------------
-// Lazy-initialized singletons — deferred until first GLOBAL_SETUP, not DLL load
+// Lazy-initialized singletons, deferred until first GLOBAL_SETUP.
 // ---------------------------------------------------------------------------
 
 std::once_flag g_init_flag;
@@ -514,17 +519,8 @@ PF_Err EffectMainImpl(PF_Cmd cmd,
   }
 #else
   // -----------------------------------------------------------------------
-  // Normal EffectMain: delegate to SDK dispatch, minimal logging
+  // Normal EffectMain: delegate to SDK dispatch, opt-in diagnostics only
   // -----------------------------------------------------------------------
-
-  char entry_detail[128] = {};
-  std::snprintf(entry_detail,
-                sizeof(entry_detail),
-                "cmd=%d,in_num_params=%d,out_num_params=%d",
-                static_cast<int>(cmd),
-                in_data != nullptr ? static_cast<int>(in_data->num_params) : 0,
-                out_data != nullptr ? static_cast<int>(out_data->num_params) : 0);
-  zsoda::ae::AppendDiagnosticsLine("EffectMainEnter", entry_detail);
 
   std::string error;
   zsoda::ae::AeDispatchContext dispatch;
@@ -536,34 +532,23 @@ PF_Err EffectMainImpl(PF_Cmd cmd,
   payload.output = output;
   payload.extra = extra;
 
-  constexpr bool kDiagBypassFullRender = false;
-  if (kDiagBypassFullRender && cmd == PF_Cmd_RENDER) {
-    zsoda::ae::AppendDiagnosticsLine("EffectMainRenderBypass", "full_render=source_passthrough");
-    RenderPassThrough(cmd, params, output);
-    zsoda::ae::AppendDiagnosticsLine("EffectMainExit", "render_bypass");
-    return PF_Err_NONE;
-  }
-
   if (!zsoda::ae::BuildSdkDispatch(payload, &dispatch, &error)) {
     zsoda::ae::AppendDiagnosticsLine("EffectMainBuildDispatchFail", error.c_str());
-    // BuildSdkDispatch handles GLOBAL_SETUP/PARAMS_SETUP internally — if it fails,
+    // BuildSdkDispatch handles GLOBAL_SETUP and PARAMS_SETUP internally. If it fails,
     // fall back to pass-through for render, no-op for others.
     RenderPassThrough(cmd, params, output);
-    zsoda::ae::AppendDiagnosticsLine("EffectMainExit", "build_dispatch_fail");
     return PF_Err_NONE;
   }
 
   // Setup commands (GLOBAL_SETUP, PARAMS_SETUP) are handled entirely by
-  // BuildSdkDispatch above — they don't need router dispatch.
+  // BuildSdkDispatch above already handled these setup commands.
   if (cmd == PF_Cmd_GLOBAL_SETUP || cmd == PF_Cmd_PARAMS_SETUP) {
-    zsoda::ae::AppendDiagnosticsLine("EffectMainExit", "setup_return");
     return PF_Err_NONE;
   }
 
-  // Unknown/unhandled commands → no-op (with render pass-through safety)
+  // Unknown or unhandled commands remain a no-op with render pass-through safety.
   if (dispatch.command.command == zsoda::ae::AeCommand::kUnknown) {
     RenderPassThrough(cmd, params, output);
-    zsoda::ae::AppendDiagnosticsLine("EffectMainExit", "unknown_noop");
     return PF_Err_NONE;
   }
 
@@ -577,27 +562,18 @@ PF_Err EffectMainImpl(PF_Cmd cmd,
     const std::string dispatch_detail = "dispatch_result=" + std::to_string(dispatch_result);
     zsoda::ae::AppendDiagnosticsLine("EffectMainDispatchFail", dispatch_detail.c_str());
     RenderPassThrough(cmd, params, output);
-    zsoda::ae::AppendDiagnosticsLine("EffectMainExit", "dispatch_fail");
     return PF_Err_NONE;
   }
 
   // For render: commit depth output back to AE host buffer
   if (cmd == PF_Cmd_RENDER) {
-    constexpr bool kDiagBypassRenderCommit = false;
-    if (kDiagBypassRenderCommit) {
-      zsoda::ae::AppendDiagnosticsLine("EffectMainCommitBypass",
-                                       "render_output=source_passthrough");
+    std::string commit_error;
+    if (!zsoda::ae::CommitSdkRenderOutput(payload, dispatch, &commit_error)) {
+      zsoda::ae::AppendDiagnosticsLine("EffectMainCommitFail", commit_error.c_str());
+      // Commit failed: prefer pass-through over black or transparent output.
       RenderPassThrough(cmd, params, output);
-    } else {
-      std::string commit_error;
-      if (!zsoda::ae::CommitSdkRenderOutput(payload, dispatch, &commit_error)) {
-        zsoda::ae::AppendDiagnosticsLine("EffectMainCommitFail", commit_error.c_str());
-      // Commit failed → pass-through rather than black/transparent output
-        RenderPassThrough(cmd, params, output);
-      }
     }
   }
-  zsoda::ae::AppendDiagnosticsLine("EffectMainExit", "ok");
   return PF_Err_NONE;
 #endif
 }

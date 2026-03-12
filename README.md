@@ -14,9 +14,9 @@ After Effects depth effect plugin focused on a single production path:
   - `Preserve Ratio`
   - `Output`
   - `Slice Mode`
-  - `Position`
-  - `Range`
-  - `Softness`
+  - `Position (%)`
+  - `Range (%)`
+  - `Soft Border (%)`
 - The plugin always runs the single production DAD path.
 - Depth slicing is part of the shipping UI and uses the internal slice-matte path.
 - Quality boost, preview/final mode switches, and time-consistency toggles are no longer part of the shipping UI.

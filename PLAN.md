@@ -14,9 +14,9 @@ the shipping path directly.
   - `Preserve Ratio`
   - `Output`
   - `Slice Mode`
-  - `Position`
-  - `Range`
-  - `Softness`
+  - `Position (%)`
+  - `Range (%)`
+  - `Soft Border (%)`
 
 ## Repo Layout
 
@@ -71,7 +71,7 @@ the shipping path directly.
 
 ### `RF-04` Slicing UX
 - Keep the shipping baseline centered on DAD-base.
-- Expose slicing as `Depth Map / Depth Slice` plus simple Near/Far/Band controls.
+- Expose slicing as `Output`, `Slice Mode`, `Position (%)`, `Range (%)`, and `Soft Border (%)`.
 - Do not reintroduce UI-facing quality boost or temporal toggles in the shipping path.
 
 ## Validation

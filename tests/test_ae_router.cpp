@@ -259,7 +259,7 @@ void TestRenderBridgeFrameHashCacheBehavior() {
 }
 
 #if defined(ZSODA_WITH_AE_SDK) && ZSODA_WITH_AE_SDK
-void ResetSdkAdapterSupervisionState() {
+void ResetSdkAdapterState() {
   PF_OutData out_data{};
   zsoda::ae::AeSdkEntryPayload payload{};
   payload.command = PF_Cmd_GLOBAL_SETUP;
@@ -271,7 +271,7 @@ void ResetSdkAdapterSupervisionState() {
 }
 
 void TestSdkRenderDispatchReadsCoreParams() {
-  ResetSdkAdapterSupervisionState();
+  ResetSdkAdapterState();
 
   constexpr int kWidth = 4;
   constexpr int kHeight = 2;
@@ -331,7 +331,7 @@ void TestSdkRenderDispatchReadsCoreParams() {
 }
 
 void TestSdkUserChangedParamDispatchRequestsRerenderWithoutMutatingChangeFlags() {
-  ResetSdkAdapterSupervisionState();
+  ResetSdkAdapterState();
 
   constexpr int kParamCount = static_cast<int>(zsoda::ae::AeParamId::kLast) + 1;
   std::array<PF_ParamDef, kParamCount> params{};
@@ -380,7 +380,7 @@ void TestSdkUserChangedParamDispatchRequestsRerenderWithoutMutatingChangeFlags()
 }
 
 void TestSdkRenderDispatchSkipsOverrideWhenParamsUnavailable() {
-  ResetSdkAdapterSupervisionState();
+  ResetSdkAdapterState();
 
   constexpr int kWidth = 4;
   constexpr int kHeight = 2;
@@ -431,7 +431,7 @@ void TestSdkRenderDispatchSkipsOverrideWhenParamsUnavailable() {
 }
 
 void TestSdkSequenceResetupKeepsSequenceDataDisabled() {
-  ResetSdkAdapterSupervisionState();
+  ResetSdkAdapterState();
 
   constexpr int kParamCount = static_cast<int>(zsoda::ae::AeParamId::kLast) + 1;
   std::array<PF_ParamDef, kParamCount> params{};
@@ -467,7 +467,7 @@ void TestSdkSequenceResetupKeepsSequenceDataDisabled() {
 }
 
 void TestSdkFrameLifecycleKeepsFrameDataDisabled() {
-  ResetSdkAdapterSupervisionState();
+  ResetSdkAdapterState();
 
   PF_InData in_data{};
   PF_OutData out_data{};

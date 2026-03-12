@@ -1,4 +1,5 @@
 #include "ae/AeHostAdapter.h"
+#include "ae/AeDiagnostics.h"
 #include "ae/ZSodaAeFlags.h"
 #include "ae/ZSodaVersion.h"
 
@@ -199,6 +200,10 @@ int GetSdkParamCountHint(const AeSdkEntryPayload& payload);
 
 void AppendSdkTrace(const char* stage, const std::string& detail) {
 #if defined(_WIN32)
+  if (!AeDiagnosticsEnabled()) {
+    return;
+  }
+
   const char* temp_dir = std::getenv("TEMP");
   if (temp_dir == nullptr || temp_dir[0] == '\0') {
     temp_dir = std::getenv("TMP");

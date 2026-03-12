@@ -1,4 +1,5 @@
 #include "ae/AeCommandRouter.h"
+#include "ae/AeDiagnostics.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -16,6 +17,10 @@ namespace {
 
 void AppendRouterTrace(const char* stage, const char* detail = nullptr) {
 #if defined(_WIN32)
+  if (!AeDiagnosticsEnabled()) {
+    return;
+  }
+
   char temp_path[MAX_PATH] = {};
   const DWORD written = ::GetTempPathA(MAX_PATH, temp_path);
   if (written == 0 || written >= MAX_PATH) {

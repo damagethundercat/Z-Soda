@@ -8,7 +8,14 @@ shipping `Z-Soda` After Effects effect.
 - Production model: `distill-any-depth-base`
 - Default runtime path: local Python remote service
 - Transport: binary localhost HTTP
-- Public AE UI: 3 production controls only
+- Public AE UI: 7 shipping controls
+  - `Quality`
+  - `Preserve Ratio`
+  - `Output`
+  - `Slice Mode`
+  - `Position (%)`
+  - `Range (%)`
+  - `Soft Border (%)`
 - Primary host target: Windows + After Effects
 
 ## Related Files
@@ -100,21 +107,27 @@ The Windows package should contain:
   `zsoda_py\`.
 - `zsoda_ort\` is optional and only present when the build explicitly includes
   ONNX Runtime.
+- `%TEMP%\ZSoda_AE_Runtime.log` is failure-focused by default.
+- Optional verbose host/router tracing can be enabled with `ZSODA_AE_TRACE=1`.
 
 ## Smoke Checklist
 
 1. Build succeeds without loader signature warnings.
 2. `ZSoda.aex` is copied into MediaCore.
 3. After Effects shows `Z-Soda` in the effect list.
-4. New instances expose `Quality`, `Preserve Ratio`, `Output`, `Normalize`,
-   `Absolute Depth`, `Minimum`, `Maximum`, and `Soft Border`.
-5. Rendering runs through the DAD remote path without falling back to the dummy engine.
+4. New instances expose `Quality`, `Preserve Ratio`, `Output`, `Slice Mode`,
+   `Position (%)`, `Range (%)`, and `Soft Border (%)`.
+5. `Quality` changes alter the render resolution/path as expected.
+6. `Output`, `Slice Mode`, `Position (%)`, `Range (%)`, and `Soft Border (%)`
+   update the visible result immediately, including arrow-button adjustments.
+7. Rendering runs through the DAD remote path without falling back to the dummy engine.
 
 ## Failure Checks
 
 - Loader problem:
   - inspect `build-win\plugin\Release\ZSoda.loader_check.txt`
 - Runtime problem:
+  - if needed, launch AE with `ZSODA_AE_TRACE=1`
   - inspect `%TEMP%\ZSoda_AE_Runtime.log`
 - Remote service problem:
   - inspect `%TEMP%\ZSoda_RemoteService.log`

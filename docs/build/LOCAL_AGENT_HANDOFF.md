@@ -19,11 +19,10 @@ omitted from this file.
   - `Quality`
   - `Preserve Ratio`
   - `Output`
-  - `Normalize`
-  - `Absolute Depth`
-  - `Minimum`
-  - `Maximum`
-  - `Soft Border`
+  - `Slice Mode`
+  - `Position (%)`
+  - `Range (%)`
+  - `Soft Border (%)`
 
 ## Important Scripts
 
@@ -87,16 +86,20 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build_aex.ps1 `
 
 - The plugin should auto-start the DistillAnyDepth remote service when needed.
 - The preferred GPU service path must resolve to a CUDA-capable Python when available.
-- AE should not show the old Advanced UI.
+- AE should not show legacy controls such as `Normalize`, `Absolute Depth`,
+  `Minimum`, `Maximum`, `Time Consistency`, or model selectors.
 - `zsoda_ort\` may be absent in the default production build.
+- Detailed runtime tracing is opt-in through `ZSODA_AE_TRACE=1`.
 
 ## Smoke Test Focus
 
 ### New project
 - Plugin loads as `ZSoda`
-- Main UI exposes `Quality`, `Preserve Ratio`, `Output`, `Normalize`, `Absolute Depth`, `Minimum`, `Maximum`, and `Soft Border`
+- Main UI exposes `Quality`, `Preserve Ratio`, `Output`, `Slice Mode`,
+  `Position (%)`, `Range (%)`, and `Soft Border (%)`
 - Quality changes alter actual render resolution
 - Slice settings alter the matte/output immediately
+- Slider arrow nudges do not crash AE
 
 ## Logs
 
@@ -108,6 +111,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build_aex.ps1 `
 ## Current Known Priorities
 
 1. Keep the production path DAD-only.
-2. Keep the visible AE UX limited to the 3 production controls.
+2. Keep the visible AE UX aligned with the current 7-control slice surface.
 3. Keep the remote service binary transport path healthy.
 4. Keep shutdown/save/load behavior stable with the reduced sequence state.

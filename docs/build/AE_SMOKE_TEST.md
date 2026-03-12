@@ -1,136 +1,133 @@
 # AE Smoke Test Checklist
 
-## 목적
-After Effects에서 Z-Soda 플러그인의 기본 동작(로딩, 모델 선택, 출력 모드, 미리보기/렌더, 장시간 안정성)을 빠르게 검증한다.
+## Purpose
 
-## 사전 조건
-- 플러그인 설치 완료 (`ZSoda.aex` 또는 `ZSoda.plugin`)
-- 테스트 프로젝트 준비: 1920x1080, 30fps, 1000프레임 이상 소스 1개
-- 테스트 모델 파일 설치 완료 (최소 1개, 권장 2개 이상)
-- AE 재시작 후 테스트 수행
+Verify the current shipping `Z-Soda` AE effect at a practical smoke-test level:
+load, main UI controls, interactive updates, preview stability, and render queue output.
 
-## 공통 기록 항목
-- AE 버전 / OS / GPU / 드라이버 버전
-- 플러그인 빌드 식별자(커밋 또는 빌드 시각)
-- 테스트 프로젝트 경로
-- 실패 시 스크린샷, 에러 메시지, 재현 절차
+## Preconditions
 
-## 스모크 테스트 케이스
+- `ZSoda.aex` is installed in MediaCore
+- A test comp is ready
+  - 1920x1080
+  - 30 fps
+  - at least one footage layer with visible depth separation
+- If verbose host/router tracing is needed, launch AE with `ZSODA_AE_TRACE=1`
 
-### ST-01 플러그인 로드 확인
-절차
-1. AE 실행 후 테스트 프로젝트를 연다.
-2. 임의의 푸티지를 컴포지션 타임라인에 배치한다.
-3. `Effects` 메뉴에서 Z-Soda(또는 해당 이펙트명)를 검색해 적용한다.
+## Record Before Testing
 
-Pass 기준
-- 이펙트가 목록에 표시된다.
-- 레이어에 정상 적용된다.
-- 적용 직후 AE 크래시/프리징이 없다.
+- AE version / OS / GPU
+- `ZSoda.aex` build timestamp or commit
+- Test project path
+- Any runtime log or screenshot captured during failure
 
-Fail 기준
-- 이펙트가 목록에 없음.
-- 적용 시 에러 다이얼로그 또는 AE 비정상 종료.
+## Test Cases
 
-### ST-02 모델 선택 확인
-절차
-1. Effect Controls에서 모델 선택 파라미터를 확인한다.
-2. 모델 A와 모델 B(가능한 경우)를 번갈아 선택한다.
-3. 타임라인 임의 프레임에서 결과 변화를 확인한다.
+### ST-01 Plugin Load
 
-Pass 기준
-- 모델 목록이 비어 있지 않다.
-- 모델 변경 시 파라미터 적용이 즉시 반영된다.
-- 모델 변경/스크럽 중 AE 크래시가 없다.
+Steps:
+1. Launch AE and open the test project.
+2. Apply `Z-Soda` to a footage layer.
 
-Fail 기준
-- 모델 목록이 비어 있음.
-- 모델 변경이 반영되지 않거나 동일 프레임에서 항상 동일 결과.
-- 모델 변경 시 에러/크래시 발생.
+Pass:
+- The effect appears in the effect list.
+- The effect applies without AE crashing.
+- The Effect Controls panel opens normally.
 
-### ST-03 DepthMap 출력 확인
-절차
-1. Output 모드를 `DepthMap`으로 설정한다.
-2. 전/중/후경이 있는 구간으로 이동한다.
-3. 결과가 0..1 범위 그레이스케일로 표현되는지 확인한다.
+Fail:
+- The effect is missing.
+- AE crashes or rejects the effect during apply.
 
-Pass 기준
-- 화면이 단일 검정/흰색으로 고정되지 않는다.
-- 깊이 구조가 시각적으로 구분된다.
-- 프레임 이동 시 출력이 정상 갱신된다.
+### ST-02 Shipping Controls Visible
 
-Fail 기준
-- 출력이 깨짐(노이즈 블록, NaN-like flash) 또는 고정값.
-- 프레임 이동 시 출력 갱신 실패.
+Expected controls:
+- `Quality`
+- `Preserve Ratio`
+- `Output`
+- `Slice Mode`
+- `Position (%)`
+- `Range (%)`
+- `Soft Border (%)`
 
-### ST-04 Slicing 출력 확인
-절차
-1. Output 모드를 `Slicing`으로 전환한다.
-2. `min_depth`, `max_depth`, `softness`를 순차 조정한다.
-3. 슬라이스 매트가 깊이 구간에 맞게 변하는지 확인한다.
+Pass:
+- The controls above are visible.
+- Old controls such as model selector, `Normalize`, `Absolute Depth`, `Minimum`, and `Maximum` are not visible.
 
-Pass 기준
-- 파라미터 변경에 따라 매트 범위가 일관되게 변한다.
-- `min_depth > max_depth` 같은 극단 조합에서도 AE가 크래시하지 않는다.
+Fail:
+- Missing shipping controls.
+- Old removed controls reappear.
 
-Fail 기준
-- 파라미터 조정에 출력 변화가 없거나 비정상 점멸.
-- 조정 중 AE 크래시/멈춤 발생.
+### ST-03 Quality Update
 
-### ST-05 실시간 프리뷰 확인
-절차
-1. 5~10초 구간 RAM Preview를 수행한다.
-2. 동일 구간을 2회 이상 반복 프리뷰한다.
-3. 스크럽(좌우 이동)과 정지/재생 전환을 반복한다.
+Steps:
+1. Set `Output` to `Depth Map`.
+2. Change `Quality` across multiple values.
 
-Pass 기준
-- 프리뷰가 완료되고 재생 가능하다.
-- 반복 프리뷰에서 명백한 성능 급락/메모리 폭증 징후가 없다.
-- UI 응답(정지, 이동, 파라미터 변경)이 유지된다.
+Pass:
+- The render updates without crashing.
+- Visible quality/resolution changes are reflected in the result.
 
-Fail 기준
-- 프리뷰 도중 AE 비정상 종료/무응답.
-- 반복 시 성능이 급격히 악화되어 사용 불가.
+Fail:
+- No visible change across quality values.
+- AE freezes or crashes while changing `Quality`.
 
-### ST-06 Render Queue 확인
-절차
-1. 테스트 컴포지션을 Render Queue에 추가한다.
-2. 표준 출력 포맷으로 렌더를 실행한다.
-3. 렌더 완료 후 결과 파일을 재생해 출력 모드가 반영됐는지 확인한다.
+### ST-04 Depth Map Output
 
-Pass 기준
-- Render Queue가 에러 없이 완료된다.
-- 출력 파일이 생성되고 재생 가능하다.
-- 렌더 결과가 프리뷰와 의미 있게 일치한다.
+Steps:
+1. Keep `Output` on `Depth Map`.
+2. Move across multiple frames in the comp.
 
-Fail 기준
-- 렌더 중 에러/중단/크래시.
-- 출력 파일 손상 또는 효과 미반영.
+Pass:
+- Output behaves like a depth visualization rather than a flat constant image.
+- Frame changes update the result normally.
 
-### ST-07 장시간 안정성(1000프레임) 확인
-절차
-1. 1000프레임 이상 구간을 대상으로 Render Queue 렌더를 수행한다.
-2. 렌더 중 AE 메모리/응답 상태를 주기적으로 확인한다.
-3. 완료 후 시작/중간/끝 프레임의 결과를 샘플 점검한다.
+Fail:
+- Output stays flat or invalid.
+- Frame updates stop or produce unstable flashing.
 
-Pass 기준
-- 1000프레임 렌더가 중단 없이 완료된다.
-- 메모리 누수 의심(지속적 비정상 증가) 없이 종료된다.
-- 후반 프레임 품질/출력이 초기 프레임 대비 비정상 열화되지 않는다.
+### ST-05 Depth Slice Interaction
 
-Fail 기준
-- 장시간 렌더 중 크래시/멈춤/OOM.
-- 후반 프레임에서 출력 붕괴 또는 일관성 상실.
+Steps:
+1. Set `Output` to `Depth Slice`.
+2. Change `Slice Mode` between `Near`, `Far`, and `Band`.
+3. Adjust `Position (%)`, `Range (%)`, and `Soft Border (%)`.
+4. Click each slider arrow at least once.
 
-## 최종 판정
-- `SMOKE PASS`: ST-01 ~ ST-07 전부 Pass.
-- `SMOKE FAIL`: 하나라도 Fail.
+Pass:
+- Matte/output changes immediately as the controls change.
+- Slider arrow clicks do not crash AE.
+- `Near`, `Far`, and `Band` produce distinct behaviors.
 
-## 실패 시 즉시 보고 템플릿
-- 실패 케이스 ID:
-- 발생 시각:
-- 환경(AE/OS/GPU):
-- 재현 절차(최소 단계):
-- 기대 결과:
-- 실제 결과:
-- 첨부(스크린샷/로그/프로젝트):
+Fail:
+- Slice controls do not affect the result.
+- Arrow-button clicks freeze or crash AE.
+
+### ST-06 Preview and Render Queue
+
+Steps:
+1. Run RAM Preview on a short range.
+2. Add the comp to Render Queue and render a short output.
+
+Pass:
+- Preview completes and plays back.
+- Render Queue completes without plugin crash.
+- The rendered result matches the selected output mode.
+
+Fail:
+- AE hangs or exits during preview/render.
+- Output file does not match the interactive result.
+
+## Result
+
+- `SMOKE PASS`: all cases pass
+- `SMOKE FAIL`: any case fails
+
+## Failure Template
+
+- Case ID:
+- Time:
+- Environment:
+- Repro steps:
+- Expected:
+- Actual:
+- Attachments:

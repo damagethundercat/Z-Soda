@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #if defined(_WIN32)
 #ifndef NOMINMAX
@@ -11,7 +11,7 @@
 
 namespace zsoda::core {
 
-// Windows AE host process에서 MSVCP std::mutex ABI 경로를 피하기 위한 호환 락.
+// Use SRWLOCK on Windows to avoid depending on the host CRT std::mutex ABI.
 class CompatMutex {
  public:
   CompatMutex() = default;
