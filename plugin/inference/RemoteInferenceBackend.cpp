@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -39,8 +40,48 @@ constexpr char kRemoteCommandEnvLegacy[] = "ZSODA_REMOTE_BACKEND_COMMAND";
 constexpr char kRequestSchema[] = "zsoda.remote_depth.v2";
 constexpr char kDefaultLocalRemoteHost[] = "127.0.0.1";
 constexpr int kDefaultLocalRemotePort = 8345;
+constexpr char kBinaryContentType[] = "application/octet-stream";
+constexpr char kHeaderModelId[] = "X-ZSoda-Model-Id";
+constexpr char kHeaderQuality[] = "X-ZSoda-Quality";
+constexpr char kHeaderResizeMode[] = "X-ZSoda-Resize-Mode";
+constexpr char kHeaderFrameHash[] = "X-ZSoda-Frame-Hash";
+constexpr char kHeaderWidth[] = "X-ZSoda-Source-Width";
+constexpr char kHeaderHeight[] = "X-ZSoda-Source-Height";
+constexpr char kHeaderChannels[] = "X-ZSoda-Source-Channels";
+constexpr char kHeaderResponseWidth[] = "X-ZSoda-Depth-Width";
+constexpr char kHeaderResponseHeight[] = "X-ZSoda-Depth-Height";
+constexpr char kHeaderResponseElapsedMs[] = "X-ZSoda-Elapsed-Ms";
+constexpr char kHeaderResponseModelId[] = "X-ZSoda-Resolved-Model-Id";
 
 std::atomic<std::uint64_t> g_temp_file_counter{0U};
+
+using SteadyClock = std::chrono::steady_clock;
+
+struct BinaryRequestMetadata {
+  std::string model_id;
+  int quality = 1;
+  PreprocessResizeMode resize_mode = PreprocessResizeMode::kUpperBoundLetterbox;
+  std::uint64_t frame_hash = 0;
+  int width = 0;
+  int height = 0;
+  int channels = 3;
+};
+
+struct BinaryEndpointResponse {
+  int width = 0;
+  int height = 0;
+  float elapsed_ms = 0.0F;
+  std::string resolved_model_id;
+  std::string body;
+};
+
+struct RemoteTimingBreakdown {
+  double host_convert_ms = 0.0;
+  double request_encode_ms = 0.0;
+  double service_ms = 0.0;
+  double response_decode_ms = 0.0;
+  double total_ms = 0.0;
+};
 
 std::string ReadEnvOrEmpty(const char* name) {
   const char* value = std::getenv(name);
@@ -48,6 +89,80 @@ std::string ReadEnvOrEmpty(const char* name) {
     return {};
   }
   return value;
+}
+
+bool ReadEnvBoolOrDefault(const char* name, bool default_value) {
+  const char* raw = std::getenv(name);
+  if (raw == nullptr || raw[0] == '\0') {
+    return default_value;
+  }
+
+  std::string normalized;
+  while (*raw != '\0') {
+    const char ch = *raw++;
+    if (std::isspace(static_cast<unsigned char>(ch)) || ch == '-' || ch == '_') {
+      continue;
+    }
+    normalized.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
+  }
+  if (normalized == "1" || normalized == "true" || normalized == "yes" || normalized == "on") {
+    return true;
+  }
+  if (normalized == "0" || normalized == "false" || normalized == "no" || normalized == "off") {
+    return false;
+  }
+  return default_value;
+}
+
+bool RemoteTimingTraceEnabled() {
+  static const bool enabled =
+      ReadEnvBoolOrDefault("ZSODA_REMOTE_TRACE", false) ||
+      ReadEnvBoolOrDefault("ZSODA_PIPELINE_TRACE", false);
+  return enabled;
+}
+
+void AppendRemoteTrace(const char* stage, const char* detail = nullptr) {
+#if defined(_WIN32)
+  if (!RemoteTimingTraceEnabled()) {
+    return;
+  }
+  char temp_path[MAX_PATH] = {};
+  const DWORD written = ::GetTempPathA(MAX_PATH, temp_path);
+  if (written == 0 || written >= MAX_PATH) {
+    return;
+  }
+
+  char log_path[MAX_PATH] = {};
+  std::snprintf(log_path, sizeof(log_path), "%s%s", temp_path, "ZSoda_AE_Runtime.log");
+  FILE* file = std::fopen(log_path, "ab");
+  if (file == nullptr) {
+    return;
+  }
+
+  SYSTEMTIME now = {};
+  ::GetLocalTime(&now);
+  const unsigned long tid = static_cast<unsigned long>(::GetCurrentThreadId());
+  std::fprintf(file,
+               "%04u-%02u-%02u %02u:%02u:%02u.%03u | RemoteTrace | tid=%lu, stage=%s, detail=%s\r\n",
+               static_cast<unsigned>(now.wYear),
+               static_cast<unsigned>(now.wMonth),
+               static_cast<unsigned>(now.wDay),
+               static_cast<unsigned>(now.wHour),
+               static_cast<unsigned>(now.wMinute),
+               static_cast<unsigned>(now.wSecond),
+               static_cast<unsigned>(now.wMilliseconds),
+               tid,
+               stage != nullptr ? stage : "<null>",
+               (detail != nullptr && detail[0] != '\0') ? detail : "<none>");
+  std::fclose(file);
+#else
+  (void)stage;
+  (void)detail;
+#endif
+}
+
+double ElapsedMilliseconds(SteadyClock::time_point started) {
+  return std::chrono::duration<double, std::milli>(SteadyClock::now() - started).count();
 }
 
 std::string ResolveCommandTemplate(const RemoteBackendCommandConfig& command_config) {
@@ -66,6 +181,21 @@ std::string BuildBackendName(RuntimeBackend backend) {
   name.append(RuntimeBackendName(backend));
   name.push_back(']');
   return name;
+}
+
+std::string ResolvePreloadModelId(const RuntimeOptions& options,
+                                  const std::filesystem::path& script_path) {
+  std::string model_id = ReadEnvOrEmpty("ZSODA_LOCKED_MODEL_ID");
+  if (model_id.empty()) {
+    // Legacy alias kept for backwards compatibility with older local setups.
+    model_id = ReadEnvOrEmpty("ZSODA_HQ_MODEL_ID");
+  }
+  if (model_id.empty() &&
+      script_path.filename().string().find("distill_any_depth_remote_service.py") !=
+          std::string::npos) {
+    model_id = "distill-any-depth-base";
+  }
+  return model_id;
 }
 
 bool IsExistingFile(const std::filesystem::path& path) {
@@ -106,9 +236,9 @@ std::filesystem::path ResolveRemoteServiceScriptPath(const RuntimeOptions& optio
   if (!options.plugin_directory.empty()) {
     const std::filesystem::path plugin_dir(options.plugin_directory);
     const std::array<std::filesystem::path, 3> candidates = {
-        plugin_dir / "zsoda_py" / "official_da3_remote_service.py",
-        plugin_dir / "tools" / "official_da3_remote_service.py",
-        plugin_dir / "official_da3_remote_service.py",
+        plugin_dir / "zsoda_py" / "distill_any_depth_remote_service.py",
+        plugin_dir / "tools" / "distill_any_depth_remote_service.py",
+        plugin_dir / "distill_any_depth_remote_service.py",
     };
     for (const auto& candidate : candidates) {
       if (IsExistingFile(candidate)) {
@@ -170,6 +300,33 @@ const char* ResizeModeName(PreprocessResizeMode mode) {
 unsigned char QuantizeUnitFloat(float value) {
   const float sanitized = std::clamp(SanitizeFinite(value), 0.0F, 1.0F);
   return static_cast<unsigned char>(std::lround(sanitized * 255.0F));
+}
+
+std::vector<std::uint8_t> EncodeRgb8Payload(const zsoda::core::FrameBuffer& source) {
+  const auto& desc = source.desc();
+  const std::size_t pixel_count =
+      static_cast<std::size_t>(std::max(0, desc.width)) * static_cast<std::size_t>(std::max(0, desc.height));
+  std::vector<std::uint8_t> payload;
+  payload.resize(pixel_count * 3U);
+  std::size_t offset = 0U;
+  for (int y = 0; y < desc.height; ++y) {
+    for (int x = 0; x < desc.width; ++x) {
+      float red = 0.0F;
+      float green = 0.0F;
+      float blue = 0.0F;
+      if (desc.channels == 1) {
+        red = green = blue = source.at(x, y, 0);
+      } else {
+        red = source.at(x, y, 0);
+        green = source.at(x, y, std::min(1, desc.channels - 1));
+        blue = source.at(x, y, std::min(2, desc.channels - 1));
+      }
+      payload[offset++] = QuantizeUnitFloat(red);
+      payload[offset++] = QuantizeUnitFloat(green);
+      payload[offset++] = QuantizeUnitFloat(blue);
+    }
+  }
+  return payload;
 }
 
 bool WritePortablePixmap(const zsoda::core::FrameBuffer& source,
@@ -754,6 +911,395 @@ bool PostJsonToEndpoint(std::string_view endpoint,
   return true;
 }
 
+bool QueryCustomHeader(HINTERNET request_handle,
+                       std::wstring_view header_name,
+                       std::wstring* value,
+                       std::string* error) {
+  if (value == nullptr) {
+    if (error != nullptr) {
+      *error = "internal error: header output is null";
+    }
+    return false;
+  }
+  value->clear();
+
+  DWORD bytes = 0;
+  if (::WinHttpQueryHeaders(request_handle,
+                            WINHTTP_QUERY_CUSTOM,
+                            const_cast<wchar_t*>(header_name.data()),
+                            WINHTTP_NO_OUTPUT_BUFFER,
+                            &bytes,
+                            WINHTTP_NO_HEADER_INDEX)) {
+    // no-op, bytes now contains required size.
+  } else {
+    const DWORD header_error = ::GetLastError();
+    if (header_error == ERROR_INSUFFICIENT_BUFFER && bytes > 0U) {
+      // Expected probe path.
+    } else if (header_error == ERROR_WINHTTP_HEADER_NOT_FOUND) {
+      return true;
+    } else {
+      if (error != nullptr) {
+        *error = "WinHttpQueryHeaders failed for custom header (" +
+                 std::to_string(header_error) + ")";
+      }
+      return false;
+    }
+  }
+
+  if (bytes == 0U) {
+    return true;
+  }
+
+  std::wstring buffer(bytes / sizeof(wchar_t), L'\0');
+  if (!::WinHttpQueryHeaders(request_handle,
+                             WINHTTP_QUERY_CUSTOM,
+                             const_cast<wchar_t*>(header_name.data()),
+                             buffer.data(),
+                             &bytes,
+                             WINHTTP_NO_HEADER_INDEX)) {
+    const DWORD header_error = ::GetLastError();
+    if (header_error == ERROR_WINHTTP_HEADER_NOT_FOUND) {
+      return true;
+    }
+    if (error != nullptr) {
+      *error = "WinHttpQueryHeaders read failed for custom header (" +
+               std::to_string(header_error) + ")";
+    }
+    return false;
+  }
+
+  if (!buffer.empty() && buffer.back() == L'\0') {
+    buffer.pop_back();
+  }
+  *value = std::move(buffer);
+  if (error != nullptr) {
+    error->clear();
+  }
+  return true;
+}
+
+bool ParseWideInt(std::wstring_view text, int* value, std::string* error) {
+  if (value == nullptr) {
+    if (error != nullptr) {
+      *error = "internal error: integer output is null";
+    }
+    return false;
+  }
+  if (text.empty()) {
+    if (error != nullptr) {
+      *error = "required integer header is empty";
+    }
+    return false;
+  }
+  try {
+    const int parsed = std::stoi(std::wstring(text));
+    if (parsed <= 0) {
+      throw std::invalid_argument("non-positive");
+    }
+    *value = parsed;
+    if (error != nullptr) {
+      error->clear();
+    }
+    return true;
+  } catch (const std::exception&) {
+    if (error != nullptr) {
+      *error = "invalid integer header value";
+    }
+    return false;
+  }
+}
+
+bool ParseWideFloat(std::wstring_view text, float* value, std::string* error) {
+  if (value == nullptr) {
+    if (error != nullptr) {
+      *error = "internal error: float output is null";
+    }
+    return false;
+  }
+  if (text.empty()) {
+    *value = 0.0F;
+    if (error != nullptr) {
+      error->clear();
+    }
+    return true;
+  }
+  try {
+    const float parsed = std::stof(std::wstring(text));
+    *value = std::isfinite(parsed) ? parsed : 0.0F;
+    if (error != nullptr) {
+      error->clear();
+    }
+    return true;
+  } catch (const std::exception&) {
+    if (error != nullptr) {
+      *error = "invalid float header value";
+    }
+    return false;
+  }
+}
+
+bool PostBinaryToEndpoint(std::string_view endpoint,
+                          const BinaryRequestMetadata& metadata,
+                          const std::vector<std::uint8_t>& payload,
+                          std::string_view api_key,
+                          int timeout_ms,
+                          BinaryEndpointResponse* response,
+                          std::string* error) {
+  if (response == nullptr) {
+    if (error != nullptr) {
+      *error = "internal error: binary response output is null";
+    }
+    return false;
+  }
+  response->body.clear();
+  response->width = 0;
+  response->height = 0;
+  response->elapsed_ms = 0.0F;
+  response->resolved_model_id.clear();
+
+  std::wstring endpoint_wide;
+  if (!Utf8ToWide(endpoint, &endpoint_wide, error)) {
+    return false;
+  }
+
+  URL_COMPONENTS components = {};
+  components.dwStructSize = sizeof(components);
+  components.dwSchemeLength = static_cast<DWORD>(-1);
+  components.dwHostNameLength = static_cast<DWORD>(-1);
+  components.dwUrlPathLength = static_cast<DWORD>(-1);
+  components.dwExtraInfoLength = static_cast<DWORD>(-1);
+  if (!::WinHttpCrackUrl(endpoint_wide.c_str(),
+                         static_cast<DWORD>(endpoint_wide.size()),
+                         0,
+                         &components)) {
+    if (error != nullptr) {
+      *error = "WinHttpCrackUrl failed for endpoint: " + std::string(endpoint) +
+               " (" + std::to_string(::GetLastError()) + ")";
+    }
+    return false;
+  }
+
+  const bool secure = components.nScheme == INTERNET_SCHEME_HTTPS;
+  const std::wstring host(components.lpszHostName,
+                          static_cast<std::size_t>(components.dwHostNameLength));
+  std::wstring path(components.lpszUrlPath,
+                    static_cast<std::size_t>(components.dwUrlPathLength));
+  if (path.empty()) {
+    path = L"/";
+  }
+  if (components.dwExtraInfoLength > 0U && components.lpszExtraInfo != nullptr) {
+    path.append(components.lpszExtraInfo, static_cast<std::size_t>(components.dwExtraInfoLength));
+  }
+
+  HINTERNET session = ::WinHttpOpen(L"ZSoda/1.0",
+                                    WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                                    WINHTTP_NO_PROXY_NAME,
+                                    WINHTTP_NO_PROXY_BYPASS,
+                                    0);
+  if (session == nullptr) {
+    if (error != nullptr) {
+      *error = "WinHttpOpen failed (" + std::to_string(::GetLastError()) + ")";
+    }
+    return false;
+  }
+
+  const int effective_timeout = timeout_ms > 0 ? timeout_ms : 30000;
+  ::WinHttpSetTimeouts(session,
+                       effective_timeout,
+                       effective_timeout,
+                       effective_timeout,
+                       effective_timeout);
+
+  HINTERNET connection = ::WinHttpConnect(session, host.c_str(), components.nPort, 0);
+  if (connection == nullptr) {
+    const DWORD win_error = ::GetLastError();
+    ::WinHttpCloseHandle(session);
+    if (error != nullptr) {
+      *error = "WinHttpConnect failed (" + std::to_string(win_error) + ")";
+    }
+    return false;
+  }
+
+  const DWORD request_flags = secure ? WINHTTP_FLAG_SECURE : 0U;
+  HINTERNET request_handle = ::WinHttpOpenRequest(connection,
+                                                  L"POST",
+                                                  path.c_str(),
+                                                  nullptr,
+                                                  WINHTTP_NO_REFERER,
+                                                  WINHTTP_DEFAULT_ACCEPT_TYPES,
+                                                  request_flags);
+  if (request_handle == nullptr) {
+    const DWORD win_error = ::GetLastError();
+    ::WinHttpCloseHandle(connection);
+    ::WinHttpCloseHandle(session);
+    if (error != nullptr) {
+      *error = "WinHttpOpenRequest failed (" + std::to_string(win_error) + ")";
+    }
+    return false;
+  }
+
+  std::wstring model_id_wide;
+  if (!Utf8ToWide(metadata.model_id, &model_id_wide, error)) {
+    ::WinHttpCloseHandle(request_handle);
+    ::WinHttpCloseHandle(connection);
+    ::WinHttpCloseHandle(session);
+    return false;
+  }
+  std::wstring resize_mode_wide;
+  if (!Utf8ToWide(ResizeModeName(metadata.resize_mode), &resize_mode_wide, error)) {
+    ::WinHttpCloseHandle(request_handle);
+    ::WinHttpCloseHandle(connection);
+    ::WinHttpCloseHandle(session);
+    return false;
+  }
+
+  std::wstring headers = L"Content-Type: application/octet-stream\r\n";
+  headers.append(L"Accept: application/octet-stream\r\n");
+  headers.append(L"X-ZSoda-Model-Id: ");
+  headers.append(model_id_wide);
+  headers.append(L"\r\nX-ZSoda-Quality: ");
+  headers.append(std::to_wstring(metadata.quality));
+  headers.append(L"\r\nX-ZSoda-Resize-Mode: ");
+  headers.append(resize_mode_wide);
+  headers.append(L"\r\nX-ZSoda-Frame-Hash: ");
+  headers.append(std::to_wstring(metadata.frame_hash));
+  headers.append(L"\r\nX-ZSoda-Source-Width: ");
+  headers.append(std::to_wstring(metadata.width));
+  headers.append(L"\r\nX-ZSoda-Source-Height: ");
+  headers.append(std::to_wstring(metadata.height));
+  headers.append(L"\r\nX-ZSoda-Source-Channels: ");
+  headers.append(std::to_wstring(metadata.channels));
+  headers.append(L"\r\n");
+  if (!api_key.empty()) {
+    std::wstring api_key_wide;
+    if (!Utf8ToWide(api_key, &api_key_wide, error)) {
+      ::WinHttpCloseHandle(request_handle);
+      ::WinHttpCloseHandle(connection);
+      ::WinHttpCloseHandle(session);
+      return false;
+    }
+    headers.append(L"Authorization: Bearer ");
+    headers.append(api_key_wide);
+    headers.append(L"\r\n");
+  }
+
+  const BOOL send_ok = ::WinHttpSendRequest(request_handle,
+                                            headers.c_str(),
+                                            static_cast<DWORD>(headers.size()),
+                                            payload.empty() ? WINHTTP_NO_REQUEST_DATA
+                                                            : const_cast<std::uint8_t*>(payload.data()),
+                                            static_cast<DWORD>(payload.size()),
+                                            static_cast<DWORD>(payload.size()),
+                                            0);
+  if (!send_ok) {
+    const DWORD win_error = ::GetLastError();
+    ::WinHttpCloseHandle(request_handle);
+    ::WinHttpCloseHandle(connection);
+    ::WinHttpCloseHandle(session);
+    if (error != nullptr) {
+      *error = "WinHttpSendRequest failed (" + std::to_string(win_error) + ")";
+    }
+    return false;
+  }
+
+  if (!::WinHttpReceiveResponse(request_handle, nullptr)) {
+    const DWORD win_error = ::GetLastError();
+    ::WinHttpCloseHandle(request_handle);
+    ::WinHttpCloseHandle(connection);
+    ::WinHttpCloseHandle(session);
+    if (error != nullptr) {
+      *error = "WinHttpReceiveResponse failed (" + std::to_string(win_error) + ")";
+    }
+    return false;
+  }
+
+  DWORD status_code = 0;
+  DWORD status_code_size = sizeof(status_code);
+  if (!::WinHttpQueryHeaders(request_handle,
+                             WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                             WINHTTP_HEADER_NAME_BY_INDEX,
+                             &status_code,
+                             &status_code_size,
+                             WINHTTP_NO_HEADER_INDEX)) {
+    status_code = 0U;
+  }
+
+  while (true) {
+    DWORD available = 0;
+    if (!::WinHttpQueryDataAvailable(request_handle, &available)) {
+      const DWORD win_error = ::GetLastError();
+      ::WinHttpCloseHandle(request_handle);
+      ::WinHttpCloseHandle(connection);
+      ::WinHttpCloseHandle(session);
+      if (error != nullptr) {
+        *error = "WinHttpQueryDataAvailable failed (" + std::to_string(win_error) + ")";
+      }
+      return false;
+    }
+    if (available == 0U) {
+      break;
+    }
+
+    std::string chunk(static_cast<std::size_t>(available), '\0');
+    DWORD read = 0;
+    if (!::WinHttpReadData(request_handle, chunk.data(), available, &read)) {
+      const DWORD win_error = ::GetLastError();
+      ::WinHttpCloseHandle(request_handle);
+      ::WinHttpCloseHandle(connection);
+      ::WinHttpCloseHandle(session);
+      if (error != nullptr) {
+        *error = "WinHttpReadData failed (" + std::to_string(win_error) + ")";
+      }
+      return false;
+    }
+    chunk.resize(static_cast<std::size_t>(read));
+    response->body.append(chunk);
+  }
+
+  std::wstring width_header;
+  std::wstring height_header;
+  std::wstring elapsed_header;
+  std::wstring resolved_model_header;
+  const bool width_ok = QueryCustomHeader(request_handle, L"X-ZSoda-Depth-Width", &width_header, error);
+  const bool height_ok =
+      QueryCustomHeader(request_handle, L"X-ZSoda-Depth-Height", &height_header, error);
+  const bool elapsed_ok =
+      QueryCustomHeader(request_handle, L"X-ZSoda-Elapsed-Ms", &elapsed_header, error);
+  const bool resolved_model_ok =
+      QueryCustomHeader(request_handle, L"X-ZSoda-Resolved-Model-Id", &resolved_model_header, error);
+
+  ::WinHttpCloseHandle(request_handle);
+  ::WinHttpCloseHandle(connection);
+  ::WinHttpCloseHandle(session);
+
+  if (!width_ok || !height_ok || !elapsed_ok || !resolved_model_ok) {
+    return false;
+  }
+
+  if (status_code < 200U || status_code >= 300U) {
+    if (error != nullptr) {
+      *error = "remote endpoint returned HTTP " + std::to_string(status_code) +
+               (response->body.empty() ? std::string() : ": " + response->body);
+    }
+    return false;
+  }
+
+  if (!ParseWideInt(width_header, &response->width, error) ||
+      !ParseWideInt(height_header, &response->height, error) ||
+      !ParseWideFloat(elapsed_header, &response->elapsed_ms, error)) {
+    return false;
+  }
+  if (!resolved_model_header.empty() &&
+      !WideToUtf8(resolved_model_header, &response->resolved_model_id, error)) {
+    return false;
+  }
+
+  if (error != nullptr) {
+    error->clear();
+  }
+  return true;
+}
+
 bool GetEndpointText(std::string_view endpoint,
                      int timeout_ms,
                      std::string* response_payload,
@@ -940,10 +1486,228 @@ std::filesystem::path DefaultRemoteServiceLogPath() {
   std::error_code temp_error;
   const std::filesystem::path temp_root = std::filesystem::temp_directory_path(temp_error);
   if (!temp_error) {
-    return temp_root / "ZSoda_DA3_RemoteService.log";
+    return temp_root / "ZSoda_RemoteService.log";
   }
-  return std::filesystem::path("ZSoda_DA3_RemoteService.log");
+  return std::filesystem::path("ZSoda_RemoteService.log");
 }
+
+#if defined(_WIN32)
+enum class PythonTorchCapability {
+  kUnavailable,
+  kTorchCpu,
+  kTorchCuda,
+};
+
+std::optional<std::filesystem::path> ResolveExecutableOnPath(const wchar_t* executable) {
+  if (executable == nullptr || executable[0] == L'\0') {
+    return std::nullopt;
+  }
+  const DWORD required =
+      ::SearchPathW(nullptr, executable, nullptr, 0, nullptr, nullptr);
+  if (required == 0U) {
+    return std::nullopt;
+  }
+  std::wstring buffer(required, L'\0');
+  const DWORD written =
+      ::SearchPathW(nullptr, executable, nullptr, required, buffer.data(), nullptr);
+  if (written == 0U) {
+    return std::nullopt;
+  }
+  buffer.resize(written);
+  return std::filesystem::path(buffer);
+}
+
+void PushUniquePythonCandidate(const std::filesystem::path& path,
+                               std::vector<std::filesystem::path>* candidates) {
+  if (candidates == nullptr || path.empty()) {
+    return;
+  }
+  std::error_code exists_error;
+  if (!std::filesystem::exists(path, exists_error) || exists_error) {
+    return;
+  }
+  const auto normalized = path.lexically_normal();
+  for (const auto& existing : *candidates) {
+    if (existing.lexically_normal() == normalized) {
+      return;
+    }
+  }
+  candidates->push_back(normalized);
+}
+
+std::vector<std::filesystem::path> GatherPythonAutostartCandidates() {
+  std::vector<std::filesystem::path> candidates;
+  if (const auto path_python = ResolveExecutableOnPath(L"python.exe")) {
+    PushUniquePythonCandidate(*path_python, &candidates);
+  }
+  if (const auto path_python3 = ResolveExecutableOnPath(L"python3.exe")) {
+    PushUniquePythonCandidate(*path_python3, &candidates);
+  }
+
+  const std::filesystem::path local_appdata = ReadEnvOrEmpty("LOCALAPPDATA");
+  const auto collect_python_children = [&](const std::filesystem::path& root,
+                                           const auto& directory_name_filter) {
+    std::error_code iter_error;
+    const auto options = std::filesystem::directory_options::skip_permission_denied;
+    std::filesystem::directory_iterator iter(root, options, iter_error);
+    std::filesystem::directory_iterator end;
+    while (!iter_error && iter != end) {
+      const auto entry_path = iter->path();
+      std::error_code status_error;
+      const bool is_directory = iter->is_directory(status_error);
+      if (!status_error && is_directory) {
+        const std::wstring directory_name = entry_path.filename().wstring();
+        if (directory_name_filter(directory_name)) {
+          PushUniquePythonCandidate(entry_path / "python.exe", &candidates);
+        }
+      }
+
+      iter.increment(iter_error);
+    }
+  };
+
+  if (!local_appdata.empty()) {
+    const std::filesystem::path windows_apps = local_appdata / "Microsoft" / "WindowsApps";
+    collect_python_children(windows_apps, [](const std::wstring& directory_name) {
+      return directory_name.find(L"PythonSoftwareFoundation.Python.") != std::wstring::npos;
+    });
+
+    const std::filesystem::path programs_python = local_appdata / "Programs" / "Python";
+    collect_python_children(programs_python,
+                            [](const std::wstring& /*directory_name*/) { return true; });
+  }
+
+  const std::filesystem::path system_drive = "C:\\";
+  collect_python_children(system_drive, [](const std::wstring& directory_name) {
+    return directory_name.rfind(L"Python", 0) == 0;
+  });
+
+  return candidates;
+}
+
+PythonTorchCapability ProbePythonTorchCapability(const std::filesystem::path& python_path,
+                                                 std::string* probe_output) {
+  if (probe_output != nullptr) {
+    probe_output->clear();
+  }
+  if (python_path.empty()) {
+    return PythonTorchCapability::kUnavailable;
+  }
+
+  std::error_code temp_error;
+  const std::filesystem::path temp_root = std::filesystem::temp_directory_path(temp_error);
+  if (temp_error) {
+    return PythonTorchCapability::kUnavailable;
+  }
+  const auto tick_count = static_cast<unsigned long long>(::GetTickCount64());
+  const auto process_id = static_cast<unsigned long long>(::GetCurrentProcessId());
+  const std::filesystem::path probe_log =
+      temp_root / ("ZSoda_PythonProbe_" + std::to_string(process_id) + "_" + std::to_string(tick_count) + ".log");
+
+  SECURITY_ATTRIBUTES security_attributes = {};
+  security_attributes.nLength = sizeof(security_attributes);
+  security_attributes.bInheritHandle = TRUE;
+  HANDLE output_handle =
+      ::CreateFileW(probe_log.wstring().c_str(),
+                    GENERIC_WRITE | GENERIC_READ,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    &security_attributes,
+                    CREATE_ALWAYS,
+                    FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE,
+                    nullptr);
+  if (output_handle == INVALID_HANDLE_VALUE) {
+    return PythonTorchCapability::kUnavailable;
+  }
+
+  const std::wstring python_wide = python_path.wstring();
+  std::wstring command_line = L"\"";
+  command_line.append(python_wide);
+  command_line.append(
+      L"\" -c \"import importlib.util as u; s=u.find_spec('torch'); print('ERROR=no_torch' if s is None else "
+      L"('CUDA=1' if __import__('torch').cuda.is_available() else 'CUDA=0'))\"");
+
+  STARTUPINFOW startup_info = {};
+  startup_info.cb = sizeof(startup_info);
+  startup_info.dwFlags = STARTF_USESTDHANDLES;
+  startup_info.hStdInput = ::GetStdHandle(STD_INPUT_HANDLE);
+  startup_info.hStdOutput = output_handle;
+  startup_info.hStdError = output_handle;
+
+  PROCESS_INFORMATION process_info = {};
+  std::wstring mutable_command_line = command_line;
+  const BOOL create_ok = ::CreateProcessW(nullptr,
+                                          mutable_command_line.data(),
+                                          nullptr,
+                                          nullptr,
+                                          TRUE,
+                                          CREATE_NO_WINDOW,
+                                          nullptr,
+                                          python_path.parent_path().wstring().c_str(),
+                                          &startup_info,
+                                          &process_info);
+  if (!create_ok) {
+    ::CloseHandle(output_handle);
+    return PythonTorchCapability::kUnavailable;
+  }
+
+  const DWORD wait_result = ::WaitForSingleObject(process_info.hProcess, 15000);
+  if (wait_result == WAIT_TIMEOUT) {
+    ::TerminateProcess(process_info.hProcess, 1);
+    ::WaitForSingleObject(process_info.hProcess, 2000);
+  }
+  ::CloseHandle(process_info.hThread);
+  ::CloseHandle(process_info.hProcess);
+
+  ::SetFilePointer(output_handle, 0, nullptr, FILE_BEGIN);
+  std::string captured;
+  std::array<char, 256> buffer{};
+  DWORD bytes_read = 0;
+  while (::ReadFile(output_handle, buffer.data(), static_cast<DWORD>(buffer.size()), &bytes_read, nullptr) &&
+         bytes_read > 0) {
+    captured.append(buffer.data(), static_cast<std::size_t>(bytes_read));
+  }
+  ::CloseHandle(output_handle);
+  if (probe_output != nullptr) {
+    *probe_output = captured;
+  }
+
+  if (captured.find("CUDA=1") != std::string::npos) {
+    return PythonTorchCapability::kTorchCuda;
+  }
+  if (captured.find("CUDA=0") != std::string::npos) {
+    return PythonTorchCapability::kTorchCpu;
+  }
+  return PythonTorchCapability::kUnavailable;
+}
+
+std::string ResolvePythonCommandForAutostart(const RuntimeOptions& options) {
+  if (!options.remote_service_python.empty()) {
+    return options.remote_service_python;
+  }
+
+  try {
+    const auto candidates = GatherPythonAutostartCandidates();
+    std::filesystem::path cpu_fallback;
+    for (const auto& candidate : candidates) {
+      std::string probe_output;
+      const auto capability = ProbePythonTorchCapability(candidate, &probe_output);
+      if (capability == PythonTorchCapability::kTorchCuda) {
+        return candidate.string();
+      }
+      if (capability == PythonTorchCapability::kTorchCpu && cpu_fallback.empty()) {
+        cpu_fallback = candidate;
+      }
+    }
+
+    if (!cpu_fallback.empty()) {
+      return cpu_fallback.string();
+    }
+  } catch (...) {
+    // Autodiscovery must never break AE loader setup. Fall back to PATH python.
+  }
+  return "python";
+}
+#endif
 
 bool StartDetachedPythonService(const RuntimeOptions& options,
                                 std::string_view status_endpoint,
@@ -951,14 +1715,18 @@ bool StartDetachedPythonService(const RuntimeOptions& options,
   const std::filesystem::path script_path = ResolveRemoteServiceScriptPath(options);
   if (script_path.empty()) {
     if (error != nullptr) {
-      *error = "official DA3 service script was not found";
+      *error = "remote service script was not found";
     }
     return false;
   }
 
   std::wstring python_wide;
-  const std::string python_command =
-      options.remote_service_python.empty() ? std::string("python") : options.remote_service_python;
+  const std::string python_command = ResolvePythonCommandForAutostart(options);
+  {
+    const std::string trace_detail =
+        std::string("python=") + python_command + ", script=" + script_path.string();
+    AppendRemoteTrace("service_autostart_python", trace_detail.c_str());
+  }
   if (!Utf8ToWide(python_command, &python_wide, error)) {
     return false;
   }
@@ -973,9 +1741,9 @@ bool StartDetachedPythonService(const RuntimeOptions& options,
     return false;
   }
 
-  std::wstring repo_root_wide;
-  if (!options.da3_repo_root.empty() &&
-      !Utf8ToWide(options.da3_repo_root, &repo_root_wide, error)) {
+  std::wstring preload_model_wide;
+  const std::string preload_model_id = ResolvePreloadModelId(options, script_path);
+  if (!preload_model_id.empty() && !Utf8ToWide(preload_model_id, &preload_model_wide, error)) {
     return false;
   }
 
@@ -998,9 +1766,9 @@ bool StartDetachedPythonService(const RuntimeOptions& options,
   command_line.append(L"\" --port ");
   command_line.append(std::to_wstring(options.remote_service_port > 0 ? options.remote_service_port
                                                                       : kDefaultLocalRemotePort));
-  if (!repo_root_wide.empty()) {
-    command_line.append(L" --repo-root \"");
-    command_line.append(repo_root_wide);
+  if (!preload_model_wide.empty()) {
+    command_line.append(L" --preload-model-id \"");
+    command_line.append(preload_model_wide);
     command_line.push_back(L'"');
   }
 
@@ -1050,7 +1818,7 @@ bool StartDetachedPythonService(const RuntimeOptions& options,
   ::CloseHandle(log_handle);
   if (!create_ok) {
     if (error != nullptr) {
-      *error = "CreateProcessW failed for official DA3 service (" +
+      *error = "CreateProcessW failed for remote inference service (" +
                std::to_string(::GetLastError()) + ")";
     }
     return false;
@@ -1073,7 +1841,7 @@ bool StartDetachedPythonService(const RuntimeOptions& options,
   }
 
   if (error != nullptr) {
-    *error = "official DA3 service did not become healthy at " + std::string(status_endpoint) +
+    *error = "remote inference service did not become healthy at " + std::string(status_endpoint) +
              (status_error.empty() ? std::string() : ": " + status_error);
   }
   return false;
@@ -1475,6 +2243,46 @@ struct ParsedDepthResponse {
   int height = 0;
   std::vector<float> values;
 };
+
+bool ParseBinaryDepthResponse(const BinaryEndpointResponse& response,
+                              ParsedDepthResponse* parsed,
+                              std::string* error) {
+  if (parsed == nullptr) {
+    if (error != nullptr) {
+      *error = "internal error: parsed response output is null";
+    }
+    return false;
+  }
+  if (response.width <= 0 || response.height <= 0) {
+    if (error != nullptr) {
+      *error = "binary response depth dimensions are invalid";
+    }
+    return false;
+  }
+
+  const std::size_t expected_values =
+      static_cast<std::size_t>(response.width) * static_cast<std::size_t>(response.height);
+  const std::size_t expected_bytes = expected_values * sizeof(float);
+  if (response.body.size() != expected_bytes) {
+    if (error != nullptr) {
+      *error = "binary response payload size mismatch (expected=" +
+               std::to_string(expected_bytes) + ", actual=" +
+               std::to_string(response.body.size()) + ")";
+    }
+    return false;
+  }
+
+  parsed->width = response.width;
+  parsed->height = response.height;
+  parsed->values.resize(expected_values);
+  if (expected_bytes > 0U) {
+    std::memcpy(parsed->values.data(), response.body.data(), expected_bytes);
+  }
+  if (error != nullptr) {
+    error->clear();
+  }
+  return true;
+}
 
 bool ParseDepthObject(std::string_view object,
                       ParsedDepthResponse* response,
@@ -1882,6 +2690,7 @@ bool RemoteInferenceBackend::SelectModel(const std::string& model_id,
 bool RemoteInferenceBackend::Run(const InferenceRequest& request,
                                  zsoda::core::FrameBuffer* out_depth,
                                  std::string* error) const {
+  const auto total_started = SteadyClock::now();
   std::string command_template;
   std::string model_id;
   std::string model_path;
@@ -1889,6 +2698,7 @@ bool RemoteInferenceBackend::Run(const InferenceRequest& request,
   std::string remote_endpoint;
   std::string remote_api_key;
   int remote_timeout_ms = 0;
+  RemoteTransportProtocol remote_protocol = RemoteTransportProtocol::kBinary;
   {
     zsoda::core::CompatLockGuard lock(mutex_);
     if (!initialized_) {
@@ -1904,6 +2714,7 @@ bool RemoteInferenceBackend::Run(const InferenceRequest& request,
     remote_endpoint = resolved_remote_endpoint_;
     remote_api_key = options_.remote_api_key;
     remote_timeout_ms = options_.remote_timeout_ms;
+    remote_protocol = options_.remote_transport_protocol;
   }
 
   if (model_id.empty()) {
@@ -1922,48 +2733,50 @@ bool RemoteInferenceBackend::Run(const InferenceRequest& request,
     return false;
   }
 
-  std::filesystem::path source_path;
-  if (!MakeUniqueTempFilePath("zsoda-remote-source", ".ppm", &source_path, error)) {
-    return false;
-  }
-  std::filesystem::path request_path;
-  if (!MakeUniqueTempFilePath("zsoda-remote-request", ".json", &request_path, error)) {
-    return false;
-  }
-  std::filesystem::path response_path;
-  if (!MakeUniqueTempFilePath("zsoda-remote-response", ".json", &response_path, error)) {
-    return false;
-  }
-  ScopedTempFile source_file(source_path);
-  ScopedTempFile request_file(request_path);
-  ScopedTempFile response_file(response_path);
-
-  if (!WritePortablePixmap(*request.source, source_file.path(), error)) {
-    return false;
-  }
-
-  std::string request_payload;
-  if (!SerializeRequestPayload(
-          request, model_id, model_path, source_file.path().string(), &request_payload, error)) {
-    return false;
-  }
-
-  if (!WriteTextFile(request_file.path(), request_payload, error)) {
-    return false;
-  }
-  std::error_code remove_error;
-  std::filesystem::remove(response_file.path(), remove_error);
-
   std::string response_payload;
-  if (!remote_endpoint.empty()) {
+  ParsedDepthResponse parsed_response;
+  RemoteTimingBreakdown timings;
+
+  if (!remote_endpoint.empty() && remote_protocol == RemoteTransportProtocol::kBinary) {
 #if defined(_WIN32)
-    if (!PostJsonToEndpoint(
-            remote_endpoint, request_payload, remote_api_key, remote_timeout_ms, &response_payload, error)) {
+    const auto convert_started = SteadyClock::now();
+    const std::vector<std::uint8_t> rgb_payload = EncodeRgb8Payload(*request.source);
+    timings.host_convert_ms = ElapsedMilliseconds(convert_started);
+
+    const auto encode_started = SteadyClock::now();
+    BinaryRequestMetadata metadata;
+    metadata.model_id = model_id;
+    metadata.quality = request.quality;
+    metadata.resize_mode = request.resize_mode;
+    metadata.frame_hash = request.frame_hash;
+    metadata.width = request.source->desc().width;
+    metadata.height = request.source->desc().height;
+    metadata.channels = 3;
+    timings.request_encode_ms = ElapsedMilliseconds(encode_started);
+
+    BinaryEndpointResponse binary_response;
+    if (!PostBinaryToEndpoint(remote_endpoint,
+                              metadata,
+                              rgb_payload,
+                              remote_api_key,
+                              remote_timeout_ms,
+                              &binary_response,
+                              error)) {
       if (error != nullptr && !error->empty()) {
         *error = backend_name + ": " + *error;
       }
       return false;
     }
+    timings.service_ms = std::max(0.0F, binary_response.elapsed_ms);
+
+    const auto decode_started = SteadyClock::now();
+    if (!ParseBinaryDepthResponse(binary_response, &parsed_response, error)) {
+      if (error != nullptr && !error->empty()) {
+        *error = backend_name + ": " + *error;
+      }
+      return false;
+    }
+    timings.response_decode_ms = ElapsedMilliseconds(decode_started);
 #else
     if (error != nullptr) {
       *error = backend_name + ": remote endpoint mode is only implemented on Windows";
@@ -1971,39 +2784,114 @@ bool RemoteInferenceBackend::Run(const InferenceRequest& request,
     return false;
 #endif
   } else {
+    std::filesystem::path source_path;
+    if (!MakeUniqueTempFilePath("zsoda-remote-source", ".ppm", &source_path, error)) {
+      return false;
+    }
+    std::filesystem::path request_path;
+    if (!MakeUniqueTempFilePath("zsoda-remote-request", ".json", &request_path, error)) {
+      return false;
+    }
+    std::filesystem::path response_path;
+    if (!MakeUniqueTempFilePath("zsoda-remote-response", ".json", &response_path, error)) {
+      return false;
+    }
+    ScopedTempFile source_file(source_path);
+    ScopedTempFile request_file(request_path);
+    ScopedTempFile response_file(response_path);
+
+    const auto convert_started = SteadyClock::now();
+    if (!WritePortablePixmap(*request.source, source_file.path(), error)) {
+      return false;
+    }
+    timings.host_convert_ms = ElapsedMilliseconds(convert_started);
+
+    const auto encode_started = SteadyClock::now();
+    std::string request_payload;
+    if (!SerializeRequestPayload(
+            request, model_id, model_path, source_file.path().string(), &request_payload, error)) {
+      return false;
+    }
+    if (!WriteTextFile(request_file.path(), request_payload, error)) {
+      return false;
+    }
+    timings.request_encode_ms = ElapsedMilliseconds(encode_started);
+    std::error_code remove_error;
+    std::filesystem::remove(response_file.path(), remove_error);
+
     std::string command_line;
-    if (!BuildCommandLine(
-            command_template, request_file.path(), response_file.path(), &command_line, error)) {
-      return false;
-    }
-
-    const int raw_exit_code = std::system(command_line.c_str());
-    if (raw_exit_code == -1) {
+    if (!remote_endpoint.empty()) {
+#if defined(_WIN32)
+      const auto service_started = SteadyClock::now();
+      if (!PostJsonToEndpoint(remote_endpoint,
+                              request_payload,
+                              remote_api_key,
+                              remote_timeout_ms,
+                              &response_payload,
+                              error)) {
+        if (error != nullptr && !error->empty()) {
+          *error = backend_name + ": " + *error;
+        }
+        return false;
+      }
+      timings.service_ms = ElapsedMilliseconds(service_started);
+#else
       if (error != nullptr) {
-        *error = backend_name + ": failed to invoke remote command";
+        *error = backend_name + ": remote endpoint mode is only implemented on Windows";
       }
       return false;
-    }
-    const int exit_code = NormalizeProcessExitCode(raw_exit_code);
-    if (exit_code != 0) {
-      if (error != nullptr) {
-        *error = backend_name + ": remote command failed (exit_code=" +
-                 std::to_string(exit_code) + ")";
+#endif
+    } else {
+      if (!BuildCommandLine(
+              command_template, request_file.path(), response_file.path(), &command_line, error)) {
+        return false;
       }
+
+      const auto service_started = SteadyClock::now();
+      const int raw_exit_code = std::system(command_line.c_str());
+      timings.service_ms = ElapsedMilliseconds(service_started);
+      if (raw_exit_code == -1) {
+        if (error != nullptr) {
+          *error = backend_name + ": failed to invoke remote command";
+        }
+        return false;
+      }
+      const int exit_code = NormalizeProcessExitCode(raw_exit_code);
+      if (exit_code != 0) {
+        if (error != nullptr) {
+          *error = backend_name + ": remote command failed (exit_code=" +
+                   std::to_string(exit_code) + ")";
+        }
+        return false;
+      }
+
+      if (!ReadTextFile(response_file.path(), &response_payload, error)) {
+        return false;
+      }
+    }
+    const auto decode_started = SteadyClock::now();
+    if (!ParseDepthResponsePayload(response_payload, &parsed_response, error)) {
       return false;
     }
-
-    if (!ReadTextFile(response_file.path(), &response_payload, error)) {
-      return false;
-    }
+    timings.response_decode_ms = ElapsedMilliseconds(decode_started);
   }
 
-  ParsedDepthResponse parsed_response;
-  if (!ParseDepthResponsePayload(response_payload, &parsed_response, error)) {
-    return false;
-  }
   if (!WriteNormalizedDepthToOutput(parsed_response, request.source->desc(), out_depth, error)) {
     return false;
+  }
+
+  timings.total_ms = ElapsedMilliseconds(total_started);
+  if (RemoteTimingTraceEnabled()) {
+    std::ostringstream detail;
+    detail.setf(std::ios::fixed);
+    detail.precision(2);
+    detail << "model=" << model_id << ", protocol=" << RemoteTransportProtocolName(remote_protocol)
+           << ", host_convert_ms=" << timings.host_convert_ms
+           << ", request_encode_ms=" << timings.request_encode_ms
+           << ", service_ms=" << timings.service_ms
+           << ", response_decode_ms=" << timings.response_decode_ms
+           << ", total_ms=" << timings.total_ms;
+    AppendRemoteTrace("run_timing", detail.str().c_str());
   }
 
   if (error != nullptr) {

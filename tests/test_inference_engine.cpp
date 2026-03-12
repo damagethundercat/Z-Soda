@@ -279,25 +279,24 @@ void TestModelList() {
   zsoda::inference::ManagedInferenceEngine engine("models");
   const auto models = engine.ListModelIds();
   assert(!models.empty());
-  assert(HasModel(models, "depth-anything-v3-small"));
-  assert(HasModel(models, "depth-anything-v3-small-multiview"));
-  assert(HasModel(models, "depth-anything-v3-large-multiview"));
-  assert(!HasModel(models, "video-depth-anything-large-onnx-512x288"));
+  assert(HasModel(models, "distill-any-depth"));
+  assert(HasModel(models, "distill-any-depth-base"));
+  assert(HasModel(models, "distill-any-depth-large"));
 }
 
 void TestModelSelection() {
   zsoda::inference::ManagedInferenceEngine engine("models");
   std::string error;
-  assert(engine.Initialize("depth-anything-v3-small", &error));
-  assert(engine.ActiveModelId() == "depth-anything-v3-small");
+  assert(engine.Initialize("distill-any-depth-base", &error));
+  assert(engine.ActiveModelId() == "distill-any-depth-base");
 
   error.clear();
   assert(!engine.SelectModel("unknown-model", &error));
   assert(!error.empty());
 
   error.clear();
-  assert(engine.SelectModel("depth-anything-v3-large", &error));
-  assert(engine.ActiveModelId() == "depth-anything-v3-large");
+  assert(engine.SelectModel("distill-any-depth-large", &error));
+  assert(engine.ActiveModelId() == "distill-any-depth-large");
 }
 
 void TestRuntimeBackendOptions() {
@@ -331,9 +330,16 @@ void TestRuntimeBackendOptions() {
          zsoda::inference::PreprocessResizeMode::kLowerBoundCenterCrop);
   assert(zsoda::inference::ParsePreprocessResizeMode("stretch") ==
          zsoda::inference::PreprocessResizeMode::kStretch);
+  assert(zsoda::inference::ParseRemoteTransportProtocol("binary") ==
+         zsoda::inference::RemoteTransportProtocol::kBinary);
+  assert(zsoda::inference::ParseRemoteTransportProtocol("json") ==
+         zsoda::inference::RemoteTransportProtocol::kJson);
+  assert(zsoda::inference::ParseRemoteTransportProtocol("legacy_json") ==
+         zsoda::inference::RemoteTransportProtocol::kJson);
 
   zsoda::inference::RuntimeOptions options;
   options.preferred_backend = zsoda::inference::RuntimeBackend::kCuda;
+  assert(options.remote_transport_protocol == zsoda::inference::RemoteTransportProtocol::kBinary);
   zsoda::inference::ManagedInferenceEngine engine("models", options);
   assert(engine.RequestedBackend() == zsoda::inference::RuntimeBackend::kCuda);
 #if defined(ZSODA_WITH_ONNX_RUNTIME)
@@ -442,7 +448,8 @@ void TestRemoteBackendSafeFallbackWithManagedEngine() {
 
   zsoda::core::FrameBuffer output;
   assert(engine.Run(request, &output, &error));
-  assert(error.empty());
+  assert(!error.empty());
+  assert(Contains(error, "remote command failed"));
   assert(!output.empty());
 
   const auto after = engine.BackendStatus();
@@ -554,12 +561,12 @@ void TestManifestLoadingAndDefaults() {
       manifest,
       "# id|display_name|relative_path|download_url|preferred_default|auxiliary_assets\n"
       "custom-depth-v1|Custom Depth v1|custom/custom_depth_v1.onnx|https://example.com/custom_depth_v1.onnx|true\n"
-      "depth-anything-v3-small|Depth Anything v3 Small (Manifest)|depth-anything-v3/small_override.onnx|https://example.com/small_override.onnx|false\n");
+      "distill-any-depth-base|Distill Any Depth Base (Manifest)|distill-any-depth/base_override.onnx|https://example.com/base_override.onnx|false\n");
 
   zsoda::inference::ManagedInferenceEngine engine(temp_dir.path().string());
   const auto ids = engine.ListModelIds();
   assert(HasModel(ids, "custom-depth-v1"));
-  assert(HasModel(ids, "depth-anything-v3-small"));
+  assert(HasModel(ids, "distill-any-depth-base"));
 
   std::string error;
   assert(engine.Initialize("", &error));
@@ -736,71 +743,16 @@ void TestOnnxPreprocessStretchModeDistortsAspectRatio() {
   assert(spread_ratio <= 0.7F || spread_ratio >= 1.4F);
 }
 
-void TestDa3UpperBoundResizeUsesAspectAndPatchAlignment() {
-  const auto source = MakeRgbCenteredSquareSource(192, 108, 24);
-  zsoda::inference::InferenceRequest request;
-  request.source = &source;
-  request.quality = 1;
-
-  zsoda::inference::ModelPipelineProfile profile =
-      zsoda::inference::ResolvePipelineProfile("depth-anything-v3-small");
-  profile.normalize_mean = {0.0F, 0.0F, 0.0F};
-  profile.normalize_std = {1.0F, 1.0F, 1.0F};
-
-  ScopedEnvironmentOverride process_res("ZSODA_DA3_PROCESS_RES", "518");
-  zsoda::inference::PreparedModelInput prepared;
-  std::string error;
-  assert(zsoda::inference::PrepareInputForModel(request,
-                                                profile,
-                                                profile.input_width,
-                                                profile.input_height,
-                                                zsoda::inference::PreprocessResizeMode::
-                                                    kUpperBoundLetterbox,
-                                                true,
-                                                &prepared,
-                                                &error));
-  assert(error.empty());
-  assert(prepared.tensor_width == 518);
-  assert(prepared.tensor_height == 294);
-  assert(prepared.process_res == 518);
-  assert(prepared.patch_multiple == 14);
-  assert(prepared.dynamic_upper_bound_aspect);
-  assert(prepared.direct_resize_mapping);
-  assert(prepared.resize_scale == 0.0F);
-}
-
-void TestDa3ProfileRespectsMultiviewEnvToggle() {
-  {
-    ScopedEnvironmentOverride da3_frames_default("ZSODA_DA3_MULTIVIEW_FRAMES", "1");
-    const auto profile =
-        zsoda::inference::ResolvePipelineProfile("depth-anything-v3-small");
-    assert(profile.input_frame_count == 1);
-    assert(!profile.prefer_latest_output_map);
-  }
-
-  {
-    ScopedEnvironmentOverride da3_frames_default("ZSODA_DA3_MULTIVIEW_FRAMES", "");
-    const auto profile =
-        zsoda::inference::ResolvePipelineProfile("depth-anything-v3-small-multiview");
-    assert(profile.input_frame_count == 5);
-    assert(profile.prefer_latest_output_map);
-  }
-
-  {
-    ScopedEnvironmentOverride da3_frames_four("ZSODA_DA3_MULTIVIEW_FRAMES", "4");
-    const auto profile =
-        zsoda::inference::ResolvePipelineProfile("depth-anything-v3-small-multiview");
-    assert(profile.input_frame_count == 4);
-    assert(profile.prefer_latest_output_map);
-  }
-
-  {
-    ScopedEnvironmentOverride da3_frames_invalid("ZSODA_DA3_MULTIVIEW_FRAMES", "0");
-    const auto profile =
-        zsoda::inference::ResolvePipelineProfile("depth-anything-v3-small-multiview");
-    assert(profile.input_frame_count == 5);
-    assert(profile.prefer_latest_output_map);
-  }
+void TestDistillAnyDepthProfileDefaults() {
+  const auto profile = zsoda::inference::ResolvePipelineProfile("distill-any-depth-base");
+  assert(profile.input_width == 384);
+  assert(profile.input_height == 384);
+  assert(profile.input_frame_count == 1);
+  assert(!profile.invert_depth);
+  assert(!profile.prefer_latest_output_map);
+  assert(!profile.use_upper_bound_dynamic_aspect);
+  assert(profile.patch_multiple == 1);
+  assert(!profile.use_middle_reference_strategy);
 }
 
 void TestOnnxBackendValidationScaffold() {
@@ -823,35 +775,35 @@ void TestOnnxBackendValidationScaffold() {
   assert(Contains(error, "model id cannot be empty"));
 
   error.clear();
-  assert(!backend->SelectModel("depth-anything-v3-small", "", &error));
+  assert(!backend->SelectModel("distill-any-depth-base", "", &error));
   assert(Contains(error, "model path cannot be empty"));
 
   TempDir temp_dir;
   const auto missing = temp_dir.path() / "missing.onnx";
   error.clear();
-  assert(!backend->SelectModel("depth-anything-v3-small", missing.string(), &error));
+  assert(!backend->SelectModel("distill-any-depth-base", missing.string(), &error));
   assert(Contains(error, "model path does not exist:"));
 
   const auto model_dir = temp_dir.path() / "as-directory";
   std::filesystem::create_directories(model_dir);
   error.clear();
-  assert(!backend->SelectModel("depth-anything-v3-small", model_dir.string(), &error));
+  assert(!backend->SelectModel("distill-any-depth-base", model_dir.string(), &error));
   assert(Contains(error, "model path is not a regular file:"));
 
-  const auto wrong_extension = temp_dir.path() / "depth_anything_v3_small.txt";
+  const auto wrong_extension = temp_dir.path() / "distill_any_depth_base.txt";
   WriteTextFile(wrong_extension, "dummy");
   error.clear();
-  assert(!backend->SelectModel("depth-anything-v3-small", wrong_extension.string(), &error));
+  assert(!backend->SelectModel("distill-any-depth-base", wrong_extension.string(), &error));
   assert(Contains(error, "model file extension must be .onnx:"));
 
-  const auto valid_model = temp_dir.path() / "depth_anything_v3_small.onnx";
+  const auto valid_model = temp_dir.path() / "distill_any_depth_base.onnx";
   WriteTextFile(valid_model, "dummy");
   error.clear();
 #if defined(ZSODA_WITH_ONNX_RUNTIME_API)
-  assert(!backend->SelectModel("depth-anything-v3-small", valid_model.string(), &error));
+  assert(!backend->SelectModel("distill-any-depth-base", valid_model.string(), &error));
   assert(HasOrtRunOrExecutionDiagnostic(error));
 #else
-  assert(backend->SelectModel("depth-anything-v3-small", valid_model.string(), &error));
+  assert(backend->SelectModel("distill-any-depth-base", valid_model.string(), &error));
   assert(error.empty());
 
   const auto source = MakeSource();
@@ -863,7 +815,7 @@ void TestOnnxBackendValidationScaffold() {
   error.clear();
   assert(!backend->Run(request, &output, &error));
   assert(HasOrtRunOrExecutionDiagnostic(error));
-  assert(Contains(error, "model_id=depth-anything-v3-small"));
+  assert(Contains(error, "model_id=distill-any-depth-base"));
   assert(Contains(error, valid_model.string()));
 #endif
 }
@@ -879,14 +831,14 @@ void TestModelAutoDownloaderValidation() {
 
   detail.clear();
   const auto empty_url_status = zsoda::inference::RequestModelDownloadAsync(
-      {.model_id = "depth-anything-v3-small", .download_url = "", .destination_path = "x"},
+      {.model_id = "distill-any-depth-base", .download_url = "", .destination_path = "x"},
       &detail);
   assert(empty_url_status == zsoda::inference::ModelDownloadRequestStatus::kSkipped);
   assert(Contains(detail, "download url is empty"));
 
   detail.clear();
   const auto empty_path_status = zsoda::inference::RequestModelDownloadAsync(
-      {.model_id = "depth-anything-v3-small", .download_url = "https://example.com/model.onnx", .destination_path = ""},
+      {.model_id = "distill-any-depth-base", .download_url = "https://example.com/model.onnx", .destination_path = ""},
       &detail);
   assert(empty_path_status == zsoda::inference::ModelDownloadRequestStatus::kSkipped);
   assert(Contains(detail, "destination path is empty"));
@@ -911,8 +863,7 @@ void RunInferenceEngineTests() {
 #if defined(ZSODA_WITH_ONNX_RUNTIME)
   TestOnnxPreprocessAspectRatioForNonSquareInput();
   TestOnnxPreprocessStretchModeDistortsAspectRatio();
-  TestDa3UpperBoundResizeUsesAspectAndPatchAlignment();
-  TestDa3ProfileRespectsMultiviewEnvToggle();
+  TestDistillAnyDepthProfileDefaults();
   TestOnnxBackendValidationScaffold();
 #endif
   TestModelAutoDownloaderValidation();

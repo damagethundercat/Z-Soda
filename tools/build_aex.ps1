@@ -2,11 +2,9 @@ param(
   [Parameter(Mandatory = $true)]
   [string]$AeSdkIncludeDir,
 
-  [Parameter(Mandatory = $true)]
-  [string]$OrtIncludeDir,
+  [string]$OrtIncludeDir = "",
 
-  [Parameter(Mandatory = $true)]
-  [string]$OrtLibrary,
+  [string]$OrtLibrary = "",
 
   [ValidateSet("AUTO", "ON", "OFF")]
   [string]$OrtDirectLinkMode = "OFF",
@@ -694,8 +692,7 @@ function Sync-PythonRuntimeAssets {
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 
   $serviceFiles = @(
-    "tools\\official_da3_remote_service.py",
-    "tools\\official_da3_remote_client.py"
+    "tools\\distill_any_depth_remote_service.py"
   )
   foreach ($relativePath in $serviceFiles) {
     $sourcePath = Join-Path $RepoRoot $relativePath
@@ -708,25 +705,6 @@ function Sync-PythonRuntimeAssets {
     Print-ArtifactInfo -Label "python_runtime_file" -Path $destinationPath
   }
 
-  $packageSource = Join-Path $RepoRoot ".tmp_external_research\\Depth-Anything-3\\src\\depth_anything_3"
-  if (-not (Test-Path -LiteralPath $packageSource -PathType Container)) {
-    Write-Warning "python_runtime_sync: depth_anything_3 source package not found ($packageSource)"
-    return
-  }
-
-  $packageDestination = Join-Path $DestinationRoot "depth_anything_3"
-  Copy-Item -LiteralPath $packageSource -Destination $packageDestination -Recurse -Force
-  Get-ChildItem -LiteralPath $packageDestination -Recurse -Directory -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -eq "__pycache__" } |
-    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-  Get-ChildItem -LiteralPath $packageDestination -Recurse -File -ErrorAction SilentlyContinue |
-    Where-Object { $_.Extension -in @(".pyc", ".pyo") } |
-    Remove-Item -Force -ErrorAction SilentlyContinue
-
-  $apiPath = Join-Path $packageDestination "api.py"
-  if (Test-Path -LiteralPath $apiPath -PathType Leaf) {
-    Print-ArtifactInfo -Label "python_runtime_api" -Path $apiPath
-  }
 }
 
 $runningOnWindows = $false
@@ -749,34 +727,9 @@ $zsodaAeFlagsHeader = Join-Path $repoRoot "plugin\ae\ZSodaAeFlags.h"
 $expectedOutFlagsToken = Get-ZsodaGlobalOutFlagsToken -HeaderPath $zsodaAeFlagsHeader
 $buildDirAbs = Resolve-AbsolutePath -Path $BuildDir -AllowMissing
 $aeSdkIncludeDirAbs = Resolve-AbsolutePath -Path $AeSdkIncludeDir
-$ortIncludeDirAbs = Resolve-AbsolutePath -Path $OrtIncludeDir
-$ortLibraryAbs = Resolve-AbsolutePath -Path $OrtLibrary
 
 Assert-Path -Path $aeSdkIncludeDirAbs -PathType Container -Message "AE SDK include dir not found: $aeSdkIncludeDirAbs"
 Assert-Path -Path (Join-Path $aeSdkIncludeDirAbs "AE_Effect.h") -PathType Leaf -Message "AE_Effect.h not found under AE SDK include dir: $aeSdkIncludeDirAbs"
-Assert-Path -Path $ortIncludeDirAbs -PathType Container -Message "ONNX Runtime include dir not found: $ortIncludeDirAbs"
-Assert-Path -Path $ortLibraryAbs -PathType Leaf -Message "ONNX Runtime library not found: $ortLibraryAbs"
-
-$ortHeaderDirect = Join-Path $ortIncludeDirAbs "onnxruntime_cxx_api.h"
-$ortHeaderNested = Join-Path $ortIncludeDirAbs "onnxruntime\core\session\onnxruntime_cxx_api.h"
-if (-not (Test-Path -LiteralPath $ortHeaderDirect -PathType Leaf) -and
-    -not (Test-Path -LiteralPath $ortHeaderNested -PathType Leaf)) {
-  throw "onnxruntime_cxx_api.h not found under ORT include dir: $ortIncludeDirAbs"
-}
-
-$ortRuntimeDllAbs = Resolve-OrtRuntimeDll -OrtLibraryPath $ortLibraryAbs -ExplicitDllPath $OrtRuntimeDllPath
-if ($null -eq $ortRuntimeDllAbs) {
-  $warn = "onnxruntime.dll was not resolved (checked explicit path and OrtLibrary neighbors). Runtime package may miss ORT DLL."
-  if ($RequireOrtRuntimeDll) {
-    throw $warn
-  }
-  Write-Warning $warn
-}
-$ortProvidersSharedAbs = Resolve-OrtProvidersSharedDll -OrtLibraryPath $ortLibraryAbs -OrtRuntimeDllPath $ortRuntimeDllAbs
-if ($null -eq $ortProvidersSharedAbs) {
-  Write-Warning "onnxruntime_providers_shared.dll was not resolved. ORT initialization may fail at runtime."
-}
-$ortRuntimeBundleDlls = Resolve-OrtRuntimeBundleDlls -OrtRuntimeDllPath $ortRuntimeDllAbs
 
 if ($Clean -and (Test-Path -LiteralPath $buildDirAbs)) {
   Remove-Item -LiteralPath $buildDirAbs -Recurse -Force
@@ -787,18 +740,69 @@ if ($EnableOrtApi -and $DisableOrtApi) {
   throw "EnableOrtApi and DisableOrtApi cannot be used together."
 }
 
-$enableOrtApiEffective = $true
-if ($DisableOrtApi) {
+$hasOrtIncludeDir = -not [string]::IsNullOrWhiteSpace($OrtIncludeDir)
+$hasOrtLibrary = -not [string]::IsNullOrWhiteSpace($OrtLibrary)
+if ($hasOrtIncludeDir -xor $hasOrtLibrary) {
+  throw "Provide both OrtIncludeDir and OrtLibrary together, or omit both for the DAD-only remote production build."
+}
+
+$enableOrtRuntimeEffective = $hasOrtIncludeDir -and $hasOrtLibrary
+if ($EnableOrtApi -and -not $enableOrtRuntimeEffective) {
+  throw "EnableOrtApi requires both OrtIncludeDir and OrtLibrary."
+}
+
+$ortIncludeDirAbs = ""
+$ortLibraryAbs = ""
+$ortRuntimeDllAbs = $null
+$ortProvidersSharedAbs = $null
+$ortRuntimeBundleDlls = @()
+if ($enableOrtRuntimeEffective) {
+  $ortIncludeDirAbs = Resolve-AbsolutePath -Path $OrtIncludeDir
+  $ortLibraryAbs = Resolve-AbsolutePath -Path $OrtLibrary
+  Assert-Path -Path $ortIncludeDirAbs -PathType Container -Message "ONNX Runtime include dir not found: $ortIncludeDirAbs"
+  Assert-Path -Path $ortLibraryAbs -PathType Leaf -Message "ONNX Runtime library not found: $ortLibraryAbs"
+
+  $ortHeaderDirect = Join-Path $ortIncludeDirAbs "onnxruntime_cxx_api.h"
+  $ortHeaderNested = Join-Path $ortIncludeDirAbs "onnxruntime\core\session\onnxruntime_cxx_api.h"
+  if (-not (Test-Path -LiteralPath $ortHeaderDirect -PathType Leaf) -and
+      -not (Test-Path -LiteralPath $ortHeaderNested -PathType Leaf)) {
+    throw "onnxruntime_cxx_api.h not found under ORT include dir: $ortIncludeDirAbs"
+  }
+
+  $ortRuntimeDllAbs = Resolve-OrtRuntimeDll -OrtLibraryPath $ortLibraryAbs -ExplicitDllPath $OrtRuntimeDllPath
+  if ($null -eq $ortRuntimeDllAbs) {
+    $warn = "onnxruntime.dll was not resolved (checked explicit path and OrtLibrary neighbors). Runtime package may miss ORT DLL."
+    if ($RequireOrtRuntimeDll) {
+      throw $warn
+    }
+    Write-Warning $warn
+  }
+  $ortProvidersSharedAbs = Resolve-OrtProvidersSharedDll -OrtLibraryPath $ortLibraryAbs -OrtRuntimeDllPath $ortRuntimeDllAbs
+  if ($null -eq $ortProvidersSharedAbs) {
+    Write-Warning "onnxruntime_providers_shared.dll was not resolved. ORT initialization may fail at runtime."
+  }
+  $ortRuntimeBundleDlls = Resolve-OrtRuntimeBundleDlls -OrtRuntimeDllPath $ortRuntimeDllAbs
+} elseif ($RequireOrtRuntimeDll) {
+  throw "RequireOrtRuntimeDll was requested, but ONNX Runtime is disabled for this build."
+}
+
+$enableOrtApiEffective = $false
+if (-not $enableOrtRuntimeEffective) {
+  $enableOrtApiEffective = $false
+} elseif ($DisableOrtApi) {
   $enableOrtApiEffective = $false
 }
 if ($EnableOrtApi) {
   $enableOrtApiEffective = $true
 }
 $loaderOnlyMainInt = if ($LoaderOnlyMain.IsPresent) { 1 } else { 0 }
+$enableOrtRuntimeInt = if ($enableOrtRuntimeEffective) { 1 } else { 0 }
 $enableOrtApiInt = if ($enableOrtApiEffective) { 1 } else { 0 }
 
-if (-not $enableOrtApiEffective) {
-  Write-Host "ORT mode: structural-safe (ZSODA_WITH_ONNX_RUNTIME_API=OFF)"
+if (-not $enableOrtRuntimeEffective) {
+  Write-Host "ORT mode: disabled (DAD-only remote production build)"
+} elseif (-not $enableOrtApiEffective) {
+  Write-Host "ORT mode: backend enabled, API path OFF (structural-safe dynamic loader only)"
 }
 if ($enableOrtApiEffective -and $OrtDirectLinkMode -eq "OFF") {
   Write-Host "ORT mode: API enabled with structural dynamic-loader path (direct link OFF)."
@@ -826,7 +830,7 @@ $configureArgs = @(
   "-DZSODA_BUILD_TESTS=OFF",
   "-DZSODA_WITH_AE_SDK=ON",
   "-DZSODA_AE_LOADER_ONLY_MODE=$loaderOnlyMainInt",
-  "-DZSODA_WITH_ONNX_RUNTIME=ON",
+  "-DZSODA_WITH_ONNX_RUNTIME=$enableOrtRuntimeInt",
   "-DZSODA_WITH_ONNX_RUNTIME_API=$enableOrtApiInt",
   "-DZSODA_MSVC_RUNTIME_LIBRARY=$MsvcRuntime",
   "-DZSODA_ONNXRUNTIME_DIRECT_LINK_MODE=$OrtDirectLinkMode",
@@ -981,6 +985,12 @@ $stagedOrtRuntimePath = $null
 $stagedOrtProvidersPath = $null
 if ($ortRuntimeDllAbs -or $ortProvidersSharedAbs -or ($ortRuntimeBundleDlls.Count -gt 0)) {
   Reset-StagedOrtDirectory -Path (Join-Path $aexDir "zsoda_ort")
+} else {
+  $staleOrtDir = Join-Path $aexDir "zsoda_ort"
+  if (Test-Path -LiteralPath $staleOrtDir -PathType Container) {
+    Remove-Item -LiteralPath $staleOrtDir -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Host "Removed stale local zsoda_ort runtime directory."
+  }
 }
 if ($ortRuntimeDllAbs) {
   # Deploy into isolated subdirectory to avoid LoadLibraryW conflict with
@@ -990,7 +1000,7 @@ if ($ortRuntimeDllAbs) {
   $stagedOrtRuntimePath = Join-Path $stagedOrtDir "onnxruntime.dll"
   Copy-Item -LiteralPath $ortRuntimeDllAbs -Destination $stagedOrtRuntimePath -Force
   Print-ArtifactInfo -Label "staged_ort_dll" -Path $stagedOrtRuntimePath
-} else {
+} elseif ($enableOrtRuntimeEffective) {
   Write-Warning "onnxruntime.dll was not staged next to ZSoda.aex."
 }
 if ($ortProvidersSharedAbs) {
@@ -1038,8 +1048,14 @@ if ($CopyToMediaCore) {
         Write-Host "Removed old $oldName from MediaCore directory."
       }
     }
-  } else {
+  } elseif ($enableOrtRuntimeEffective) {
     Write-Warning "MediaCore copy requested but onnxruntime.dll is unavailable."
+  } else {
+    $mediaCoreOrtDir = Join-Path $MediaCoreDir "zsoda_ort"
+    if (Test-Path -LiteralPath $mediaCoreOrtDir -PathType Container) {
+      Remove-Item -LiteralPath $mediaCoreOrtDir -Recurse -Force -ErrorAction SilentlyContinue
+      Write-Host "Removed stale MediaCore zsoda_ort runtime directory."
+    }
   }
   if ($ortProvidersSharedAbs) {
     $mediaCoreOrtDir = Join-Path $MediaCoreDir "zsoda_ort"
@@ -1054,7 +1070,7 @@ if ($CopyToMediaCore) {
       Remove-Item -LiteralPath $oldProvidersPath -Force -ErrorAction SilentlyContinue
       Write-Host "Removed old onnxruntime_providers_shared.dll from MediaCore directory."
     }
-  } else {
+  } elseif ($enableOrtRuntimeEffective) {
     Write-Warning "MediaCore copy requested but onnxruntime_providers_shared.dll is unavailable."
   }
   Stage-DllBundle -Files $ortRuntimeBundleDlls -DestinationDir (Join-Path $MediaCoreDir "zsoda_ort") -LabelPrefix "mediacore_ort_runtime_bundle_dll"

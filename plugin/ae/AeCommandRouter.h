@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "ae/AeParams.h"
+#include "core/CompatMutex.h"
 #include "core/RenderPipeline.h"
 #include "inference/InferenceEngine.h"
 
@@ -32,7 +33,9 @@ struct AeHostCommandContext {
 struct RenderRequest {
   zsoda::core::FrameBuffer source;
   std::optional<AeParamValues> params_override;
+  std::shared_ptr<zsoda::core::RenderPipelineState> pipeline_state;
   std::uint64_t frame_hash = 0;
+  std::uint64_t render_state_token = 0;
 };
 
 struct RenderResponse {
@@ -61,10 +64,12 @@ class AeCommandRouter {
   [[nodiscard]] const std::vector<std::string>& ModelMenu() const;
 
  private:
+  [[nodiscard]] AeParamValues SnapshotParams() const;
   bool RefreshModelMenu(std::string* error);
 
   std::shared_ptr<zsoda::core::RenderPipeline> pipeline_;
   std::shared_ptr<zsoda::inference::IInferenceEngine> engine_;
+  mutable zsoda::core::CompatMutex params_mutex_{};
   AeParamValues current_params_{};
   std::vector<std::string> model_menu_;
 };

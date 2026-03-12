@@ -2,12 +2,14 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <cstdio>
 #include <exception>
 #include <functional>
 #include <limits>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -328,6 +330,222 @@ float ComputeMeanAbsoluteDifference(const FrameBuffer& lhs, const FrameBuffer& r
   return total / static_cast<float>(sampled);
 }
 
+FrameBuffer BlurGray3x3(const FrameBuffer& source) {
+  if (source.empty() || source.desc().channels != 1) {
+    return source;
+  }
+
+  FrameBuffer blurred(source.desc());
+  const auto& desc = source.desc();
+  for (int y = 0; y < desc.height; ++y) {
+    for (int x = 0; x < desc.width; ++x) {
+      float sum = 0.0F;
+      float weight = 0.0F;
+      for (int ky = -1; ky <= 1; ++ky) {
+        const int sy = std::clamp(y + ky, 0, desc.height - 1);
+        for (int kx = -1; kx <= 1; ++kx) {
+          const int sx = std::clamp(x + kx, 0, desc.width - 1);
+          const float kernel = (kx == 0 && ky == 0) ? 4.0F : ((kx == 0 || ky == 0) ? 2.0F : 1.0F);
+          sum += source.at(sx, sy, 0) * kernel;
+          weight += kernel;
+        }
+      }
+      blurred.at(x, y, 0) = (weight > 1e-6F) ? (sum / weight) : source.at(x, y, 0);
+    }
+  }
+  return blurred;
+}
+
+FrameBuffer ApplySliceMatteToSource(const FrameBuffer& source, const FrameBuffer& matte) {
+  if (source.empty() || matte.empty() || source.desc().width != matte.desc().width ||
+      source.desc().height != matte.desc().height || matte.desc().channels < 1) {
+    return matte;
+  }
+
+  FrameDesc output_desc = source.desc();
+  if (output_desc.channels < 4) {
+    output_desc.channels = 4;
+    output_desc.format = PixelFormat::kRGBA32F;
+  }
+  FrameBuffer output(output_desc);
+
+  for (int y = 0; y < output_desc.height; ++y) {
+    for (int x = 0; x < output_desc.width; ++x) {
+      const float mask = std::clamp(matte.at(x, y, 0), 0.0F, 1.0F);
+      const float src_r = source.at(x, y, 0);
+      const float src_g = source.at(x, y, std::min(1, source.desc().channels - 1));
+      const float src_b = source.at(x, y, std::min(2, source.desc().channels - 1));
+      const float src_a =
+          source.desc().channels >= 4 ? source.at(x, y, 3) : 1.0F;
+
+      output.at(x, y, 0) = std::clamp(src_r * mask, 0.0F, 1.0F);
+      output.at(x, y, 1) = std::clamp(src_g * mask, 0.0F, 1.0F);
+      output.at(x, y, 2) = std::clamp(src_b * mask, 0.0F, 1.0F);
+      if (output_desc.channels >= 4) {
+        output.at(x, y, 3) = std::clamp(src_a * mask, 0.0F, 1.0F);
+      }
+    }
+  }
+  return output;
+}
+
+struct SliceWindow {
+  float min_depth = 0.0F;
+  float max_depth = 1.0F;
+};
+
+FrameBuffer BuildSliceDepthInput(const FrameBuffer& depth, const RenderParams& params) {
+  if (params.slice_normalize) {
+    FrameBuffer normalized = depth;
+    NormalizeDepth(&normalized, false);
+    return normalized;
+  }
+  return depth;
+}
+
+SliceWindow ResolveSliceWindow(const RenderParams& params) {
+  SliceWindow window;
+  window.min_depth = std::clamp(std::min(params.min_depth, params.max_depth), 0.0F, 1.0F);
+  window.max_depth = std::clamp(std::max(params.min_depth, params.max_depth), 0.0F, 1.0F);
+
+  if (params.slice_normalize) {
+    return window;
+  }
+
+  const float band_width = std::max(0.0F, window.max_depth - window.min_depth);
+  const float band_center =
+      std::clamp(params.slice_absolute_depth / 1000.0F, 0.0F, 1.0F);
+  const float half_width = 0.5F * band_width;
+  window.min_depth = std::clamp(band_center - half_width, 0.0F, 1.0F);
+  window.max_depth = std::clamp(band_center + half_width, 0.0F, 1.0F);
+  return window;
+}
+
+FrameBuffer BuildTemporalLowFrequency(const FrameBuffer& source) {
+  if (source.empty() || source.desc().channels != 1) {
+    return source;
+  }
+  // Use a wider effective support than a single 3x3 pass so the temporal path
+  // stabilizes larger low-frequency shapes while leaving current-frame detail intact.
+  return BlurGray3x3(BlurGray3x3(source));
+}
+
+float ComputeLocalGradientMagnitude(const FrameBuffer& source, int x, int y) {
+  const auto& desc = source.desc();
+  if (source.empty() || desc.channels != 1) {
+    return 0.0F;
+  }
+  const int xm = std::max(0, x - 1);
+  const int xp = std::min(desc.width - 1, x + 1);
+  const int ym = std::max(0, y - 1);
+  const int yp = std::min(desc.height - 1, y + 1);
+  const float gx = std::fabs(source.at(xp, y, 0) - source.at(xm, y, 0));
+  const float gy = std::fabs(source.at(x, yp, 0) - source.at(x, ym, 0));
+  return 0.5F * (gx + gy);
+}
+
+struct RunningMoments {
+  double sum = 0.0;
+  double sum_sq = 0.0;
+  std::size_t count = 0U;
+
+  void Add(float value) {
+    sum += static_cast<double>(value);
+    sum_sq += static_cast<double>(value) * static_cast<double>(value);
+    ++count;
+  }
+
+  [[nodiscard]] float Mean() const {
+    if (count == 0U) {
+      return 0.0F;
+    }
+    return static_cast<float>(sum / static_cast<double>(count));
+  }
+
+  [[nodiscard]] float StdDev() const {
+    if (count == 0U) {
+      return 0.0F;
+    }
+    const double mean = sum / static_cast<double>(count);
+    const double variance =
+        std::max(0.0, (sum_sq / static_cast<double>(count)) - mean * mean);
+    return static_cast<float>(std::sqrt(variance));
+  }
+};
+
+void AccumulateFrameMoments(const FrameBuffer& source, RunningMoments* moments) {
+  if (source.empty() || moments == nullptr || source.desc().channels != 1) {
+    return;
+  }
+  const auto& desc = source.desc();
+  for (int y = 0; y < desc.height; ++y) {
+    for (int x = 0; x < desc.width; ++x) {
+      moments->Add(source.at(x, y, 0));
+    }
+  }
+}
+
+FrameBuffer AlignHistoryLowFrequency(const FrameBuffer& current_low,
+                                     const FrameBuffer& history_low,
+                                     const FrameBuffer& current_luma,
+                                     const FrameBuffer& history_luma,
+                                     float stability_threshold,
+                                     float edge_threshold) {
+  FrameBuffer aligned(history_low.desc());
+  if (current_low.empty() || history_low.empty() || current_luma.empty() || history_luma.empty() ||
+      current_low.desc().width != history_low.desc().width ||
+      current_low.desc().height != history_low.desc().height) {
+    return history_low;
+  }
+
+  RunningMoments current_stats;
+  RunningMoments history_stats;
+  const auto& desc = current_low.desc();
+  const float clamped_stability = std::max(0.005F, stability_threshold);
+  const float clamped_edge = std::max(0.01F, edge_threshold);
+  for (int y = 0; y < desc.height; ++y) {
+    for (int x = 0; x < desc.width; ++x) {
+      const float luma_delta =
+          std::fabs(current_luma.at(x, y, 0) - history_luma.at(x, y, 0));
+      if (luma_delta > clamped_stability) {
+        continue;
+      }
+      const float current_gradient = ComputeLocalGradientMagnitude(current_luma, x, y);
+      const float history_gradient = ComputeLocalGradientMagnitude(history_luma, x, y);
+      if (std::max(current_gradient, history_gradient) > clamped_edge) {
+        continue;
+      }
+      current_stats.Add(current_low.at(x, y, 0));
+      history_stats.Add(history_low.at(x, y, 0));
+    }
+  }
+
+  if (current_stats.count < 64U || history_stats.count < 64U) {
+    current_stats = {};
+    history_stats = {};
+    AccumulateFrameMoments(current_low, &current_stats);
+    AccumulateFrameMoments(history_low, &history_stats);
+  }
+
+  const float current_mean = current_stats.Mean();
+  const float history_mean = history_stats.Mean();
+  const float current_std = current_stats.StdDev();
+  const float history_std = history_stats.StdDev();
+  const float scale =
+      (history_std > 1e-4F && current_std > 1e-4F)
+          ? std::clamp(current_std / history_std, 0.5F, 2.0F)
+          : 1.0F;
+  const float bias = current_mean - history_mean * scale;
+
+  for (int y = 0; y < desc.height; ++y) {
+    for (int x = 0; x < desc.width; ++x) {
+      aligned.at(x, y, 0) =
+          std::clamp(history_low.at(x, y, 0) * scale + bias, 0.0F, 1.0F);
+    }
+  }
+  return aligned;
+}
+
 struct PercentileRange {
   float low = 0.0F;
   float high = 1.0F;
@@ -390,57 +608,6 @@ PercentileRange ComputeDepthPercentileRange(const FrameBuffer& depth,
   range.valid = std::isfinite(range.low) && std::isfinite(range.high) &&
                 (range.high > range.low + 1e-6F);
   return range;
-}
-
-bool ShouldEnableDetailBoost(const RenderParams& params, const FrameDesc& source_desc) {
-  (void)source_desc;
-  int requested_tiles = std::clamp(params.quality_boost, 0, 8);
-  if (requested_tiles <= 1) {
-    requested_tiles = ParseIntEnvOrDefault("ZSODA_QUALITY_BOOST_TILES", requested_tiles, 0, 8);
-  }
-  if (requested_tiles <= 1 && ParseBoolEnvOrDefault("ZSODA_DETAIL_BOOST", false)) {
-    requested_tiles = 2;
-  }
-  return requested_tiles > 1;
-}
-
-int ResolveDetailBoostTiles(const RenderParams& params) {
-  int requested_tiles = std::clamp(params.quality_boost, 0, 8);
-  if (requested_tiles <= 1) {
-    requested_tiles = ParseIntEnvOrDefault("ZSODA_QUALITY_BOOST_TILES", requested_tiles, 0, 8);
-  }
-  if (requested_tiles <= 1 && ParseBoolEnvOrDefault("ZSODA_DETAIL_BOOST", false)) {
-    requested_tiles = 2;
-  }
-  return std::clamp(requested_tiles, 0, 8);
-}
-
-int ResolveDetailBoostReferenceQuality(const RenderParams& params) {
-  const int default_quality = std::min(2, std::clamp(params.quality, 1, 8));
-  return ParseIntEnvOrDefault("ZSODA_QUALITY_BOOST_REFERENCE_QUALITY", default_quality, 1, 8);
-}
-
-float ResolveDetailBoostPaddingRatio() {
-  return ParseFloatEnvOrDefault("ZSODA_QUALITY_BOOST_PADDING_RATIO", 0.50F, 0.0F, 1.0F);
-}
-
-float ResolveDetailBoostVarianceFloor() {
-  return ParseFloatEnvOrDefault("ZSODA_QUALITY_BOOST_VARIANCE_FLOOR", 1.0e-4F, 1.0e-6F, 1.0F);
-}
-
-int ResolveDetailBoostResidualBlurRadius() {
-  return ParseIntEnvOrDefault("ZSODA_QUALITY_BOOST_RESIDUAL_RADIUS", 2, 1, 6);
-}
-
-float ResolveDetailBoostResidualGain() {
-  return ParseFloatEnvOrDefault("ZSODA_QUALITY_BOOST_RESIDUAL_GAIN", 1.0F, 0.0F, 4.0F);
-}
-
-float ResolveDetailBoostResidualClampSigma() {
-  return ParseFloatEnvOrDefault("ZSODA_QUALITY_BOOST_RESIDUAL_CLAMP_SIGMA",
-                                2.5F,
-                                0.0F,
-                                8.0F);
 }
 
 struct DetailBoostStats {
@@ -671,18 +838,7 @@ std::string JoinAttemptDetails(const std::vector<std::string>& attempts) {
 }
 
 bool IsTemporalSequenceModelId(std::string_view model_id) {
-  if (model_id.rfind("video-depth-anything", 0) == 0) {
-    return true;
-  }
-  if (model_id.find("multiview") != std::string_view::npos) {
-    return true;
-  }
-  if (model_id.rfind("depth-anything-v3", 0) == 0) {
-    const int multiview_frames =
-        ParseIntEnvOrDefault("ZSODA_DA3_MULTIVIEW_FRAMES", 1, 1, 128);
-    return multiview_frames > 1;
-  }
-  return false;
+  return model_id.rfind("video-depth-anything", 0) == 0;
 }
 
 int ComputeDownscaleDivisor(const FrameDesc& source_desc, int vram_budget_mb) {
@@ -739,8 +895,19 @@ struct PooledFrame {
 RenderPipeline::RenderPipeline(std::shared_ptr<inference::IInferenceEngine> engine)
     : engine_(std::move(engine)) {}
 
-RenderOutput RenderPipeline::Render(const FrameBuffer& source, const RenderParams& params) {
+std::shared_ptr<RenderPipelineState> RenderPipeline::CreateState() const {
+  return std::make_shared<RenderPipelineState>();
+}
+
+RenderPipelineState* RenderPipeline::ResolveState(RenderPipelineState* state) const {
+  return state != nullptr ? state : &shared_state_;
+}
+
+RenderOutput RenderPipeline::Render(const FrameBuffer& source,
+                                    const RenderParams& params,
+                                    RenderPipelineState* state) {
   try {
+    RenderPipelineState* render_state = ResolveState(state);
     const std::string enter_detail =
         "model=" + params.model_id + ", q=" + std::to_string(params.quality) +
         ", src=" + std::to_string(source.desc().width) + "x" +
@@ -757,7 +924,7 @@ RenderOutput RenderPipeline::Render(const FrameBuffer& source, const RenderParam
     }
 
     if (!params.freeze_enabled) {
-      ClearFrozenOutput();
+      ClearFrozenOutput(render_state);
     }
 
     AppendPipelineTrace("select_model_begin");
@@ -781,7 +948,7 @@ RenderOutput RenderPipeline::Render(const FrameBuffer& source, const RenderParam
 
     if (params.freeze_enabled) {
       FrameBuffer frozen;
-      if (TryGetFrozenOutput(source, params, &frozen)) {
+      if (TryGetFrozenOutput(source, params, render_state, &frozen)) {
         AppendPipelineTrace("freeze_hit");
         return {RenderStatus::kCacheHit, std::move(frozen), "frozen depth hit (" + engine_->ActiveModelId() +
                                                         ")"};
@@ -796,8 +963,23 @@ RenderOutput RenderPipeline::Render(const FrameBuffer& source, const RenderParam
     depth.buffer = pool_.Acquire(depth_desc);
 
     auto finalize_output = [&](RenderStatus status, std::string message) -> RenderOutput {
-      ApplyPostProcess(depth.get(), source, params);
-      FrameBuffer output = BuildOutput(*depth.get(), params);
+      const auto postprocess_started = std::chrono::steady_clock::now();
+      ApplyPostProcess(depth.get(), source, params, render_state);
+      FrameBuffer output = BuildOutput(*depth.get(), source, params);
+      const auto postprocess_finished = std::chrono::steady_clock::now();
+      const double postprocess_ms =
+          static_cast<double>(
+              std::chrono::duration_cast<std::chrono::microseconds>(postprocess_finished -
+                                                                    postprocess_started)
+                  .count()) /
+          1000.0;
+      if (ParseBoolEnvOrDefault("ZSODA_PIPELINE_TRACE", false)) {
+        std::ostringstream detail;
+        detail.setf(std::ios::fixed);
+        detail.precision(2);
+        detail << "postprocess_ms=" << postprocess_ms;
+        AppendPipelineTrace("postprocess_timing", detail.str().c_str());
+      }
       const float outside_value =
           params.output_mode == OutputMode::kSlicing ? 0.0F : (params.invert ? 1.0F : 0.0F);
       ApplySourceAlphaMask(&output, source, outside_value);
@@ -805,55 +987,20 @@ RenderOutput RenderPipeline::Render(const FrameBuffer& source, const RenderParam
         cache_.Insert(key, output);
       }
       if (params.freeze_enabled) {
-        StoreFrozenOutput(source, params, output);
+        StoreFrozenOutput(source, params, render_state, output);
       }
       if (!model_selection_error.empty()) {
         message += " - " + model_selection_error;
       }
       return {status, std::move(output), std::move(message)};
     };
-    const bool detail_boost_requested = ShouldEnableDetailBoost(params, source.desc());
-    const bool detail_boost_supported =
-        detail_boost_requested && !IsTemporalSequenceModelId(params.model_id);
-    const int direct_quality =
-        detail_boost_supported ? ResolveDetailBoostReferenceQuality(params) : params.quality;
-
     std::string direct_error;
     AppendPipelineTrace("direct_inference_begin");
-    if (RunInference(source, params, direct_quality, depth.get(), &direct_error)) {
+    if (RunInference(source, params, params.quality, depth.get(), &direct_error)) {
       AppendPipelineTrace("direct_inference_ok");
-      std::string message =
-          (detail_boost_supported ? "reference inference succeeded (" : "direct inference succeeded (") +
-          engine_->ActiveModelId() + ")";
+      std::string message = "direct inference succeeded (" + engine_->ActiveModelId() + ")";
       if (!direct_error.empty()) {
         message += " - backend note: " + direct_error;
-      }
-      if (detail_boost_requested) {
-        std::string detail_note;
-        bool detail_applied = false;
-        if (!detail_boost_supported) {
-          detail_note = "temporal sequence model";
-        } else if (ApplyDetailBoostRefinement(source, params, depth.get(), &detail_note)) {
-          detail_applied = true;
-        } else if (direct_quality != params.quality) {
-          FrameBuffer restored_depth(depth_desc);
-          std::string restore_error;
-          if (RunInference(source, params, params.quality, &restored_depth, &restore_error)) {
-            *depth.get() = std::move(restored_depth);
-            if (!restore_error.empty()) {
-              detail_note += " - restored direct quality with backend note: " + restore_error;
-            } else {
-              detail_note += " - restored direct quality";
-            }
-          } else if (!restore_error.empty()) {
-            detail_note += " - direct quality restore failed: " + restore_error;
-          }
-        }
-        if (detail_applied && !detail_note.empty()) {
-          message += " - " + detail_note;
-        } else if (!detail_applied && !detail_note.empty()) {
-          message += " - detail boost skipped: " + detail_note;
-        }
       }
       return finalize_output(RenderStatus::kInference, std::move(message));
     }
@@ -955,7 +1102,7 @@ void RenderPipeline::SetCacheLimit(std::size_t limit) {
 
 void RenderPipeline::PurgeCache() {
   cache_.Clear();
-  ClearFrozenOutput();
+  ClearFrozenOutput(&shared_state_);
 }
 
 bool RenderPipeline::ShouldUseCache(const RenderParams& params) const {
@@ -990,7 +1137,6 @@ std::uint64_t RenderPipeline::BuildPostprocessStateHash(const RenderParams& para
   };
 
   std::uint64_t h = static_cast<std::uint64_t>(static_cast<int>(params.mapping_mode));
-  h = mix(h, static_cast<std::uint64_t>(std::max(0, params.quality_boost)));
   h = mix(h, static_cast<std::uint64_t>(params.invert ? 1 : 0));
   h = mix(h, to_permille(params.guided_low_percentile));
   h = mix(h, to_permille(params.guided_high_percentile));
@@ -1004,6 +1150,7 @@ std::uint64_t RenderPipeline::BuildPostprocessStateHash(const RenderParams& para
   h = mix(h, static_cast<std::uint64_t>(params.edge_aware_upsample ? 1 : 0));
   h = mix(h, static_cast<std::uint64_t>(params.freeze_enabled ? 1 : 0));
   h = mix(h, static_cast<std::uint64_t>(std::max(0, params.extract_token)));
+  h = mix(h, params.render_state_token);
   return h;
 }
 
@@ -1016,7 +1163,6 @@ RenderCacheKey RenderPipeline::BuildCacheKey(const FrameBuffer& source, const Re
   key.width = source.desc().width;
   key.height = source.desc().height;
   key.quality = params.quality;
-  key.quality_boost = std::max(0, params.quality_boost);
   key.preserve_aspect_ratio = params.preserve_aspect_ratio;
   key.invert = params.invert;
   key.mapping_mode = static_cast<int>(params.mapping_mode);
@@ -1031,6 +1177,9 @@ RenderCacheKey RenderPipeline::BuildCacheKey(const FrameBuffer& source, const Re
   key.edge_guidance_sigma_permille = to_permille(params.edge_guidance_sigma);
   key.edge_aware_upsample = params.edge_aware_upsample;
   key.slice_mode = params.output_mode == OutputMode::kSlicing;
+  key.slice_normalize = params.slice_normalize;
+  key.slice_absolute_depth =
+      static_cast<int>(std::lround(std::clamp(params.slice_absolute_depth, 0.0F, 1000.0F)));
   key.slice_min_permille = to_permille(params.min_depth);
   key.slice_max_permille = to_permille(params.max_depth);
   key.slice_softness_permille = to_permille(params.softness);
@@ -1040,6 +1189,7 @@ RenderCacheKey RenderPipeline::BuildCacheKey(const FrameBuffer& source, const Re
   key.extract_token = std::max(0, params.extract_token);
   key.model_hash = static_cast<std::uint64_t>(std::hash<std::string>{}(params.model_id));
   key.frame_hash = params.frame_hash;
+  key.render_state_token = params.render_state_token;
   return key;
 }
 
@@ -1062,192 +1212,6 @@ bool RenderPipeline::RunInference(const FrameBuffer& source,
                             : inference::PreprocessResizeMode::kStretch;
   request.frame_hash = params.frame_hash;
   return engine_->Run(request, depth, error);
-}
-
-bool RenderPipeline::ApplyDetailBoostRefinement(const FrameBuffer& source,
-                                                const RenderParams& params,
-                                                FrameBuffer* depth,
-                                                std::string* detail) const {
-  if (detail != nullptr) {
-    detail->clear();
-  }
-  if (depth == nullptr || depth->empty() || source.empty()) {
-    if (detail != nullptr) {
-      *detail = "invalid source/depth";
-    }
-    return false;
-  }
-  if (depth->desc().channels != 1) {
-    if (detail != nullptr) {
-      *detail = "depth boost requires single-channel depth";
-    }
-    return false;
-  }
-
-  const int n_tiles = ResolveDetailBoostTiles(params);
-  if (n_tiles <= 1) {
-    if (detail != nullptr) {
-      *detail = "quality boost disabled";
-    }
-    return false;
-  }
-
-  if (IsTemporalSequenceModelId(params.model_id)) {
-    if (detail != nullptr) {
-      *detail = "temporal sequence model";
-    }
-    return false;
-  }
-
-  const auto& desc = depth->desc();
-  const FrameBuffer reference_depth = *depth;
-  const int reference_quality = ResolveDetailBoostReferenceQuality(params);
-  const float padding_ratio = ResolveDetailBoostPaddingRatio();
-  const float variance_floor = ResolveDetailBoostVarianceFloor();
-  const int residual_blur_radius = ResolveDetailBoostResidualBlurRadius();
-  const float residual_gain = ResolveDetailBoostResidualGain();
-  const float residual_clamp_sigma = ResolveDetailBoostResidualClampSigma();
-  const int source_width = source.desc().width;
-  const int source_height = source.desc().height;
-  const int tile_w = std::max(1, source_width / n_tiles);
-  const int tile_h = std::max(1, source_height / n_tiles);
-  const int padding = static_cast<int>(
-      std::lround(static_cast<float>(std::min(tile_w, tile_h)) * padding_ratio));
-
-  FrameBuffer accumulated_residual(desc);
-  accumulated_residual.Fill(0.0F);
-  FrameBuffer weights(desc);
-  weights.Fill(0.0F);
-
-  int tiles_applied = 0;
-  for (int tile_y = 0; tile_y < n_tiles; ++tile_y) {
-    for (int tile_x = 0; tile_x < n_tiles; ++tile_x) {
-      const int core_x1 = tile_x * tile_w;
-      const int core_y1 = tile_y * tile_h;
-      const int core_x2 =
-          tile_x == n_tiles - 1 ? source_width : std::min(source_width, (tile_x + 1) * tile_w);
-      const int core_y2 =
-          tile_y == n_tiles - 1 ? source_height : std::min(source_height, (tile_y + 1) * tile_h);
-      if (core_x1 >= core_x2 || core_y1 >= core_y2) {
-        continue;
-      }
-
-      const int pad_x1 = std::max(0, core_x1 - padding);
-      const int pad_y1 = std::max(0, core_y1 - padding);
-      const int pad_x2 = std::min(source_width, core_x2 + padding);
-      const int pad_y2 = std::min(source_height, core_y2 + padding);
-
-      TileRect padded_tile;
-      padded_tile.x = pad_x1;
-      padded_tile.y = pad_y1;
-      padded_tile.width = std::max(1, pad_x2 - pad_x1);
-      padded_tile.height = std::max(1, pad_y2 - pad_y1);
-
-      const FrameBuffer tile_source = CropGray(source, padded_tile);
-      FrameDesc tile_desc = tile_source.desc();
-      tile_desc.channels = 1;
-      tile_desc.format = PixelFormat::kGray32F;
-      FrameBuffer tile_depth(tile_desc);
-      FrameBuffer aligned_tile(tile_desc);
-      aligned_tile.Fill(std::numeric_limits<float>::quiet_NaN());
-
-      std::string tile_error;
-      if (!RunInference(tile_source, params, params.quality, &tile_depth, &tile_error)) {
-        if (detail != nullptr) {
-          *detail = tile_error.empty() ? "quality boost tiled refinement failed" : tile_error;
-        }
-        return false;
-      }
-
-      const DetailBoostStats ref_stats =
-          ComputeFiniteMeanStd(reference_depth, pad_x1, pad_y1, pad_x2, pad_y2);
-      const DetailBoostStats tile_stats =
-          ComputeFiniteMeanStd(tile_depth, 0, 0, tile_depth.desc().width, tile_depth.desc().height);
-
-      float scale = 1.0F;
-      float offset = 0.0F;
-      if (ref_stats.valid && tile_stats.valid) {
-        scale = std::max(variance_floor, ref_stats.stddev) /
-                std::max(variance_floor, tile_stats.stddev);
-        offset = ref_stats.mean - tile_stats.mean * scale;
-      }
-
-      for (int local_y = 0; local_y < padded_tile.height; ++local_y) {
-        for (int local_x = 0; local_x < padded_tile.width; ++local_x) {
-          const float tile_value = tile_depth.at(local_x, local_y, 0);
-          if (!std::isfinite(tile_value)) {
-            continue;
-          }
-          aligned_tile.at(local_x, local_y, 0) = tile_value * scale + offset;
-        }
-      }
-
-      float residual_limit = std::numeric_limits<float>::infinity();
-      if (residual_clamp_sigma > 0.0F && ref_stats.valid) {
-        residual_limit = std::max(variance_floor, ref_stats.stddev * residual_clamp_sigma);
-      }
-
-      for (int local_y = 0; local_y < padded_tile.height; ++local_y) {
-        for (int local_x = 0; local_x < padded_tile.width; ++local_x) {
-          const float aligned_value = aligned_tile.at(local_x, local_y, 0);
-          if (!std::isfinite(aligned_value)) {
-            continue;
-          }
-          const int out_x = pad_x1 + local_x;
-          const int out_y = pad_y1 + local_y;
-          float residual =
-              (aligned_value -
-               ComputeFiniteBoxBlur(aligned_tile, local_x, local_y, residual_blur_radius)) *
-              residual_gain;
-          if (std::isfinite(residual_limit)) {
-            residual = std::clamp(residual, -residual_limit, residual_limit);
-          }
-          const float weight = ComputeDetailBoostFeatherWeight(out_x,
-                                                               out_y,
-                                                               core_x1,
-                                                               core_y1,
-                                                               core_x2,
-                                                               core_y2,
-                                                               pad_x1,
-                                                               pad_y1,
-                                                               pad_x2,
-                                                               pad_y2);
-          accumulated_residual.at(out_x, out_y, 0) += residual * weight;
-          weights.at(out_x, out_y, 0) += weight;
-        }
-      }
-      ++tiles_applied;
-    }
-  }
-
-  for (int y = 0; y < desc.height; ++y) {
-    for (int x = 0; x < desc.width; ++x) {
-      const float reference_value = reference_depth.at(x, y, 0);
-      const float weight = weights.at(x, y, 0);
-      if (weight > 0.0F) {
-        const float refined = reference_value + accumulated_residual.at(x, y, 0) / weight;
-        depth->at(x, y, 0) = std::isfinite(refined) ? refined : reference_value;
-      } else {
-        depth->at(x, y, 0) = reference_value;
-      }
-    }
-  }
-
-  if (tiles_applied == 0) {
-    if (detail != nullptr) {
-      *detail = "quality boost generated no tiles";
-    }
-    return false;
-  }
-
-  if (detail != nullptr) {
-    *detail = "quality boost applied (" + std::to_string(n_tiles) + "x" +
-              std::to_string(n_tiles) + " tiles, ref_quality=" +
-              std::to_string(reference_quality) + ", padding=" +
-              std::to_string(padding) + ", fusion=residual, blur_radius=" +
-              std::to_string(residual_blur_radius) + ")";
-  }
-  return true;
 }
 
 bool RenderPipeline::RunTiledInference(const FrameBuffer& source,
@@ -1362,40 +1326,46 @@ bool RenderPipeline::RunDownscaledInference(const FrameBuffer& source,
 
 bool RenderPipeline::TryGetFrozenOutput(const FrameBuffer& source,
                                         const RenderParams& params,
+                                        RenderPipelineState* state,
                                         FrameBuffer* output) const {
   if (output == nullptr) {
     return false;
   }
+  RenderPipelineState* render_state = ResolveState(state);
   const std::uint64_t requested_hash = BuildFrozenStateHash(source, params);
-  CompatLockGuard lock(frozen_mutex_);
-  if (!frozen_has_output_ || frozen_output_.empty() || requested_hash != frozen_state_hash_) {
+  CompatLockGuard lock(render_state->frozen_mutex_);
+  if (!render_state->frozen_has_output_ || render_state->frozen_output_.empty() ||
+      requested_hash != render_state->frozen_state_hash_) {
     return false;
   }
-  *output = frozen_output_;
+  *output = render_state->frozen_output_;
   return true;
 }
 
 void RenderPipeline::StoreFrozenOutput(const FrameBuffer& source,
                                        const RenderParams& params,
+                                       RenderPipelineState* state,
                                        const FrameBuffer& output) const {
   if (output.empty()) {
     return;
   }
+  RenderPipelineState* render_state = ResolveState(state);
   const std::uint64_t state_hash = BuildFrozenStateHash(source, params);
-  CompatLockGuard lock(frozen_mutex_);
-  frozen_output_ = output;
-  frozen_state_hash_ = state_hash;
-  frozen_has_output_ = true;
+  CompatLockGuard lock(render_state->frozen_mutex_);
+  render_state->frozen_output_ = output;
+  render_state->frozen_state_hash_ = state_hash;
+  render_state->frozen_has_output_ = true;
 }
 
-void RenderPipeline::ClearFrozenOutput() const {
-  CompatLockGuard lock(frozen_mutex_);
-  if (!frozen_has_output_ && frozen_output_.empty()) {
+void RenderPipeline::ClearFrozenOutput(RenderPipelineState* state) const {
+  RenderPipelineState* render_state = ResolveState(state);
+  CompatLockGuard lock(render_state->frozen_mutex_);
+  if (!render_state->frozen_has_output_ && render_state->frozen_output_.empty()) {
     return;
   }
-  frozen_output_ = FrameBuffer();
-  frozen_state_hash_ = 0;
-  frozen_has_output_ = false;
+  render_state->frozen_output_ = FrameBuffer();
+  render_state->frozen_state_hash_ = 0;
+  render_state->frozen_has_output_ = false;
 }
 
 std::uint64_t RenderPipeline::BuildFrozenStateHash(const FrameBuffer& source,
@@ -1406,7 +1376,6 @@ std::uint64_t RenderPipeline::BuildFrozenStateHash(const FrameBuffer& source,
   hash = HashCombine64(hash, HashFromInt(static_cast<int>(source.desc().format)));
 
   hash = HashCombine64(hash, HashFromInt(params.quality));
-  hash = HashCombine64(hash, HashFromInt(std::max(0, params.quality_boost)));
   hash = HashCombine64(hash, HashFromBool(params.preserve_aspect_ratio));
   hash = HashCombine64(hash, HashFromBool(params.invert));
   hash = HashCombine64(hash, HashFromInt(static_cast<int>(params.mapping_mode)));
@@ -1421,6 +1390,9 @@ std::uint64_t RenderPipeline::BuildFrozenStateHash(const FrameBuffer& source,
   hash = HashCombine64(hash, HashFromPermille(params.edge_guidance_sigma));
   hash = HashCombine64(hash, HashFromBool(params.edge_aware_upsample));
   hash = HashCombine64(hash, HashFromInt(static_cast<int>(params.output_mode)));
+  hash = HashCombine64(hash, HashFromBool(params.slice_normalize));
+  hash = HashCombine64(hash, HashFromInt(static_cast<int>(
+                                   std::lround(std::clamp(params.slice_absolute_depth, 0.0F, 1000.0F)))));
   hash = HashCombine64(hash, HashFromPermille(params.min_depth));
   hash = HashCombine64(hash, HashFromPermille(params.max_depth));
   hash = HashCombine64(hash, HashFromPermille(params.softness));
@@ -1433,33 +1405,37 @@ std::uint64_t RenderPipeline::BuildFrozenStateHash(const FrameBuffer& source,
   hash = HashCombine64(
       hash,
       static_cast<std::uint64_t>(std::hash<std::string>{}(params.model_id)));
+  hash = HashCombine64(hash, params.render_state_token);
   return hash;
 }
 
 void RenderPipeline::ApplyPostProcess(FrameBuffer* depth,
                                       const FrameBuffer& source,
-                                      const RenderParams& params) const {
+                                      const RenderParams& params,
+                                      RenderPipelineState* state) const {
   if (depth == nullptr || depth->empty()) {
     return;
   }
+  RenderPipelineState* render_state = ResolveState(state);
 
   const FrameBuffer source_luma = BuildSourceLuma(source);
   const std::uint64_t model_hash = static_cast<std::uint64_t>(std::hash<std::string>{}(params.model_id));
   const std::uint64_t state_hash = BuildPostprocessStateHash(params);
   const auto& depth_desc = depth->desc();
 
-  CompatLockGuard lock(postprocess_mutex_);
-  if (!postprocess_initialized_ || model_hash != postprocess_model_hash_ ||
-      state_hash != postprocess_state_hash_ ||
-      depth_desc.width != temporal_depth_.desc().width ||
-      depth_desc.height != temporal_depth_.desc().height) {
-    guided_mapping_state_ = {};
-    temporal_depth_ = FrameBuffer(depth_desc);
-    temporal_source_luma_ = FrameBuffer(source_luma.desc());
-    postprocess_model_hash_ = model_hash;
-    postprocess_state_hash_ = state_hash;
-    postprocess_initialized_ = true;
-    temporal_has_state_ = false;
+  CompatLockGuard lock(render_state->postprocess_mutex_);
+  if (!render_state->postprocess_initialized_ ||
+      model_hash != render_state->postprocess_model_hash_ ||
+      state_hash != render_state->postprocess_state_hash_ ||
+      depth_desc.width != render_state->temporal_depth_.desc().width ||
+      depth_desc.height != render_state->temporal_depth_.desc().height) {
+    render_state->guided_mapping_state_ = {};
+    render_state->temporal_depth_ = FrameBuffer(depth_desc);
+    render_state->temporal_source_luma_ = FrameBuffer(source_luma.desc());
+    render_state->postprocess_model_hash_ = model_hash;
+    render_state->postprocess_state_hash_ = state_hash;
+    render_state->postprocess_initialized_ = true;
+    render_state->temporal_has_state_ = false;
   }
 
   DepthMappingParams mapping_params;
@@ -1468,73 +1444,90 @@ void RenderPipeline::ApplyPostProcess(FrameBuffer* depth,
   mapping_params.guided_low_percentile = params.guided_low_percentile;
   mapping_params.guided_high_percentile = params.guided_high_percentile;
   mapping_params.guided_update_alpha = params.guided_update_alpha;
-  ApplyDepthMapping(depth, mapping_params, &guided_mapping_state_);
-  ApplyTemporalSmoothing(depth, source_luma, params);
+  ApplyDepthMapping(depth, mapping_params, &render_state->guided_mapping_state_);
+  ApplyTemporalSmoothing(depth, source_luma, params, render_state);
   ApplyEdgeAwareEnhancement(depth, source_luma, params);
 }
 
 void RenderPipeline::ApplyTemporalSmoothing(FrameBuffer* depth,
                                             const FrameBuffer& source_luma,
-                                            const RenderParams& params) const {
+                                            const RenderParams& params,
+                                            RenderPipelineState* state) const {
   if (depth == nullptr || depth->empty() || source_luma.empty()) {
     return;
   }
+  RenderPipelineState* render_state = ResolveState(state);
 
   const float alpha = std::clamp(params.temporal_alpha, 0.0F, 1.0F);
-  if (!temporal_depth_.empty() && !temporal_source_luma_.empty()) {
-    const bool size_mismatch = temporal_depth_.desc().width != depth->desc().width ||
-                               temporal_depth_.desc().height != depth->desc().height ||
-                               temporal_source_luma_.desc().width != source_luma.desc().width ||
-                               temporal_source_luma_.desc().height != source_luma.desc().height;
+  if (!render_state->temporal_depth_.empty() && !render_state->temporal_source_luma_.empty()) {
+    const bool size_mismatch =
+        render_state->temporal_depth_.desc().width != depth->desc().width ||
+        render_state->temporal_depth_.desc().height != depth->desc().height ||
+        render_state->temporal_source_luma_.desc().width != source_luma.desc().width ||
+        render_state->temporal_source_luma_.desc().height != source_luma.desc().height;
     if (size_mismatch) {
-      temporal_depth_.Resize(depth->desc());
-      temporal_source_luma_.Resize(source_luma.desc());
-      temporal_has_state_ = false;
+      render_state->temporal_depth_.Resize(depth->desc());
+      render_state->temporal_source_luma_.Resize(source_luma.desc());
+      render_state->temporal_has_state_ = false;
     }
   }
 
-  if (!temporal_has_state_) {
-    temporal_depth_ = *depth;
-    temporal_source_luma_ = source_luma;
-    temporal_has_state_ = true;
+  if (!render_state->temporal_has_state_) {
+    render_state->temporal_depth_ = *depth;
+    render_state->temporal_source_luma_ = source_luma;
+    render_state->temporal_has_state_ = true;
     return;
   }
 
   const float scene_cut_threshold = std::clamp(params.temporal_scene_cut_threshold, 0.0F, 1.0F);
-  const float mean_abs_diff = ComputeMeanAbsoluteDifference(source_luma, temporal_source_luma_);
+  const float mean_abs_diff =
+      ComputeMeanAbsoluteDifference(source_luma, render_state->temporal_source_luma_);
   if (mean_abs_diff >= scene_cut_threshold) {
-    temporal_depth_ = *depth;
-    temporal_source_luma_ = source_luma;
+    render_state->temporal_depth_ = *depth;
+    render_state->temporal_source_luma_ = source_luma;
     return;
   }
 
   if (alpha < 1.0F) {
     const auto& desc = depth->desc();
-    const float edge_threshold = std::max(1e-4F, std::clamp(params.temporal_edge_threshold, 0.0F, 1.0F));
+    const float edge_threshold =
+        std::max(1e-4F, std::clamp(params.temporal_edge_threshold, 0.0F, 1.0F));
+    const float stability_threshold =
+        std::max(0.03F, std::min(scene_cut_threshold * 0.9F, 0.18F));
+    const FrameBuffer current_low = BuildTemporalLowFrequency(*depth);
+    const FrameBuffer history_low = BuildTemporalLowFrequency(render_state->temporal_depth_);
+    const FrameBuffer aligned_history_low = AlignHistoryLowFrequency(current_low,
+                                                                     history_low,
+                                                                     source_luma,
+                                                                     render_state->temporal_source_luma_,
+                                                                     stability_threshold,
+                                                                     edge_threshold);
     for (int y = 0; y < desc.height; ++y) {
-      const int ym = std::max(0, y - 1);
-      const int yp = std::min(desc.height - 1, y + 1);
       for (int x = 0; x < desc.width; ++x) {
-        const int xm = std::max(0, x - 1);
-        const int xp = std::min(desc.width - 1, x + 1);
-
         float local_alpha = alpha;
         if (params.temporal_edge_aware) {
-          const float gx = std::fabs(source_luma.at(xp, y, 0) - source_luma.at(xm, y, 0));
-          const float gy = std::fabs(source_luma.at(x, yp, 0) - source_luma.at(x, ym, 0));
-          const float edge_strength = std::clamp((gx + gy) / edge_threshold, 0.0F, 1.0F);
-          local_alpha = alpha + (1.0F - alpha) * edge_strength;
+          const float edge_strength =
+              std::clamp(ComputeLocalGradientMagnitude(source_luma, x, y) / edge_threshold,
+                         0.0F,
+                         1.0F);
+          const float luma_delta = std::fabs(
+              source_luma.at(x, y, 0) - render_state->temporal_source_luma_.at(x, y, 0));
+          const float motion_strength =
+              std::clamp(luma_delta / stability_threshold, 0.0F, 1.0F);
+          local_alpha = alpha + (1.0F - alpha) * std::max(edge_strength, motion_strength);
         }
 
-        const float current = depth->at(x, y, 0);
-        const float history = temporal_depth_.at(x, y, 0);
-        depth->at(x, y, 0) = history + (current - history) * local_alpha;
+        const float blended_low = aligned_history_low.at(x, y, 0) +
+                                  (current_low.at(x, y, 0) - aligned_history_low.at(x, y, 0)) *
+                                      local_alpha;
+        const float detail = depth->at(x, y, 0) - current_low.at(x, y, 0);
+        depth->at(x, y, 0) = std::clamp(blended_low + detail, 0.0F, 1.0F);
       }
     }
   }
 
-  temporal_depth_ = *depth;
-  temporal_source_luma_ = source_luma;
+  render_state->temporal_depth_ = *depth;
+  render_state->temporal_source_luma_ = source_luma;
 }
 
 void RenderPipeline::ApplyEdgeAwareEnhancement(FrameBuffer* depth,
@@ -1580,9 +1573,15 @@ void RenderPipeline::ApplyEdgeAwareEnhancement(FrameBuffer* depth,
   }
 }
 
-FrameBuffer RenderPipeline::BuildOutput(const FrameBuffer& normalized_depth, const RenderParams& params) const {
+FrameBuffer RenderPipeline::BuildOutput(const FrameBuffer& normalized_depth,
+                                        const FrameBuffer& source,
+                                        const RenderParams& params) const {
   if (params.output_mode == OutputMode::kSlicing) {
-    return BuildSliceMatte(normalized_depth, params.min_depth, params.max_depth, params.softness);
+    const FrameBuffer slice_depth = BuildSliceDepthInput(normalized_depth, params);
+    const SliceWindow slice_window = ResolveSliceWindow(params);
+    const FrameBuffer slice_matte =
+        BuildSliceMatte(slice_depth, slice_window.min_depth, slice_window.max_depth, params.softness);
+    return ApplySliceMatteToSource(source, slice_matte);
   }
   return normalized_depth;
 }

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <memory>
 #include <string>
 #include <vector>
@@ -46,6 +47,8 @@ class ManagedInferenceEngine final : public IInferenceEngine {
   void ConfigureBackend();
   void LoadManifest();
   bool SelectModelLocked(const std::string& model_id, std::string* error);
+  [[nodiscard]] bool WantsRemoteBackendLocked() const;
+  void TryRecoverRequestedBackendLocked();
   void TryPromoteActiveModelToOnnxLocked();
   void MaybeQueueModelDownloadLocked(const ModelSpec& model,
                                      const std::vector<ResolvedModelAsset>& assets);
@@ -63,6 +66,7 @@ class ManagedInferenceEngine final : public IInferenceEngine {
   bool using_fallback_engine_ = true;
   mutable bool last_run_used_fallback_ = true;
   mutable std::string fallback_reason_;
+  std::chrono::steady_clock::time_point last_backend_recovery_attempt_{};
   DummyInferenceEngine fallback_engine_;
   std::unique_ptr<IOnnxRuntimeBackend> onnx_backend_;
 };

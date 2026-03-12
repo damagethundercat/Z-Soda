@@ -11,48 +11,34 @@ namespace zsoda::ae {
 enum class AeParamId {
   kQuality = 1,
   kPreserveRatio = 2,
-  kQualityBoostEnable = 3,
-  kQualityBoostLevel = 4,
-  kTimeConsistency = 5,
-  kAdvancedGroupStart = 6,
-  kModel = 7,
-  kOutputMode = 8,
-  kInvert = 9,
-  kMinDepth = 10,
-  kMaxDepth = 11,
-  kSoftness = 12,
-  kCacheEnable = 13,
-  kTileSize = 14,
-  kOverlap = 15,
-  kVramBudgetMb = 16,
-  kFreezeEnable = 17,
-  kExtractDepthMap = 18,
-  kAdvancedGroupEnd = 19,
+  kOutput = 3,
+  kSliceMode = 4,
+  kSlicePosition = 5,
+  kSliceRange = 6,
+  kSliceSoftness = 7,
+  kLast = kSliceSoftness,
 };
 
-enum class AeOutputMode {
-  kDepthMap = 0,
-  kSlicing = 1,
+enum class AeOutputSelection {
+  kDepthMap = 1,
+  kDepthSlice = 2,
+};
+
+enum class AeSliceModeSelection {
+  kNear = 1,
+  kFar = 2,
+  kBand = 3,
 };
 
 struct AeParamValues {
-  std::string model_id = "depth-anything-v3-large";
+  std::string model_id = "distill-any-depth-base";
   int quality = 2;
   bool preserve_ratio = true;
-  bool quality_boost_enabled = false;
-  int quality_boost_level = 4;
-  bool time_consistency = false;
-  AeOutputMode output_mode = AeOutputMode::kDepthMap;
-  bool invert = false;
-  float min_depth = 0.25F;
-  float max_depth = 0.75F;
-  float softness = 0.1F;
-  bool cache_enabled = true;
-  int tile_size = 512;
-  int overlap = 32;
-  int vram_budget_mb = 0;
-  bool freeze_enabled = false;
-  int extract_token = 0;
+  AeOutputSelection output = AeOutputSelection::kDepthMap;
+  AeSliceModeSelection slice_mode = AeSliceModeSelection::kBand;
+  float slice_position = 0.5F;
+  float slice_range = 0.1F;
+  float slice_softness = 0.05F;
 };
 
 AeParamValues DefaultAeParams();
@@ -60,5 +46,7 @@ zsoda::core::RenderParams ToRenderParams(const AeParamValues& input);
 std::vector<std::string> BuildModelMenu(const zsoda::inference::IInferenceEngine& engine);
 int ClampQualitySelection(int selection);
 int QualitySelectionToResolution(int selection);
+AeOutputSelection ClampOutputSelection(int selection);
+AeSliceModeSelection ClampSliceModeSelection(int selection);
 
 }  // namespace zsoda::ae

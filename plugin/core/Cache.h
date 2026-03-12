@@ -15,7 +15,6 @@ struct RenderCacheKey {
   int width = 0;
   int height = 0;
   int quality = 0;
-  int quality_boost = 0;
   bool preserve_aspect_ratio = true;
   bool invert = false;
   int mapping_mode = 0;
@@ -30,6 +29,8 @@ struct RenderCacheKey {
   int edge_guidance_sigma_permille = 120;
   bool edge_aware_upsample = true;
   bool slice_mode = false;
+  bool slice_normalize = true;
+  int slice_absolute_depth = 500;
   int slice_min_permille = 250;
   int slice_max_permille = 750;
   int slice_softness_permille = 100;
@@ -39,11 +40,11 @@ struct RenderCacheKey {
   int extract_token = 0;
   std::uint64_t model_hash = 0;
   std::uint64_t frame_hash = 0;
+  std::uint64_t render_state_token = 0;
 
   bool operator==(const RenderCacheKey& other) const {
-    return width == other.width && height == other.height && quality == other.quality &&
-           quality_boost == other.quality_boost &&
-           preserve_aspect_ratio == other.preserve_aspect_ratio &&
+    return width == other.width && height == other.height &&
+           quality == other.quality && preserve_aspect_ratio == other.preserve_aspect_ratio &&
            invert == other.invert && mapping_mode == other.mapping_mode &&
            guided_low_permille == other.guided_low_permille &&
            guided_high_permille == other.guided_high_permille &&
@@ -56,13 +57,15 @@ struct RenderCacheKey {
            edge_guidance_sigma_permille == other.edge_guidance_sigma_permille &&
            edge_aware_upsample == other.edge_aware_upsample &&
            slice_mode == other.slice_mode &&
+           slice_normalize == other.slice_normalize &&
+           slice_absolute_depth == other.slice_absolute_depth &&
            slice_min_permille == other.slice_min_permille &&
            slice_max_permille == other.slice_max_permille &&
            slice_softness_permille == other.slice_softness_permille &&
            tile_size == other.tile_size && overlap == other.overlap &&
            vram_budget_mb == other.vram_budget_mb && extract_token == other.extract_token &&
-           model_hash == other.model_hash &&
-           frame_hash == other.frame_hash;
+           model_hash == other.model_hash && frame_hash == other.frame_hash &&
+           render_state_token == other.render_state_token;
   }
 };
 

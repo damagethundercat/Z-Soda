@@ -11,11 +11,28 @@
 namespace zsoda::ae {
 namespace {
 
-constexpr const char* kDefaultLockedModelId = "depth-anything-v3-base";
+constexpr const char* kDefaultLockedModelId = "distill-any-depth-base";
 constexpr std::array<int, 8> kQualityResolutions = {256, 512, 768, 1024, 1280, 1536, 1920, 2048};
 
 int ClampQualitySelectionInternal(int selection) {
   return std::clamp(selection, 1, static_cast<int>(kQualityResolutions.size()));
+}
+
+AeOutputSelection ClampOutputSelectionInternal(int selection) {
+  return selection <= static_cast<int>(AeOutputSelection::kDepthMap)
+             ? AeOutputSelection::kDepthMap
+             : AeOutputSelection::kDepthSlice;
+}
+
+AeSliceModeSelection ClampSliceModeSelectionInternal(int selection) {
+  switch (selection) {
+    case static_cast<int>(AeSliceModeSelection::kNear):
+      return AeSliceModeSelection::kNear;
+    case static_cast<int>(AeSliceModeSelection::kFar):
+      return AeSliceModeSelection::kFar;
+    default:
+      return AeSliceModeSelection::kBand;
+  }
 }
 
 std::string ReadEnvOrEmpty(const char* name) {
@@ -29,12 +46,18 @@ std::string ReadEnvOrEmpty(const char* name) {
 std::string ResolveLockedModelId() {
   std::string model_id = ReadEnvOrEmpty("ZSODA_LOCKED_MODEL_ID");
   if (model_id.empty()) {
+    // Keep the older alias readable so existing automation/env setups do not
+    // break, but route everything to the DAD-only production path.
     model_id = ReadEnvOrEmpty("ZSODA_HQ_MODEL_ID");
   }
   if (model_id.empty()) {
     model_id = kDefaultLockedModelId;
   }
   return model_id;
+}
+
+bool IsDistillAnyDepthModelId(std::string_view model_id) {
+  return model_id.rfind("distill-any-depth", 0) == 0;
 }
 
 bool TryParseFloat(std::string_view text, float* out_value) {
@@ -92,25 +115,23 @@ void ApplyQualityDefaults(zsoda::core::RenderParams* params) {
 
   const int clamped_quality = ClampQualitySelectionInternal(params->quality);
   params->quality = clamped_quality;
-
-  // Keep temporal post-smoothing off by default to avoid edge smearing.
+  const bool distill_any_depth = IsDistillAnyDepthModelId(params->model_id);
   params->temporal_alpha = 1.0F;
   if (clamped_quality >= 6) {
-    params->edge_enhancement = 0.06F;
-    params->guided_low_percentile = 0.008F;
-    params->guided_high_percentile = 0.992F;
+    params->edge_enhancement = distill_any_depth ? 0.035F : 0.06F;
+    params->guided_low_percentile = distill_any_depth ? 0.006F : 0.008F;
+    params->guided_high_percentile = distill_any_depth ? 0.994F : 0.992F;
   } else if (clamped_quality >= 3) {
-    params->edge_enhancement = 0.045F;
-    params->guided_low_percentile = 0.012F;
-    params->guided_high_percentile = 0.988F;
+    params->edge_enhancement = distill_any_depth ? 0.028F : 0.045F;
+    params->guided_low_percentile = distill_any_depth ? 0.010F : 0.012F;
+    params->guided_high_percentile = distill_any_depth ? 0.990F : 0.988F;
   } else {
-    params->edge_enhancement = 0.03F;
-    params->guided_low_percentile = 0.02F;
-    params->guided_high_percentile = 0.98F;
+    params->edge_enhancement = distill_any_depth ? 0.020F : 0.03F;
+    params->guided_low_percentile = distill_any_depth ? 0.015F : 0.02F;
+    params->guided_high_percentile = distill_any_depth ? 0.985F : 0.98F;
   }
 
-  // V2-style disparity mapping is generally closer to QD3 display characteristics.
-  params->mapping_mode = zsoda::core::DepthMappingMode::kV2Style;
+  params->mapping_mode = zsoda::core::DepthMappingMode::kRaw;
   params->guided_update_alpha = 0.10F;
   params->temporal_edge_aware = false;
   params->temporal_edge_threshold = 0.08F;
@@ -119,14 +140,42 @@ void ApplyQualityDefaults(zsoda::core::RenderParams* params) {
   params->edge_aware_upsample = true;
 }
 
-void ApplyTimeConsistencyDefaults(bool enabled, zsoda::core::RenderParams* params) {
-  if (!enabled || params == nullptr) {
+void ApplySliceDefaults(const AeParamValues& input, zsoda::core::RenderParams* params) {
+  if (params == nullptr) {
     return;
   }
-  params->temporal_alpha = 0.72F;
-  params->temporal_edge_aware = true;
-  params->temporal_edge_threshold = 0.05F;
-  params->temporal_scene_cut_threshold = 0.12F;
+
+  params->output_mode = input.output == AeOutputSelection::kDepthSlice
+                            ? zsoda::core::OutputMode::kSlicing
+                            : zsoda::core::OutputMode::kDepthMap;
+  params->slice_normalize = true;
+  params->slice_absolute_depth = 500.0F;
+  params->softness = std::clamp(input.slice_softness, 0.0F, 1.0F);
+
+  const float position = std::clamp(input.slice_position, 0.0F, 1.0F);
+  const float range = std::clamp(input.slice_range, 0.0F, 1.0F);
+
+  switch (ClampSliceModeSelectionInternal(static_cast<int>(input.slice_mode))) {
+    case AeSliceModeSelection::kNear:
+      params->min_depth = position;
+      params->max_depth = 1.0F;
+      break;
+    case AeSliceModeSelection::kFar:
+      params->min_depth = 0.0F;
+      params->max_depth = position;
+      break;
+    case AeSliceModeSelection::kBand:
+    default: {
+      const float half_range = 0.5F * range;
+      params->min_depth = std::clamp(position - half_range, 0.0F, 1.0F);
+      params->max_depth = std::clamp(position + half_range, 0.0F, 1.0F);
+      break;
+    }
+  }
+
+  if (params->max_depth < params->min_depth) {
+    std::swap(params->max_depth, params->min_depth);
+  }
 }
 
 void ApplyEnvironmentOverrides(zsoda::core::RenderParams* params) {
@@ -186,31 +235,11 @@ AeParamValues DefaultAeParams() {
 
 zsoda::core::RenderParams ToRenderParams(const AeParamValues& input) {
   zsoda::core::RenderParams params;
-  // Force a locked model path (overridable by environment), while allowing
-  // user-selected quality tiers.
   params.model_id = ResolveLockedModelId();
   params.quality = ClampQualitySelectionInternal(input.quality);
-  params.quality_boost =
-      input.quality_boost_enabled ? std::clamp(input.quality_boost_level, 2, 5) : 0;
   params.preserve_aspect_ratio = input.preserve_ratio;
-  params.invert = input.invert;
-  params.output_mode =
-      input.output_mode == AeOutputMode::kSlicing ? zsoda::core::OutputMode::kSlicing
-                                                  : zsoda::core::OutputMode::kDepthMap;
-  params.min_depth = std::clamp(input.min_depth, 0.0F, 1.0F);
-  params.max_depth = std::clamp(input.max_depth, 0.0F, 1.0F);
-  if (params.max_depth < params.min_depth) {
-    std::swap(params.max_depth, params.min_depth);
-  }
-  params.softness = std::clamp(input.softness, 0.0F, 1.0F);
-  params.cache_enabled = input.cache_enabled;
-  params.tile_size = std::max(64, input.tile_size);
-  params.overlap = std::clamp(input.overlap, 0, params.tile_size / 2);
-  params.vram_budget_mb = std::max(0, input.vram_budget_mb);
-  params.freeze_enabled = input.freeze_enabled;
-  params.extract_token = std::max(0, input.extract_token);
   ApplyQualityDefaults(&params);
-  ApplyTimeConsistencyDefaults(input.time_consistency, &params);
+  ApplySliceDefaults(input, &params);
   ApplyEnvironmentOverrides(&params);
   return params;
 }
@@ -235,6 +264,14 @@ int ClampQualitySelection(int selection) {
 
 int QualitySelectionToResolution(int selection) {
   return kQualityResolutions[static_cast<std::size_t>(ClampQualitySelectionInternal(selection) - 1)];
+}
+
+AeOutputSelection ClampOutputSelection(int selection) {
+  return ClampOutputSelectionInternal(selection);
+}
+
+AeSliceModeSelection ClampSliceModeSelection(int selection) {
+  return ClampSliceModeSelectionInternal(selection);
 }
 
 }  // namespace zsoda::ae

@@ -24,6 +24,10 @@ artifacts/still_compare*
 artifacts/still_smoke/
 artifacts/tmp_bridge_video.mp4
 artifacts/ae_output_templates.*
+artifacts/backbone_compare_gui/
+artifacts/tmp_runner_probe/
+artifacts/windows/*
+!artifacts/windows/README.md
 
 *.resolved
 docs/research/qc_opus.md

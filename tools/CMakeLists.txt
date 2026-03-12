@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-if(WIN32)
+if(WIN32 AND ZSODA_BUILD_INTERNAL_DIAGNOSTICS)
   add_executable(zsoda_still_quality_harness
     StillQualityHarness.cpp
   )

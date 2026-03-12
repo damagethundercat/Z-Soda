@@ -20,6 +20,7 @@ endif()
 
 option(ZSODA_BUILD_TESTS "Build unit tests" ON)
 option(ZSODA_BUILD_TOOLS "Build developer tools" ON)
+option(ZSODA_BUILD_INTERNAL_DIAGNOSTICS "Build internal diagnostics utilities" OFF)
 
 add_subdirectory(plugin)
 

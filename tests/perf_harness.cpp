@@ -87,11 +87,11 @@ class PerfInferenceEngine final : public zsoda::inference::IInferenceEngine {
   }
 
   std::vector<std::string> ListModelIds() const override {
-    return {model_id_.empty() ? std::string("depth-anything-v3-small") : model_id_};
+    return {model_id_.empty() ? std::string("distill-any-depth-base") : model_id_};
   }
 
   std::string ActiveModelId() const override {
-    return model_id_.empty() ? "depth-anything-v3-small" : model_id_;
+    return model_id_.empty() ? "distill-any-depth-base" : model_id_;
   }
 
   bool Run(const zsoda::inference::InferenceRequest& request,
@@ -144,7 +144,7 @@ class PerfInferenceEngine final : public zsoda::inference::IInferenceEngine {
 
  private:
   int spin_iters_ = 0;
-  std::string model_id_ = "depth-anything-v3-small";
+  std::string model_id_ = "distill-any-depth-base";
   mutable std::atomic<int> run_count_{0};
 };
 
@@ -163,7 +163,6 @@ void PrintUsage() {
                "  --overlap <N>\n"
                "  --quiet\n";
 }
-
 bool ParseInt(const std::string& text, int* out) {
   if (out == nullptr) {
     return false;
@@ -392,7 +391,7 @@ ScenarioResult RunScenario(const ScenarioConfig& config) {
 
   auto engine = std::make_shared<PerfInferenceEngine>(config.spin_iters);
   std::string error;
-  if (!engine->Initialize("depth-anything-v3-small", &error)) {
+  if (!engine->Initialize("distill-any-depth-base", &error)) {
     result.safe_output = config.frames;
     result.first_error = error.empty() ? "engine initialize failed" : error;
     return result;
@@ -409,7 +408,7 @@ ScenarioResult RunScenario(const ScenarioConfig& config) {
   }
 
   zsoda::core::RenderParams params;
-  params.model_id = "depth-anything-v3-small";
+  params.model_id = "distill-any-depth-base";
   params.quality = config.quality;
   params.cache_enabled = config.cache_enabled;
   params.output_mode = zsoda::core::OutputMode::kDepthMap;
@@ -676,3 +675,4 @@ int main(int argc, char** argv) {
   }
   return 0;
 }
+

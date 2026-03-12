@@ -23,9 +23,15 @@ enum class PreprocessResizeMode {
   kStretch,
 };
 
+enum class RemoteTransportProtocol {
+  kBinary,
+  kJson,
+};
+
 struct RuntimeOptions {
   RuntimeBackend preferred_backend = RuntimeBackend::kAuto;
   PreprocessResizeMode preprocess_resize_mode = PreprocessResizeMode::kUpperBoundLetterbox;
+  RemoteTransportProtocol remote_transport_protocol = RemoteTransportProtocol::kBinary;
   std::string model_manifest_path;
   std::string onnxruntime_library_path;
   std::string onnxruntime_library_dir;
@@ -42,7 +48,6 @@ struct RuntimeOptions {
   std::string remote_service_python;
   std::string remote_service_script_path;
   std::string remote_service_log_path;
-  std::string da3_repo_root;
 };
 
 [[nodiscard]] inline const char* RuntimeBackendName(RuntimeBackend backend) {
@@ -136,6 +141,33 @@ struct RuntimeOptions {
     return PreprocessResizeMode::kStretch;
   }
   return PreprocessResizeMode::kUpperBoundLetterbox;
+}
+
+[[nodiscard]] inline const char* RemoteTransportProtocolName(RemoteTransportProtocol protocol) {
+  switch (protocol) {
+    case RemoteTransportProtocol::kBinary:
+      return "binary";
+    case RemoteTransportProtocol::kJson:
+      return "json";
+  }
+  return "binary";
+}
+
+[[nodiscard]] inline RemoteTransportProtocol ParseRemoteTransportProtocol(
+    std::string_view value) {
+  std::string normalized;
+  normalized.reserve(value.size());
+  for (const char ch : value) {
+    if (ch == '-' || ch == '_' || std::isspace(static_cast<unsigned char>(ch))) {
+      continue;
+    }
+    normalized.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
+  }
+
+  if (normalized == "json" || normalized == "legacyjson") {
+    return RemoteTransportProtocol::kJson;
+  }
+  return RemoteTransportProtocol::kBinary;
 }
 
 }  // namespace zsoda::inference

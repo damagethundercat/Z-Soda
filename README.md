@@ -1,171 +1,82 @@
 # Z-Soda
 
-Depth Scanner-style After Effects plugin scaffold.
+After Effects depth effect plugin focused on a single production path:
 
-## Project Operations
-- Team role split: `TEAM.md`
-- Execution plan: `PLAN.md`
-- Live progress (Korean): `PROGRESS.md`
-- Research references: `docs/research/`
-- Perf/QA harness guide: `docs/perf/README.md`
-- Final-mile packaging guide (.aex/.plugin): `docs/build/README.md`
-- Leader review note (acceptance/remaining gates): `docs/build/2026-03-02-leader-review-note.md`
-- Local Windows agent handoff guide: `docs/build/LOCAL_AGENT_HANDOFF.md`
-- AE smoke test guide: `docs/build/AE_SMOKE_TEST.md`
-- ORT runtime deploy note: `docs/build/ORT_RUNTIME_DEPLOY.md`
-- ORT runtime isolation plan: `docs/build/ORT_RUNTIME_ISOLATION_PLAN.md`
-- Remote inference MVP protocol: `docs/build/REMOTE_INFERENCE_MVP.md`
-- Windows `.aex` build helper script: `tools/build_aex.ps1`
+- model: `distill-any-depth-base`
+- host: Adobe After Effects
+- runtime: local Python remote service + binary localhost transport
+- primary outputs: depth map / depth-driven compositing
 
-## Current Layout
-- `plugin/ae`: AE command routing and plugin entry stub
-- `plugin/core`: depth processing core (cache, tiling, render pipeline)
-- `plugin/inference`: inference engine interface + dummy engine
-- `models`: model installation guide and expected layout
-- `tools`: helper scripts (model downloader)
-- `plugin/backends`: backend type definitions
-- `tests`: core unit tests
+## Current Product Shape
 
-## Model Workflow
-- Default priority model: `Depth Anything v3` (`depth-anything-v3-small`)
-- You can switch model per render via `RenderParams.model_id`
-- Supported model IDs:
-  - `depth-anything-v3-small`
-  - `depth-anything-v3-base`
-  - `depth-anything-v3-large`
-  - `midas-dpt-large`
+- AE UI exposes the shipping controls:
+  - `Quality`
+  - `Preserve Ratio`
+  - `Output`
+  - `Slice Mode`
+  - `Position`
+  - `Range`
+  - `Softness`
+- The plugin always runs the single production DAD path.
+- Depth slicing is part of the shipping UI and uses the internal slice-matte path.
+- Quality boost, preview/final mode switches, and time-consistency toggles are no longer part of the shipping UI.
+- The default display mapping for DistillAnyDepth is raw/linear.
 
-Download example:
-```bash
-bash tools/download_model.sh depth-anything-v3-small
-```
+## Repository Layout
 
-Windows PowerShell:
+- [PLAN.md](/Users/Yongkyu/code/Z-Soda/PLAN.md): execution checklist
+- [PROGRESS.md](/Users/Yongkyu/code/Z-Soda/PROGRESS.md): live work log in Korean
+- [plugin/ae](/Users/Yongkyu/code/Z-Soda/plugin/ae): AE entry, params, host bridge
+- [plugin/core](/Users/Yongkyu/code/Z-Soda/plugin/core): cache, render pipeline, postprocess
+- [plugin/inference](/Users/Yongkyu/code/Z-Soda/plugin/inference): engine/runtime/backend glue
+- [tools](/Users/Yongkyu/code/Z-Soda/tools): build/package/runtime helper scripts
+- [tests](/Users/Yongkyu/code/Z-Soda/tests): unit/integration harnesses
+
+## Runtime Notes
+
+- Production model is fixed to `distill-any-depth-base`.
+- The plugin prefers the remote backend for DistillAnyDepth and auto-starts
+  [distill_any_depth_remote_service.py](/Users/Yongkyu/code/Z-Soda/tools/distill_any_depth_remote_service.py)
+  when needed.
+- The hot path uses binary HTTP on `127.0.0.1`, not `PPM + JSON float array`.
+- If the remote path is unavailable, the plugin must fall back safely and never crash AE.
+
+## Build
+
+Windows plugin build:
+
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\download_model.ps1 -ModelId depth-anything-v3-small
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build_aex.ps1
 ```
 
-Custom model root example:
-```bash
-export ZSODA_MODEL_ROOT=/path/to/models
+Native CMake path:
+
+```powershell
+cmake -S . -B build-win -DZSODA_WITH_AE_SDK=ON
+cmake --build build-win --config Release --target zsoda_aex
 ```
 
-Runtime default path note:
-- `ZSODA_MODEL_ROOT` 미설정 시 `.aex` 인접 `models/`를 우선 탐색하고, 없으면 상대 경로 `models/`를 사용합니다.
-- `ZSODA_ONNXRUNTIME_LIBRARY` 미설정 시 `.aex` 인접 `runtime/onnxruntime.dll` -> `.aex` 인접 `onnxruntime.dll` 순으로 탐색합니다.
-- DA3 계열 모델은 `model.onnx` 외에 `model.onnx_data` 자산이 함께 필요하며, 매니페스트 `auxiliary_assets` 열로 관리합니다.
-- 모델 파일이 없으면 기본값에서 백그라운드 다운로드를 자동 요청하고, 다운로드 전까지는 안전 폴백 렌더를 사용합니다.
+Debug/unit test path:
 
-Optional runtime options:
-```bash
-export ZSODA_INFERENCE_BACKEND=cpu      # auto|cpu|cuda|directml|metal|coreml|remote
-export ZSODA_MODEL_MANIFEST=models/models.manifest
-export ZSODA_AUTO_DOWNLOAD_MODELS=1     # 1:on(default), 0:off
-export HF_TOKEN=...                     # optional: Hugging Face 인증 토큰
+```powershell
+cmake -S . -B build-cleanup
+cmake --build build-cleanup --config Debug --target zsoda_tests
+build-cleanup\tests\Debug\zsoda_tests.exe
 ```
 
-Remote inference MVP options:
-```bash
-export ZSODA_REMOTE_INFERENCE_ENABLED=1
-export ZSODA_REMOTE_INFERENCE_COMMAND='python3 tools/remote_inference_worker.py {request} {response}'
-export ZSODA_REMOTE_INFERENCE_TIMEOUT_MS=30000
-```
+## Packaging
 
-Remote inference fallback note:
-- 원격 명령 미설정/실행 실패/응답 파싱 실패 시 플러그인은 즉시 안전 fallback depth 경로(DummyDepthEngine)로 전환합니다.
-- 테스트/로컬 CI는 Python worker가 없어도 실패-복원 경로를 검증하도록 구성되어 있습니다.
+- Build/package helper: [tools/build_aex.ps1](/Users/Yongkyu/code/Z-Soda/tools/build_aex.ps1)
+- Packaging helper: [tools/package_plugin.ps1](/Users/Yongkyu/code/Z-Soda/tools/package_plugin.ps1)
+- MediaCore deployment is handled from the Windows build helper.
 
-Current runtime note:
-- The model/session management path is implemented.
-- Windows `tools/build_aex.ps1` 기본값은 ORT API 활성화이며, ONNX Runtime C++ session create/select/run (CPU-first path)로 동작합니다.
-- ORT API를 비활성화하려면 `tools/build_aex.ps1 -DisableOrtApi`를 사용합니다.
+## Models
 
-## AE Packaging Status
-- Final-mile `.aex/.plugin` packaging path is documented in `docs/build/README.md`.
-- With `ZSODA_WITH_AE_SDK=ON`, CMake exposes native packaging targets:
-  - Windows: `zsoda_aex` (`ZSoda.aex`)
-  - macOS: `zsoda_plugin_bundle` (`ZSoda.plugin` bundle target with `Info.plist`)
-- Packaging helper scripts:
-  - `tools/package_plugin.sh`
-  - `tools/package_plugin.ps1`
-- `.aex` 즉시 실행 가이드는 `docs/build/README.md`의 아래 섹션을 순서대로 확인:
-  - `Windows 빠른 시작 10단계`
-  - `실패 시 점검 5항목`
-  - `산출물 확인 명령`
-- Current workspace is Linux/WSL2 without `cmake`, AE SDK, MSBuild, or Xcode, so native packaging commands are not executable here.
+- Manifest: [models/models.manifest](/Users/Yongkyu/code/Z-Soda/models/models.manifest)
+- Current production entries:
+  - `distill-any-depth`
+  - `distill-any-depth-base`
+  - `distill-any-depth-large`
 
-## 사용자 테스트 가능 시점
-- Windows 네이티브 환경(MSVC + AE SDK + CMake + ONNX Runtime 경로) 준비 즉시 사용자 테스트를 시작할 수 있습니다.
-- 시작 절차는 `docs/build/README.md`의 `Windows 빠른 시작 10단계`를 기준으로 진행하면 됩니다.
-
-## Build & Test
-Preferred (when `cmake` is available):
-```bash
-cmake -S . -B build
-cmake --build build -j
-ctest --test-dir build --output-on-failure
-```
-
-Quick local CI check:
-```bash
-bash tools/run_local_ci.sh
-```
-
-Optional ONNX Runtime API build (requires local ORT headers + library):
-```bash
-cmake -S . -B build-ort \
-  -DZSODA_WITH_ONNX_RUNTIME=ON \
-  -DZSODA_WITH_ONNX_RUNTIME_API=ON \
-  -DONNXRUNTIME_INCLUDE_DIR=/abs/path/to/onnxruntime/include \
-  -DONNXRUNTIME_LIBRARY=/abs/path/to/libonnxruntime.so
-cmake --build build-ort -j
-ctest --test-dir build-ort --output-on-failure
-```
-
-Fallback (current environment):
-```bash
-g++ -std=c++20 -Iplugin \
-  plugin/ae/AeHostAdapter.cpp plugin/ae/AeCommandRouter.cpp plugin/ae/AeParams.cpp plugin/ae/AePluginEntry.cpp \
-  plugin/core/BufferPool.cpp plugin/core/Cache.cpp plugin/core/DepthOps.cpp \
-  plugin/core/RenderPipeline.cpp plugin/core/Tiler.cpp \
-  plugin/inference/DummyInferenceEngine.cpp plugin/inference/EngineFactory.cpp plugin/inference/ModelAutoDownloader.cpp \
-  plugin/inference/ManagedInferenceEngine.cpp plugin/inference/ModelCatalog.cpp plugin/inference/RemoteInferenceBackend.cpp \
-  plugin/inference/RuntimePathResolver.cpp \
-  tests/test_ae_params.cpp tests/test_ae_router.cpp tests/test_cache.cpp \
-  tests/test_depth_ops.cpp tests/test_inference_engine.cpp \
-  tests/test_render_pipeline.cpp tests/test_runtime_path_resolver.cpp tests/test_tiler.cpp \
-  -o /tmp/zsoda_tests
-/tmp/zsoda_tests
-```
-
-Performance harness fallback:
-```bash
-g++ -std=c++20 -Iplugin \
-  plugin/ae/AeHostAdapter.cpp plugin/ae/AeCommandRouter.cpp plugin/ae/AeParams.cpp plugin/ae/AePluginEntry.cpp \
-  plugin/core/BufferPool.cpp plugin/core/Cache.cpp plugin/core/DepthOps.cpp \
-  plugin/core/RenderPipeline.cpp plugin/core/Tiler.cpp \
-  plugin/inference/DummyInferenceEngine.cpp plugin/inference/EngineFactory.cpp plugin/inference/ModelAutoDownloader.cpp \
-  plugin/inference/ManagedInferenceEngine.cpp plugin/inference/ModelCatalog.cpp plugin/inference/RemoteInferenceBackend.cpp \
-  plugin/inference/RuntimePathResolver.cpp \
-  tests/perf_harness.cpp \
-  -o /tmp/zsoda_perf_harness
-/tmp/zsoda_perf_harness --mode benchmark --quiet
-/tmp/zsoda_perf_harness --mode stability --frames 1000 --quiet
-```
-
-Optional ORT-scaffold compile check (API off):
-```bash
-g++ -std=c++20 -DZSODA_WITH_ONNX_RUNTIME=1 -Iplugin \
-  plugin/ae/AeHostAdapter.cpp plugin/ae/AeCommandRouter.cpp plugin/ae/AeParams.cpp plugin/ae/AePluginEntry.cpp \
-  plugin/core/BufferPool.cpp plugin/core/Cache.cpp plugin/core/DepthOps.cpp \
-  plugin/core/RenderPipeline.cpp plugin/core/Tiler.cpp \
-  plugin/inference/DummyInferenceEngine.cpp plugin/inference/EngineFactory.cpp plugin/inference/ModelAutoDownloader.cpp \
-  plugin/inference/ManagedInferenceEngine.cpp plugin/inference/ModelCatalog.cpp plugin/inference/RemoteInferenceBackend.cpp \
-  plugin/inference/RuntimePathResolver.cpp \
-  plugin/inference/OnnxRuntimeBackend.cpp \
-  tests/test_ae_params.cpp tests/test_ae_router.cpp tests/test_cache.cpp \
-  tests/test_depth_ops.cpp tests/test_inference_engine.cpp \
-  tests/test_render_pipeline.cpp tests/test_runtime_path_resolver.cpp tests/test_tiler.cpp \
-  -o /tmp/zsoda_tests_ort
-/tmp/zsoda_tests_ort
-```
+DistillAnyDepth runs through the remote service, so normal AE usage does not require
+shipping local ONNX weights in the repo.

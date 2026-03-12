@@ -23,9 +23,8 @@ enum class OutputMode {
 };
 
 struct RenderParams {
-  std::string model_id = "depth-anything-v3-small";
+  std::string model_id = "distill-any-depth-base";
   int quality = 1;
-  int quality_boost = 0;
   bool preserve_aspect_ratio = true;
   bool invert = false;
   DepthMappingMode mapping_mode = DepthMappingMode::kRaw;
@@ -40,6 +39,8 @@ struct RenderParams {
   float edge_guidance_sigma = 0.12F;
   bool edge_aware_upsample = true;
   OutputMode output_mode = OutputMode::kDepthMap;
+  bool slice_normalize = true;
+  float slice_absolute_depth = 500.0F;
   float min_depth = 0.25F;
   float max_depth = 0.75F;
   float softness = 0.1F;
@@ -50,6 +51,7 @@ struct RenderParams {
   bool freeze_enabled = false;
   int extract_token = 0;
   std::uint64_t frame_hash = 0;
+  std::uint64_t render_state_token = 0;
 };
 
 enum class RenderStatus {
@@ -66,15 +68,35 @@ struct RenderOutput {
   std::string message;
 };
 
+struct RenderPipelineState {
+  CompatMutex postprocess_mutex_;
+  GuidedDepthMappingState guided_mapping_state_{};
+  FrameBuffer temporal_depth_;
+  FrameBuffer temporal_source_luma_;
+  std::uint64_t postprocess_model_hash_ = 0;
+  std::uint64_t postprocess_state_hash_ = 0;
+  bool postprocess_initialized_ = false;
+  bool temporal_has_state_ = false;
+
+  CompatMutex frozen_mutex_;
+  FrameBuffer frozen_output_;
+  std::uint64_t frozen_state_hash_ = 0;
+  bool frozen_has_output_ = false;
+};
+
 class RenderPipeline {
  public:
   explicit RenderPipeline(std::shared_ptr<inference::IInferenceEngine> engine);
 
-  RenderOutput Render(const FrameBuffer& source, const RenderParams& params);
+  std::shared_ptr<RenderPipelineState> CreateState() const;
+  RenderOutput Render(const FrameBuffer& source,
+                      const RenderParams& params,
+                      RenderPipelineState* state = nullptr);
   void SetCacheLimit(std::size_t limit);
   void PurgeCache();
 
  private:
+  RenderPipelineState* ResolveState(RenderPipelineState* state) const;
   RenderCacheKey BuildCacheKey(const FrameBuffer& source, const RenderParams& params) const;
   bool ShouldUseCache(const RenderParams& params) const;
   static bool IsStatefulPostProcess(const RenderParams& params);
@@ -84,10 +106,6 @@ class RenderPipeline {
                     int quality,
                     FrameBuffer* depth,
                     std::string* error) const;
-  bool ApplyDetailBoostRefinement(const FrameBuffer& source,
-                                  const RenderParams& params,
-                                  FrameBuffer* depth,
-                                  std::string* detail) const;
   bool RunTiledInference(const FrameBuffer& source,
                          const RenderParams& params,
                          int quality,
@@ -101,38 +119,35 @@ class RenderPipeline {
                               std::string* error) const;
   bool TryGetFrozenOutput(const FrameBuffer& source,
                           const RenderParams& params,
+                          RenderPipelineState* state,
                           FrameBuffer* output) const;
   void StoreFrozenOutput(const FrameBuffer& source,
                          const RenderParams& params,
+                         RenderPipelineState* state,
                          const FrameBuffer& output) const;
-  void ClearFrozenOutput() const;
+  void ClearFrozenOutput(RenderPipelineState* state) const;
   std::uint64_t BuildFrozenStateHash(const FrameBuffer& source,
                                      const RenderParams& params) const;
-  void ApplyPostProcess(FrameBuffer* depth, const FrameBuffer& source, const RenderParams& params) const;
+  void ApplyPostProcess(FrameBuffer* depth,
+                        const FrameBuffer& source,
+                        const RenderParams& params,
+                        RenderPipelineState* state) const;
   void ApplyTemporalSmoothing(FrameBuffer* depth,
                               const FrameBuffer& source_luma,
-                              const RenderParams& params) const;
+                              const RenderParams& params,
+                              RenderPipelineState* state) const;
   void ApplyEdgeAwareEnhancement(FrameBuffer* depth,
                                  const FrameBuffer& source_luma,
                                  const RenderParams& params) const;
-  FrameBuffer BuildOutput(const FrameBuffer& normalized_depth, const RenderParams& params) const;
+  FrameBuffer BuildOutput(const FrameBuffer& normalized_depth,
+                          const FrameBuffer& source,
+                          const RenderParams& params) const;
   RenderOutput SafeOutput(const FrameBuffer& source, const std::string& message) const;
 
   std::shared_ptr<inference::IInferenceEngine> engine_;
   mutable DepthCache cache_{64};
   mutable BufferPool pool_{8};
-  mutable CompatMutex postprocess_mutex_;
-  mutable GuidedDepthMappingState guided_mapping_state_{};
-  mutable FrameBuffer temporal_depth_;
-  mutable FrameBuffer temporal_source_luma_;
-  mutable std::uint64_t postprocess_model_hash_ = 0;
-  mutable std::uint64_t postprocess_state_hash_ = 0;
-  mutable bool postprocess_initialized_ = false;
-  mutable bool temporal_has_state_ = false;
-  mutable CompatMutex frozen_mutex_;
-  mutable FrameBuffer frozen_output_;
-  mutable std::uint64_t frozen_state_hash_ = 0;
-  mutable bool frozen_has_output_ = false;
+  mutable RenderPipelineState shared_state_{};
 };
 
 }  // namespace zsoda::core

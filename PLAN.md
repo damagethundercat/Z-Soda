@@ -1,81 +1,96 @@
-# PLAN.md - Depth Scanner-style After Effects Plugin (Execution Plan)
+# PLAN.md - ZSoda Execution Plan
 
-This file contains the implementation plan/checklists moved out of `AGENTS.md`.
+This file keeps the current production-facing implementation plan. Historical
+research and experiment notes belong in `docs/research/` and should not drive
+the shipping path directly.
 
-## 1) Suggested Repo Layout
-- /plugin/
-  - /ae/           AE SDK glue (PF_Cmd handlers, params)
-  - /core/         color/bit-depth conversions, cache, tiler, post-process
-  - /inference/    ORT session mgmt, IO binding, pre/post
-  - /backends/     cuda, directml, metal/coreml (optional)
-- /models/         model manifests only; weights distributed separately
-- /tools/          validation & regression utilities
-- /docs/           parameters, performance notes
+## Product Baseline
 
-## 2) Minimum Feature Requirements
-Inputs:
-- Source layer/frame
-- Optional: mask/guide input (future expansion)
+- Host: Adobe After Effects
+- Production model: `distill-any-depth-base`
+- Runtime: local Python remote service with binary localhost transport
+- Public UI: production controls only
+  - `Quality`
+  - `Preserve Ratio`
+  - `Output`
+  - `Slice Mode`
+  - `Position`
+  - `Range`
+  - `Softness`
 
-Outputs (modes):
-- Depth Map: normalized depth or inverse-depth (toggle)
-- Slicing: matte where depth in [minDepth, maxDepth], with softness/feather
+## Repo Layout
 
-Core parameters (minimum):
-- Model: DA3 / fallback model(s)
-- Quality: draft/medium/high (resolution scale + post strength)
-- Invert / Near-Far mapping
-- Temporal Stabilize: off/low/high (optional)
-- Tiling: tile size, overlap, fp16 toggle, VRAM budget hint
-- Cache: enable, size limit, purge control (if feasible)
+- `/plugin/ae`
+  - AE entry, parameter registration, host bridge
+- `/plugin/core`
+  - frame conversion, cache, render pipeline, postprocess
+- `/plugin/inference`
+  - managed engine, remote backend, runtime path and lifecycle
+- `/models`
+  - manifest and lightweight model metadata only
+- `/tools`
+  - build, package, diagnostics, remote service
+- `/docs`
+  - build, runbook, smoke-test, and product docs
 
-Post-processing (keep lightweight):
-- edge-aware smoothing (optional), clamp/levels, simple denoise
+## Production Requirements
 
-## 3) Testing & Validation Plan
-- Unit tests for core: normalization, slicing, tiling composition, cache keys
-- Regression tests on a fixed frame set:
-  - depth stats (mean/var/hist bins), matte area stability
-- Performance tests:
-  - 1080p/4K ms/frame, VRAM usage, cache hit rate
-- Stability tests:
-  - long-run (1000+ frames), ensure no leaks, no handle accumulation
+### Render behavior
+- Cache hit returns immediately.
+- Cache miss runs inference once and stores the result.
+- Backend or memory failure falls back safely.
+- Hard failure returns safe output or pass-through without crashing AE.
 
-## 4) Build & Packaging Plan
-- Windows: MSVC + AE SDK, optional CUDA/DirectML builds
-- macOS: Xcode + AE SDK, optional Metal/CoreML builds
-- Deliverables: .aex/.plugin + separate model package + changelog/versioning
+### Runtime behavior
+- No model load in the per-frame hot path.
+- Reuse inference sessions and remote service process.
+- Keep the default path fixed to `distill-any-depth-base`.
+- Never require legacy DA3 tooling or cloud services for normal operation.
 
-## 5) Suggested Work Sequence
-1) P1: Scaffold plugin layout and AE SDK command handlers.
-2) P2: Implement model/session lifecycle and cache-first render pipeline.
-3) P3: Add depth map + slicing modes with 8/16/32 bpc boundary conversions.
-4) P4: Implement fallback paths (OOM/backend fail -> tiling/downscale -> safe output).
-5) P5: Add test/benchmark/stability suites and packaging scripts.
+### AE UX behavior
+- Single-pass DAD-base remains the only shipping render path.
+- Depth slicing is part of the shipping path and should stay simple and direct.
+- Removed Advanced controls must stay removed from the visible UI.
 
-## 6) Progress Tracking Contract
-- `PROGRESS.md` is the source of truth for live status updates.
-- Track sequence items by IDs (`P1`..`P5`) in `PROGRESS.md`.
-- Update `PROGRESS.md` after each completed work unit with:
-  - status change (`대기`/`진행중`/`완료`/`차단`)
-  - overall progress percentage
-  - newly completed work and remaining tasks
-## 2026-03-06 QD3 Alignment Track
+## Current Workstreams
 
-Goal: realign Z-Soda around QD3-style quality controls and establish a single-frame quality-first baseline before revisiting temporal stabilization.
+### `RF-01` Repo cleanup
+- Remove experiment-only compare GUI and runner tooling.
+- Remove generated package artifacts from versioned source paths.
+- Keep `StillQualityHarness` as optional internal diagnostics only.
+- Keep docs and scripts aligned with the current DAD-only production path.
 
-1. `QD3-UI-01` Main control alignment
-   - Expose `Quality`, `Preserve Ratio`, `Quality Boost`, `Boost`, `Time Consistency` in the main AE panel
-   - Move legacy controls into a collapsed `Advanced` group
-2. `QD3-BASE-01` Single-frame quality-first baseline
-   - Make the quality path testable without multiview/history assumptions
-   - Keep temporal/multiview paths opt-in until single-frame quality is validated
-3. `QD3-BOOST-01` Reference + tiled refinement
-   - Keep the current QD3-style prototype behind `Quality Boost`
-   - Tighten merge/alignment behavior against QD3 reference observations
-4. `QD3-COMPARE-01` Still/video comparison harness
-   - Compare Z-Soda single-frame output against QD3 on matched frames
-   - Record failure modes by scene type before backend/model changes
-5. `QD3-TEMP-01` Temporal stabilization reintroduction
-   - Re-add temporal consistency only after the still-frame baseline is competitive
-   - Treat multiview/history as experimental until it beats the lighter temporal path
+### `RF-02` AE layer cleanup
+- Keep only the visible production controls.
+- Move AE state handling toward per-sequence and per-instance storage.
+- Avoid relying on one global shared parameter snapshot for real AE renders.
+
+### `RF-03` Runtime and core cleanup
+- Keep remote transport binary-first.
+- Treat legacy JSON and file transport as debug-only fallback.
+
+### `RF-04` Slicing UX
+- Keep the shipping baseline centered on DAD-base.
+- Expose slicing as `Depth Map / Depth Slice` plus simple Near/Far/Band controls.
+- Do not reintroduce UI-facing quality boost or temporal toggles in the shipping path.
+
+## Validation
+
+### Automated
+- Build Debug and Release on Windows.
+- Keep `zsoda_tests` passing for current production paths.
+- Validate binary remote transport and remote service startup.
+
+### Manual
+- New AE project:
+  - plugin loads as `ZSoda`
+  - slicing controls are shown in the main UI
+- Playback:
+  - quality changes alter render resolution
+  - slice parameters alter the matte/output immediately
+
+## Progress Tracking Contract
+
+- `PROGRESS.md` is the live Korean status log.
+- Update `PROGRESS.md` after each completed work unit.
+- Keep entries append-only.

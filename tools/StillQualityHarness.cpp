@@ -51,6 +51,7 @@ using zsoda::inference::ManagedInferenceEngine;
 using zsoda::inference::ParsePreprocessResizeMode;
 using zsoda::inference::ParseRuntimeBackend;
 using zsoda::inference::PreprocessResizeMode;
+using zsoda::inference::ParseRemoteTransportProtocol;
 using zsoda::inference::RuntimeBackend;
 using zsoda::inference::RuntimeBackendName;
 using zsoda::inference::RuntimeOptions;
@@ -59,10 +60,10 @@ struct CliOptions {
   fs::path input_path;
   fs::path output_dir;
   fs::path model_root = "models";
-  std::string model_id = "depth-anything-v3-large-multiview";
+  std::string model_id = "distill-any-depth-base";
   RuntimeBackend backend = RuntimeBackend::kAuto;
   PreprocessResizeMode resize_mode = PreprocessResizeMode::kUpperBoundLetterbox;
-  DepthMappingMode mapping_mode = DepthMappingMode::kV2Style;
+  DepthMappingMode mapping_mode = DepthMappingMode::kRaw;
   int quality = 1;
   bool invert = false;
   float guided_low_percentile = 0.02F;
@@ -131,6 +132,42 @@ std::string JsonEscape(std::string_view value) {
 
 std::string PathString(const fs::path& path) {
   return path.generic_string();
+}
+
+int ParsePositiveIntEnvOrDefault(const char* name, int default_value) {
+  const char* value = std::getenv(name);
+  if (value == nullptr || value[0] == '\0') {
+    return default_value;
+  }
+  try {
+    const int parsed = std::stoi(value);
+    return parsed > 0 ? parsed : default_value;
+  } catch (...) {
+    return default_value;
+  }
+}
+
+bool ParseBoolEnvOrDefault(const char* name, bool default_value) {
+  const char* value = std::getenv(name);
+  if (value == nullptr || value[0] == '\0') {
+    return default_value;
+  }
+  std::string normalized(value);
+  std::transform(normalized.begin(), normalized.end(), normalized.begin(), [](unsigned char ch) {
+    return static_cast<char>(std::tolower(ch));
+  });
+  if (normalized == "1" || normalized == "true" || normalized == "yes" || normalized == "on") {
+    return true;
+  }
+  if (normalized == "0" || normalized == "false" || normalized == "no" || normalized == "off") {
+    return false;
+  }
+  return default_value;
+}
+
+std::string ReadEnvOrEmpty(const char* name) {
+  const char* value = std::getenv(name);
+  return value != nullptr ? std::string(value) : std::string();
 }
 
 std::string FormatHresult(HRESULT hr) {
@@ -734,15 +771,23 @@ std::string CaptureEnvValue(const char* name) {
 
 std::string BuildEnvJson() {
   static constexpr const char* kEnvNames[] = {
-      "ZSODA_DA3_PROCESS_RES",
-      "ZSODA_DA3_MULTIVIEW_FRAMES",
-      "ZSODA_DA3_MULTIVIEW_REF",
       "ZSODA_PREPROCESS_RESIZE_MODE",
       "ZSODA_INPUT_LINEAR_TO_SRGB",
       "ZSODA_DETAIL_BOOST",
       "ZSODA_V2STYLE_GAMMA",
       "ZSODA_ORT_PREFER_PRELOADED",
       "ZSODA_ONNXRUNTIME_LIBRARY",
+      "ZSODA_INFERENCE_BACKEND",
+      "ZSODA_REMOTE_INFERENCE_ENABLED",
+      "ZSODA_REMOTE_INFERENCE_ENDPOINT",
+      "ZSODA_REMOTE_INFERENCE_URL",
+      "ZSODA_REMOTE_SERVICE_AUTOSTART",
+      "ZSODA_REMOTE_SERVICE_HOST",
+      "ZSODA_REMOTE_SERVICE_PORT",
+      "ZSODA_REMOTE_SERVICE_PYTHON",
+      "ZSODA_REMOTE_SERVICE_SCRIPT",
+      "ZSODA_REMOTE_SERVICE_LOG",
+      "ZSODA_LOCKED_MODEL_ID",
       "ZSODA_REMOTE_INFERENCE_COMMAND",
   };
 
@@ -804,6 +849,25 @@ RuntimeOptions BuildRuntimeOptions(const CliOptions& options) {
   runtime.preprocess_resize_mode = options.resize_mode;
   runtime.auto_download_missing_models = false;
   runtime.remote_inference_enabled = options.backend == RuntimeBackend::kRemote;
+  runtime.remote_endpoint = ReadEnvOrEmpty("ZSODA_REMOTE_INFERENCE_ENDPOINT");
+  if (runtime.remote_endpoint.empty()) {
+    runtime.remote_endpoint = ReadEnvOrEmpty("ZSODA_REMOTE_INFERENCE_URL");
+  }
+  runtime.remote_timeout_ms =
+      ParsePositiveIntEnvOrDefault("ZSODA_REMOTE_INFERENCE_TIMEOUT_MS", 0);
+  runtime.remote_service_autostart =
+      ParseBoolEnvOrDefault("ZSODA_REMOTE_SERVICE_AUTOSTART", false);
+  runtime.remote_service_host = ReadEnvOrEmpty("ZSODA_REMOTE_SERVICE_HOST");
+  if (runtime.remote_service_host.empty()) {
+    runtime.remote_service_host = "127.0.0.1";
+  }
+  runtime.remote_service_port =
+      ParsePositiveIntEnvOrDefault("ZSODA_REMOTE_SERVICE_PORT", 8345);
+  runtime.remote_service_python = ReadEnvOrEmpty("ZSODA_REMOTE_SERVICE_PYTHON");
+  runtime.remote_service_script_path = ReadEnvOrEmpty("ZSODA_REMOTE_SERVICE_SCRIPT");
+  runtime.remote_service_log_path = ReadEnvOrEmpty("ZSODA_REMOTE_SERVICE_LOG");
+  runtime.remote_transport_protocol =
+      ParseRemoteTransportProtocol(ReadEnvOrEmpty("ZSODA_REMOTE_PROTOCOL"));
   return runtime;
 }
 

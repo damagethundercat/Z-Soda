@@ -420,4 +420,77 @@ template <typename TView>
   return PixelConversionStatus::kOk;
 }
 
+// Converts normalized RGBA32F into host RGBA8/16/32F.
+[[nodiscard]] inline PixelConversionStatus ConvertRgba32FToHost(const FrameBuffer& rgba,
+                                                                const MutableHostBufferView& dest) {
+  const FrameDesc& rgba_desc = rgba.desc();
+  if (rgba.empty() || !IsValid(rgba_desc)) {
+    return PixelConversionStatus::kInvalidArgument;
+  }
+  if (rgba_desc.channels < 4 || rgba_desc.format != PixelFormat::kRGBA32F) {
+    return PixelConversionStatus::kFormatMismatch;
+  }
+
+  std::size_t bytes_per_pixel = 0;
+  const PixelConversionStatus dest_status = detail::ValidateHostView(dest, &bytes_per_pixel);
+  if (dest_status != PixelConversionStatus::kOk) {
+    return dest_status;
+  }
+  if (dest.width != rgba_desc.width || dest.height != rgba_desc.height) {
+    return PixelConversionStatus::kDimensionMismatch;
+  }
+
+  auto* base = static_cast<std::uint8_t*>(dest.pixels);
+  for (int y = 0; y < rgba_desc.height; ++y) {
+    auto* row = base + static_cast<std::size_t>(y) * dest.row_bytes;
+    for (int x = 0; x < rgba_desc.width; ++x) {
+      auto* pixel = row + static_cast<std::size_t>(x) * bytes_per_pixel;
+      const float r = detail::ClampUnit(rgba.at(x, y, 0));
+      const float g = detail::ClampUnit(rgba.at(x, y, 1));
+      const float b = detail::ClampUnit(rgba.at(x, y, 2));
+      const float a = detail::ClampUnit(rgba.at(x, y, 3));
+
+      switch (dest.format) {
+        case PixelFormat::kRGBA8: {
+          const int a_index = dest.channel_order == HostChannelOrder::kARGB ? 0 : 3;
+          const int r_index = dest.channel_order == HostChannelOrder::kARGB ? 1 : 0;
+          const int g_index = dest.channel_order == HostChannelOrder::kARGB ? 2 : 1;
+          const int b_index = dest.channel_order == HostChannelOrder::kARGB ? 3 : 2;
+          pixel[r_index] = detail::QuantizeToU8(r);
+          pixel[g_index] = detail::QuantizeToU8(g);
+          pixel[b_index] = detail::QuantizeToU8(b);
+          pixel[a_index] = detail::QuantizeToU8(a);
+          break;
+        }
+        case PixelFormat::kRGBA16: {
+          const int a_index = dest.channel_order == HostChannelOrder::kARGB ? 0 : 3;
+          const int r_index = dest.channel_order == HostChannelOrder::kARGB ? 1 : 0;
+          const int g_index = dest.channel_order == HostChannelOrder::kARGB ? 2 : 1;
+          const int b_index = dest.channel_order == HostChannelOrder::kARGB ? 3 : 2;
+          detail::StoreU16(pixel + sizeof(std::uint16_t) * r_index, detail::QuantizeToU16(r));
+          detail::StoreU16(pixel + sizeof(std::uint16_t) * g_index, detail::QuantizeToU16(g));
+          detail::StoreU16(pixel + sizeof(std::uint16_t) * b_index, detail::QuantizeToU16(b));
+          detail::StoreU16(pixel + sizeof(std::uint16_t) * a_index, detail::QuantizeToU16(a));
+          break;
+        }
+        case PixelFormat::kRGBA32F: {
+          const int a_index = dest.channel_order == HostChannelOrder::kARGB ? 0 : 3;
+          const int r_index = dest.channel_order == HostChannelOrder::kARGB ? 1 : 0;
+          const int g_index = dest.channel_order == HostChannelOrder::kARGB ? 2 : 1;
+          const int b_index = dest.channel_order == HostChannelOrder::kARGB ? 3 : 2;
+          detail::StoreF32(pixel + sizeof(float) * r_index, r);
+          detail::StoreF32(pixel + sizeof(float) * g_index, g);
+          detail::StoreF32(pixel + sizeof(float) * b_index, b);
+          detail::StoreF32(pixel + sizeof(float) * a_index, a);
+          break;
+        }
+        default:
+          return PixelConversionStatus::kUnsupportedFormat;
+      }
+    }
+  }
+
+  return PixelConversionStatus::kOk;
+}
+
 }  // namespace zsoda::core

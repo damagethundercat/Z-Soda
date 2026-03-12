@@ -29,7 +29,9 @@ struct AeHostRenderBridgePayload {
   zsoda::core::HostBufferView source{};
   zsoda::core::MutableHostBufferView destination{};
   std::optional<AeParamValues> params_override{};
+  std::shared_ptr<zsoda::core::RenderPipelineState> pipeline_state;
   std::uint64_t frame_hash = 0;
+  std::uint64_t render_state_token = 0;
 };
 
 struct AeHostRenderBridgeResult {
@@ -54,6 +56,8 @@ struct AeFrameHashSeed {
 };
 
 std::uint64_t ComputeSafeFrameHash(const AeFrameHashSeed& seed);
+int RuntimeParamTableIndex(AeParamId id);
+std::optional<AeParamId> AeParamIdFromRuntimeParamIndex(int runtime_index);
 std::size_t BuildHostRenderPixelFormatCandidates(
     int width,
     std::size_t row_bytes,

@@ -14,7 +14,7 @@ resource 'PiPL' (16000) {
       AEEffect
     },
     Name {
-      "ZSoda"
+      ZSODA_EFFECT_DISPLAY_NAME
     },
     Category {
       "Z-Soda"
@@ -48,7 +48,7 @@ resource 'PiPL' (16000) {
       ZSODA_AE_GLOBAL_OUTFLAGS2
     },
     AE_Effect_Match_Name {
-      "ZSoda Depth"
+      ZSODA_EFFECT_MATCH_NAME
     },
     AE_Reserved_Info {
       0

@@ -174,6 +174,8 @@ int ZSodaSetModelIdStubImpl(const char* model_id) {
   if (model_id == nullptr) {
     return -1;
   }
+  // Legacy host-buffer bridge: keep the export for compatibility, but route
+  // the request through the current router-owned param snapshot.
   auto params = zsoda::ae::GetRouter().CurrentParams();
   params.model_id = model_id;
   std::string error;
@@ -195,23 +197,30 @@ int ZSodaSetParamsStubImpl(const char* model_id,
                            int tile_size,
                            int overlap,
                            int vram_budget_mb) {
+  // Legacy compatibility shim. Older callers still pass the pre-slice-cleanup
+  // argument list, so only the knobs that still map onto the shipping router
+  // schema are honored here.
+  (void)invert;
+  (void)cache_enabled;
+  (void)tile_size;
+  (void)overlap;
+  (void)vram_budget_mb;
   auto params = zsoda::ae::GetRouter().CurrentParams();
   if (model_id != nullptr && model_id[0] != '\0') {
     params.model_id = model_id;
   }
   params.quality = quality;
-  params.output_mode =
-      output_mode == static_cast<int>(zsoda::ae::AeOutputMode::kSlicing)
-          ? zsoda::ae::AeOutputMode::kSlicing
-          : zsoda::ae::AeOutputMode::kDepthMap;
-  params.invert = invert != 0;
-  params.min_depth = min_depth;
-  params.max_depth = max_depth;
-  params.softness = softness;
-  params.cache_enabled = cache_enabled != 0;
-  params.tile_size = tile_size;
-  params.overlap = overlap;
-  params.vram_budget_mb = vram_budget_mb;
+  params.output = output_mode == 0 ? zsoda::ae::AeOutputSelection::kDepthMap
+                                   : zsoda::ae::AeOutputSelection::kDepthSlice;
+  min_depth = std::clamp(min_depth, 0.0F, 1.0F);
+  max_depth = std::clamp(max_depth, 0.0F, 1.0F);
+  if (max_depth < min_depth) {
+    std::swap(max_depth, min_depth);
+  }
+  params.slice_mode = zsoda::ae::AeSliceModeSelection::kBand;
+  params.slice_position = 0.5F * (min_depth + max_depth);
+  params.slice_range = std::clamp(max_depth - min_depth, 0.0F, 1.0F);
+  params.slice_softness = std::clamp(softness, 0.0F, 1.0F);
 
   std::string error;
   zsoda::ae::AeCommandContext context;
@@ -222,22 +231,10 @@ int ZSodaSetParamsStubImpl(const char* model_id,
 }
 
 int ZSodaSetFreezeStubImpl(int freeze_enabled, int request_extract) {
-  auto params = zsoda::ae::GetRouter().CurrentParams();
-  params.freeze_enabled = freeze_enabled != 0;
-  if (request_extract != 0) {
-    if (params.extract_token < std::numeric_limits<int>::max()) {
-      params.extract_token += 1;
-    } else {
-      params.extract_token = 0;
-    }
-  }
-
-  std::string error;
-  zsoda::ae::AeCommandContext context;
-  context.command = zsoda::ae::AeCommand::kUpdateParams;
-  context.params_update = &params;
-  context.error = &error;
-  return zsoda::ae::GetRouter().Handle(context) ? 0 : -1;
+  // Legacy ABI placeholder. Freeze/extract no longer have a shipping AE route.
+  (void)freeze_enabled;
+  (void)request_extract;
+  return 0;
 }
 
 int ZSodaRenderGrayFrameStubImpl(const float* src,
@@ -467,8 +464,8 @@ extern "C" DllExport PF_Err PluginDataEntryFunction2(PF_PluginDataPtr in_ptr,
 
   const A_Err result =
       (*in_plugin_data_callback_ptr)(in_ptr,
-                                     reinterpret_cast<const A_u_char*>("ZSoda"),
-                                     reinterpret_cast<const A_u_char*>("ZSoda Depth"),
+                                     reinterpret_cast<const A_u_char*>(ZSODA_EFFECT_DISPLAY_NAME),
+                                     reinterpret_cast<const A_u_char*>(ZSODA_EFFECT_MATCH_NAME),
                                      reinterpret_cast<const A_u_char*>("Z-Soda"),
                                      reinterpret_cast<const A_u_char*>("EffectMain"),
                                      'eFKT',
@@ -520,8 +517,14 @@ PF_Err EffectMainImpl(PF_Cmd cmd,
   // Normal EffectMain: delegate to SDK dispatch, minimal logging
   // -----------------------------------------------------------------------
 
-  // Trigger lazy initialization on first meaningful command.
-  zsoda::ae::EnsureInitialized();
+  char entry_detail[128] = {};
+  std::snprintf(entry_detail,
+                sizeof(entry_detail),
+                "cmd=%d,in_num_params=%d,out_num_params=%d",
+                static_cast<int>(cmd),
+                in_data != nullptr ? static_cast<int>(in_data->num_params) : 0,
+                out_data != nullptr ? static_cast<int>(out_data->num_params) : 0);
+  zsoda::ae::AppendDiagnosticsLine("EffectMainEnter", entry_detail);
 
   std::string error;
   zsoda::ae::AeDispatchContext dispatch;
@@ -533,41 +536,68 @@ PF_Err EffectMainImpl(PF_Cmd cmd,
   payload.output = output;
   payload.extra = extra;
 
+  constexpr bool kDiagBypassFullRender = false;
+  if (kDiagBypassFullRender && cmd == PF_Cmd_RENDER) {
+    zsoda::ae::AppendDiagnosticsLine("EffectMainRenderBypass", "full_render=source_passthrough");
+    RenderPassThrough(cmd, params, output);
+    zsoda::ae::AppendDiagnosticsLine("EffectMainExit", "render_bypass");
+    return PF_Err_NONE;
+  }
+
   if (!zsoda::ae::BuildSdkDispatch(payload, &dispatch, &error)) {
+    zsoda::ae::AppendDiagnosticsLine("EffectMainBuildDispatchFail", error.c_str());
     // BuildSdkDispatch handles GLOBAL_SETUP/PARAMS_SETUP internally — if it fails,
     // fall back to pass-through for render, no-op for others.
     RenderPassThrough(cmd, params, output);
+    zsoda::ae::AppendDiagnosticsLine("EffectMainExit", "build_dispatch_fail");
     return PF_Err_NONE;
   }
 
   // Setup commands (GLOBAL_SETUP, PARAMS_SETUP) are handled entirely by
   // BuildSdkDispatch above — they don't need router dispatch.
   if (cmd == PF_Cmd_GLOBAL_SETUP || cmd == PF_Cmd_PARAMS_SETUP) {
+    zsoda::ae::AppendDiagnosticsLine("EffectMainExit", "setup_return");
     return PF_Err_NONE;
   }
 
   // Unknown/unhandled commands → no-op (with render pass-through safety)
   if (dispatch.command.command == zsoda::ae::AeCommand::kUnknown) {
     RenderPassThrough(cmd, params, output);
+    zsoda::ae::AppendDiagnosticsLine("EffectMainExit", "unknown_noop");
     return PF_Err_NONE;
   }
+
+  // Defer engine/service initialization until after loader metadata has been
+  // returned to AE so startup probe failures cannot zero version/outflags/schema.
+  zsoda::ae::EnsureInitialized();
 
   // Dispatch to router
   const int dispatch_result = zsoda::ae::Dispatch(dispatch);
   if (dispatch_result != 0) {
+    const std::string dispatch_detail = "dispatch_result=" + std::to_string(dispatch_result);
+    zsoda::ae::AppendDiagnosticsLine("EffectMainDispatchFail", dispatch_detail.c_str());
     RenderPassThrough(cmd, params, output);
+    zsoda::ae::AppendDiagnosticsLine("EffectMainExit", "dispatch_fail");
     return PF_Err_NONE;
   }
 
   // For render: commit depth output back to AE host buffer
   if (cmd == PF_Cmd_RENDER) {
-    std::string commit_error;
-    if (!zsoda::ae::CommitSdkRenderOutput(payload, dispatch, &commit_error)) {
-      // Commit failed → pass-through rather than black/transparent output
+    constexpr bool kDiagBypassRenderCommit = false;
+    if (kDiagBypassRenderCommit) {
+      zsoda::ae::AppendDiagnosticsLine("EffectMainCommitBypass",
+                                       "render_output=source_passthrough");
       RenderPassThrough(cmd, params, output);
+    } else {
+      std::string commit_error;
+      if (!zsoda::ae::CommitSdkRenderOutput(payload, dispatch, &commit_error)) {
+        zsoda::ae::AppendDiagnosticsLine("EffectMainCommitFail", commit_error.c_str());
+      // Commit failed → pass-through rather than black/transparent output
+        RenderPassThrough(cmd, params, output);
+      }
     }
   }
-
+  zsoda::ae::AppendDiagnosticsLine("EffectMainExit", "ok");
   return PF_Err_NONE;
 #endif
 }

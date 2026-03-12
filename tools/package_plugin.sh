@@ -16,6 +16,8 @@ platform=""
 build_dir=""
 output_dir=""
 include_manifest="0"
+ort_dir=""
+python_dir=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -104,6 +106,34 @@ if [[ "${include_manifest}" == "1" && -f "models/models.manifest" ]]; then
   cp "models/models.manifest" "${output_dir}/models.manifest"
 fi
 
+if [[ "${platform}" == "windows" ]]; then
+  for candidate in \
+    "${build_dir}/plugin/Release/zsoda_ort" \
+    "${build_dir}/plugin/zsoda_ort"; do
+    if [[ -d "${candidate}" ]]; then
+      ort_dir="${candidate}"
+      break
+    fi
+  done
+  if [[ -n "${ort_dir}" ]]; then
+    rm -rf "${output_dir}/zsoda_ort"
+    cp -R "${ort_dir}" "${output_dir}/zsoda_ort"
+  fi
+
+  for candidate in \
+    "${build_dir}/plugin/Release/zsoda_py" \
+    "${build_dir}/plugin/zsoda_py"; do
+    if [[ -d "${candidate}" ]]; then
+      python_dir="${candidate}"
+      break
+    fi
+  done
+  if [[ -n "${python_dir}" ]]; then
+    rm -rf "${output_dir}/zsoda_py"
+    cp -R "${python_dir}" "${output_dir}/zsoda_py"
+  fi
+fi
+
 if command -v sha256sum >/dev/null 2>&1; then
   (
     cd "${output_dir}"
@@ -130,4 +160,10 @@ echo "  source:   ${artifact_source}"
 echo "  output:   ${destination}"
 if [[ "${include_manifest}" == "1" ]]; then
   echo "  manifest: ${output_dir}/models.manifest"
+fi
+if [[ -n "${ort_dir}" ]]; then
+  echo "  ort dir:  ${output_dir}/zsoda_ort"
+fi
+if [[ -n "${python_dir}" ]]; then
+  echo "  python:   ${output_dir}/zsoda_py"
 fi

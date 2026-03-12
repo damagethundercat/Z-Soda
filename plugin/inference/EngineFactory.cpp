@@ -1,11 +1,14 @@
 #include "inference/InferenceEngine.h"
 
+#include <array>
 #include <cerrno>
 #include <cctype>
 #include <cstdlib>
+#include <filesystem>
 #include <limits>
 #include <memory>
 #include <string>
+#include <string_view>
 
 #include "inference/DummyInferenceEngine.h"
 #include "inference/ManagedInferenceEngine.h"
@@ -14,6 +17,8 @@
 
 namespace zsoda::inference {
 namespace {
+
+constexpr char kDefaultLockedModelId[] = "distill-any-depth-base";
 
 int ParsePositiveIntEnvOrDefault(const char* value, int default_value) {
   if (value == nullptr || value[0] == '\0') {
@@ -65,6 +70,54 @@ std::string ReadEnvWithFallback(const char* primary, const char* fallback) {
   return ReadEnvOrEmpty(fallback);
 }
 
+bool HasExplicitEnvValue(const char* name) {
+  const char* value = std::getenv(name);
+  return value != nullptr && value[0] != '\0';
+}
+
+std::string ResolveLockedModelIdOrDefault() {
+  std::string model_id = ReadEnvOrEmpty("ZSODA_LOCKED_MODEL_ID");
+  if (model_id.empty()) {
+    // Legacy alias kept for backwards compatibility with older local setups.
+    model_id = ReadEnvOrEmpty("ZSODA_HQ_MODEL_ID");
+  }
+  if (model_id.empty()) {
+    model_id = kDefaultLockedModelId;
+  }
+  return model_id;
+}
+
+bool IsDistillAnyDepthModelId(std::string_view model_id) {
+  return model_id.rfind("distill-any-depth", 0) == 0;
+}
+
+bool IsExistingFile(const std::filesystem::path& path) {
+  if (path.empty()) {
+    return false;
+  }
+  std::error_code ec;
+  return std::filesystem::is_regular_file(path, ec) && !ec;
+}
+
+std::string ResolveBundledDistillServiceScriptPath(const RuntimeOptions& options) {
+  if (options.plugin_directory.empty()) {
+    return {};
+  }
+
+  const std::filesystem::path plugin_dir(options.plugin_directory);
+  const std::array<std::filesystem::path, 3> candidates = {
+      plugin_dir / "zsoda_py" / "distill_any_depth_remote_service.py",
+      plugin_dir / "tools" / "distill_any_depth_remote_service.py",
+      plugin_dir / "distill_any_depth_remote_service.py",
+  };
+  for (const auto& candidate : candidates) {
+    if (IsExistingFile(candidate)) {
+      return candidate.string();
+    }
+  }
+  return {};
+}
+
 }  // namespace
 
 std::shared_ptr<IInferenceEngine> CreateDefaultEngine() {
@@ -77,16 +130,23 @@ std::shared_ptr<IInferenceEngine> CreateDefaultEngine() {
   path_hints.plugin_directory = TryResolveCurrentModuleDirectory(&module_dir_error);
   const RuntimePathResolution runtime_paths = ResolveRuntimePaths(path_hints);
   const std::string model_root = runtime_paths.model_root.empty() ? "models" : runtime_paths.model_root;
+  const std::string locked_model_id = ResolveLockedModelIdOrDefault();
 
   RuntimeOptions options;
   const std::string env_backend = ReadEnvOrEmpty("ZSODA_INFERENCE_BACKEND");
   const bool has_explicit_backend = !env_backend.empty();
+  const bool has_explicit_remote_enable = HasExplicitEnvValue("ZSODA_REMOTE_INFERENCE_ENABLED");
+  const bool has_explicit_remote_autostart = HasExplicitEnvValue("ZSODA_REMOTE_SERVICE_AUTOSTART");
   if (!env_backend.empty()) {
     options.preferred_backend = ParseRuntimeBackend(env_backend);
   }
   const std::string env_preprocess_resize_mode = ReadEnvOrEmpty("ZSODA_PREPROCESS_RESIZE_MODE");
   if (!env_preprocess_resize_mode.empty()) {
     options.preprocess_resize_mode = ParsePreprocessResizeMode(env_preprocess_resize_mode);
+  }
+  const std::string env_remote_protocol = ReadEnvOrEmpty("ZSODA_REMOTE_PROTOCOL");
+  if (!env_remote_protocol.empty()) {
+    options.remote_transport_protocol = ParseRemoteTransportProtocol(env_remote_protocol);
   }
 
   options.remote_endpoint =
@@ -107,9 +167,22 @@ std::shared_ptr<IInferenceEngine> CreateDefaultEngine() {
   options.remote_service_python = ReadEnvOrEmpty("ZSODA_REMOTE_SERVICE_PYTHON");
   options.remote_service_script_path = ReadEnvOrEmpty("ZSODA_REMOTE_SERVICE_SCRIPT");
   options.remote_service_log_path = ReadEnvOrEmpty("ZSODA_REMOTE_SERVICE_LOG");
-  options.da3_repo_root = ReadEnvOrEmpty("ZSODA_DA3_REPO_ROOT");
   if (path_hints.plugin_directory.has_value()) {
     options.plugin_directory = *path_hints.plugin_directory;
+  }
+
+  const bool implicit_distill_remote_default =
+      !has_explicit_backend && IsDistillAnyDepthModelId(locked_model_id) &&
+      (!has_explicit_remote_enable || options.remote_inference_enabled);
+  if (implicit_distill_remote_default) {
+    options.preferred_backend = RuntimeBackend::kRemote;
+    options.remote_inference_enabled = true;
+    if (options.remote_endpoint.empty() && !has_explicit_remote_autostart) {
+      options.remote_service_autostart = true;
+    }
+    if (options.remote_service_script_path.empty()) {
+      options.remote_service_script_path = ResolveBundledDistillServiceScriptPath(options);
+    }
   }
 
   if (options.preferred_backend == RuntimeBackend::kRemote) {
@@ -147,7 +220,7 @@ std::shared_ptr<IInferenceEngine> CreateDefaultEngine() {
     return engine;
   }
 
-  // Log why the managed engine failed so the user can diagnose DA3 issues.
+  // Log why the managed engine failed so the user can diagnose runtime issues.
   std::fprintf(stderr,
                "[Z-Soda] ManagedInferenceEngine init failed, falling back to DummyInferenceEngine: %s\n",
                error.empty() ? "<no error detail>" : error.c_str());

@@ -179,56 +179,27 @@ bool ValidateSpec(const ModelSpec& spec, std::string* error) {
 
 ModelCatalog::ModelCatalog() {
   models_.push_back({
-      "depth-anything-v3-small",
-      "Depth Anything v3 Small",
-      "depth-anything-v3/depth_anything_v3_small.onnx",
-      "https://huggingface.co/onnx-community/depth-anything-v3-small/resolve/main/onnx/model.onnx",
-      {{"depth-anything-v3/depth_anything_v3_small.onnx_data",
-        "https://huggingface.co/onnx-community/depth-anything-v3-small/resolve/main/onnx/model.onnx_data"}},
-      false,
-  });
-  models_.push_back({
-      "depth-anything-v3-base",
-      "Depth Anything v3 Base",
-      "depth-anything-v3/depth_anything_v3_base.onnx",
-      "https://huggingface.co/onnx-community/depth-anything-v3-base/resolve/main/onnx/model.onnx",
-      {{"depth-anything-v3/depth_anything_v3_base.onnx_data",
-        "https://huggingface.co/onnx-community/depth-anything-v3-base/resolve/main/onnx/model.onnx_data"}},
-      true,
-  });
-  models_.push_back({
-      "depth-anything-v3-large",
-      "Depth Anything v3 Large",
-      "depth-anything-v3/depth_anything_v3_large.onnx",
-      "https://huggingface.co/onnx-community/depth-anything-v3-large/resolve/main/onnx/model.onnx",
-      {{"depth-anything-v3/depth_anything_v3_large.onnx_data",
-        "https://huggingface.co/onnx-community/depth-anything-v3-large/resolve/main/onnx/model.onnx_data"}},
-      false,
-  });
-  models_.push_back({
-      "depth-anything-v3-large-multiview",
-      "Depth Anything v3 Large Multi-View (Alias/Experimental Fallback)",
-      "depth-anything-v3/depth_anything_v3_large.onnx",
-      "https://huggingface.co/onnx-community/depth-anything-v3-large/resolve/main/onnx/model.onnx",
-      {{"depth-anything-v3/depth_anything_v3_large.onnx_data",
-        "https://huggingface.co/onnx-community/depth-anything-v3-large/resolve/main/onnx/model.onnx_data"}},
-      false,
-  });
-  models_.push_back({
-      "midas-dpt-large",
-      "MiDaS DPT Large",
-      "midas/dpt_large_384.onnx",
-      "https://github.com/isl-org/MiDaS/releases/download/v3_1/dpt_large_384.onnx",
+      "distill-any-depth",
+      "DistillAnyDepth Small",
+      "distill-any-depth/distill_any_depth_small.onnx",
+      "remote://distill-any-depth-small",
       {},
       false,
   });
   models_.push_back({
-      "depth-anything-v3-small-multiview",
-      "Depth Anything v3 Small Multi-View (True BNCHW)",
-      "depth-anything-v3/depth_anything_v3_small.onnx",
-      "https://huggingface.co/onnx-community/depth-anything-v3-small/resolve/main/onnx/model.onnx",
-      {{"depth-anything-v3/depth_anything_v3_small.onnx_data",
-        "https://huggingface.co/onnx-community/depth-anything-v3-small/resolve/main/onnx/model.onnx_data"}},
+      "distill-any-depth-base",
+      "DistillAnyDepth Base",
+      "distill-any-depth/distill_any_depth_base.onnx",
+      "remote://distill-any-depth-base",
+      {},
+      true,
+  });
+  models_.push_back({
+      "distill-any-depth-large",
+      "DistillAnyDepth Large",
+      "distill-any-depth/distill_any_depth_large.onnx",
+      "remote://distill-any-depth-large",
+      {},
       false,
   });
 }

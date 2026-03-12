@@ -1,6 +1,7 @@
 #include "inference/ManagedInferenceEngine.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <sstream>
@@ -19,6 +20,8 @@
 
 namespace zsoda::inference {
 namespace {
+
+constexpr auto kRemoteBackendRecoveryRetryInterval = std::chrono::milliseconds(750);
 
 const char* SafeCStr(const char* value, const char* fallback = "<null>") {
   return value != nullptr ? value : fallback;
@@ -118,13 +121,15 @@ bool ManagedInferenceEngine::SelectModel(const std::string& model_id, std::strin
     return false;
   }
   if (model_id == active_model_id_) {
-    model_file_exists_ = AreModelAssetsPresent(active_model_assets_);
-    if (!model_file_exists_) {
+    const bool requires_local_model_assets = !WantsRemoteBackendLocked();
+    model_file_exists_ = requires_local_model_assets ? AreModelAssetsPresent(active_model_assets_) : true;
+    if (requires_local_model_assets && !model_file_exists_) {
       const auto* model = catalog_.FindById(active_model_id_);
       if (model != nullptr) {
         MaybeQueueModelDownloadLocked(*model, active_model_assets_);
       }
     }
+    TryRecoverRequestedBackendLocked();
     TryPromoteActiveModelToOnnxLocked();
     return true;
   }
@@ -215,7 +220,9 @@ bool ManagedInferenceEngine::Run(const InferenceRequest& request,
     }
   }
 
-  if (!model_file_exists_ && error != nullptr) {
+  if (!fallback_reason_.empty() && error != nullptr) {
+    *error = fallback_reason_;
+  } else if (!model_file_exists_ && error != nullptr) {
     *error = "selected model assets are not fully installed; using fallback depth path";
   } else if (error != nullptr) {
     error->clear();
@@ -325,6 +332,10 @@ void ManagedInferenceEngine::ConfigureBackend() {
 #endif
 }
 
+bool ManagedInferenceEngine::WantsRemoteBackendLocked() const {
+  return options_.preferred_backend == RuntimeBackend::kRemote || options_.remote_inference_enabled;
+}
+
 void ManagedInferenceEngine::LoadManifest() {
   std::string manifest_error;
   if (!options_.model_manifest_path.empty()) {
@@ -388,7 +399,7 @@ bool ManagedInferenceEngine::SelectModelLocked(const std::string& model_id, std:
   active_model_id_ = model_id;
   active_model_path_ = model_path;
   active_model_assets_ = std::move(model_assets);
-  const bool requires_local_model_assets = active_backend_ != RuntimeBackend::kRemote;
+  const bool requires_local_model_assets = !WantsRemoteBackendLocked();
   model_file_exists_ = requires_local_model_assets ? exists : true;
   if (requires_local_model_assets && !exists) {
     MaybeQueueModelDownloadLocked(*model, active_model_assets_);
@@ -412,6 +423,54 @@ bool ManagedInferenceEngine::SelectModelLocked(const std::string& model_id, std:
     }
   }
   return true;
+}
+
+void ManagedInferenceEngine::TryRecoverRequestedBackendLocked() {
+  if (!WantsRemoteBackendLocked()) {
+    return;
+  }
+  if (onnx_backend_ != nullptr && !using_fallback_engine_) {
+    return;
+  }
+
+  const auto now = std::chrono::steady_clock::now();
+  if (last_backend_recovery_attempt_.time_since_epoch().count() != 0 &&
+      (now - last_backend_recovery_attempt_) < kRemoteBackendRecoveryRetryInterval) {
+    return;
+  }
+  last_backend_recovery_attempt_ = now;
+  AppendInferenceTrace("recover_backend_begin",
+                       active_model_id_.empty() ? "<no_model>" : active_model_id_.c_str());
+
+  ConfigureBackend();
+  if (onnx_backend_ == nullptr) {
+    AppendInferenceTrace("recover_backend_unavailable",
+                         fallback_reason_.empty() ? "<none>" : fallback_reason_.c_str());
+    return;
+  }
+  if (active_model_id_.empty()) {
+    AppendInferenceTrace("recover_backend_no_model");
+    return;
+  }
+
+  std::string backend_error;
+  if (onnx_backend_->SelectModel(active_model_id_, active_model_path_, &backend_error)) {
+    using_fallback_engine_ = false;
+    last_run_used_fallback_ = false;
+    fallback_reason_.clear();
+    active_backend_ = onnx_backend_->ActiveBackend();
+    model_file_exists_ = true;
+    AppendInferenceTrace("recover_backend_ok");
+    return;
+  }
+
+  using_fallback_engine_ = true;
+  last_run_used_fallback_ = true;
+  if (!backend_error.empty()) {
+    fallback_reason_ = backend_error;
+  }
+  AppendInferenceTrace("recover_backend_select_failed",
+                       backend_error.empty() ? "<none>" : backend_error.c_str());
 }
 
 void ManagedInferenceEngine::TryPromoteActiveModelToOnnxLocked() {
@@ -506,17 +565,14 @@ void ManagedInferenceEngine::MaybeQueueModelDownloadLocked(
 }
 
 float ManagedInferenceEngine::ModelBias() const {
-  if (active_model_id_ == "depth-anything-v3-large") {
+  if (active_model_id_ == "distill-any-depth-large") {
     return 0.08F;
   }
-  if (active_model_id_ == "depth-anything-v3-base") {
+  if (active_model_id_ == "distill-any-depth-base") {
     return 0.04F;
   }
-  if (active_model_id_ == "depth-anything-v3-small") {
+  if (active_model_id_ == "distill-any-depth") {
     return 0.02F;
-  }
-  if (active_model_id_ == "midas-dpt-large") {
-    return -0.03F;
   }
   return 0.0F;
 }
