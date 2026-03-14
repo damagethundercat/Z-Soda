@@ -36,6 +36,7 @@ struct RuntimeOptions {
   std::string onnxruntime_library_path;
   std::string onnxruntime_library_dir;
   std::string plugin_directory;
+  std::string runtime_asset_root;
   int onnxruntime_api_version = 0;
   bool auto_download_missing_models = true;
   bool remote_inference_enabled = false;

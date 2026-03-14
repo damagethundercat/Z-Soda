@@ -11,6 +11,7 @@
 #include <string_view>
 
 #include "inference/DummyInferenceEngine.h"
+#include "inference/EmbeddedPayload.h"
 #include "inference/ManagedInferenceEngine.h"
 #include "inference/RuntimePathResolver.h"
 #include "inference/RuntimeOptions.h"
@@ -105,14 +106,17 @@ std::string ResolveBundledDistillServiceScriptPath(const RuntimeOptions& options
   }
 
   const std::filesystem::path plugin_dir(options.plugin_directory);
-  const std::array<std::filesystem::path, 3> candidates = {
-      plugin_dir / "zsoda_py" / "distill_any_depth_remote_service.py",
-      plugin_dir / "tools" / "distill_any_depth_remote_service.py",
-      plugin_dir / "distill_any_depth_remote_service.py",
-  };
-  for (const auto& candidate : candidates) {
-    if (IsExistingFile(candidate)) {
-      return candidate.string();
+  for (const auto& root :
+       BuildRuntimeAssetSearchRoots(plugin_dir, std::filesystem::path(options.runtime_asset_root))) {
+    const std::array<std::filesystem::path, 3> candidates = {
+        root / "zsoda_py" / "distill_any_depth_remote_service.py",
+        root / "tools" / "distill_any_depth_remote_service.py",
+        root / "distill_any_depth_remote_service.py",
+    };
+    for (const auto& candidate : candidates) {
+      if (IsExistingFile(candidate)) {
+        return candidate.string();
+      }
     }
   }
   return {};
@@ -126,8 +130,22 @@ std::shared_ptr<IInferenceEngine> CreateDefaultEngine() {
   path_hints.model_manifest_env = ReadEnvOrEmpty("ZSODA_MODEL_MANIFEST");
   path_hints.onnxruntime_library_env = ReadEnvOrEmpty("ZSODA_ONNXRUNTIME_LIBRARY");
 
+  std::string module_path_error;
+  const auto module_path = TryResolveCurrentModulePath(&module_path_error);
   std::string module_dir_error;
   path_hints.plugin_directory = TryResolveCurrentModuleDirectory(&module_dir_error);
+  if (module_path.has_value() && !module_path->empty()) {
+    std::string payload_error;
+    const EmbeddedPayloadInfo payload =
+        EnsureEmbeddedPayloadAvailable(*module_path, &payload_error);
+    if (payload.extracted && !payload.asset_root.empty()) {
+      path_hints.bundled_asset_root = payload.asset_root;
+    } else if (!payload_error.empty()) {
+      std::fprintf(stderr,
+                   "[Z-Soda] Embedded payload preparation failed: %s\n",
+                   payload_error.c_str());
+    }
+  }
   const RuntimePathResolution runtime_paths = ResolveRuntimePaths(path_hints);
   const std::string model_root = runtime_paths.model_root.empty() ? "models" : runtime_paths.model_root;
   const std::string locked_model_id = ResolveLockedModelIdOrDefault();
@@ -169,6 +187,9 @@ std::shared_ptr<IInferenceEngine> CreateDefaultEngine() {
   options.remote_service_log_path = ReadEnvOrEmpty("ZSODA_REMOTE_SERVICE_LOG");
   if (path_hints.plugin_directory.has_value()) {
     options.plugin_directory = *path_hints.plugin_directory;
+  }
+  if (!path_hints.bundled_asset_root.empty()) {
+    options.runtime_asset_root = path_hints.bundled_asset_root;
   }
 
   const bool implicit_distill_remote_default =
@@ -214,6 +235,7 @@ std::shared_ptr<IInferenceEngine> CreateDefaultEngine() {
   options.auto_download_missing_models = ParseBoolEnvOrDefault(env_auto_download, true);
 
   (void)module_dir_error;
+  (void)module_path_error;
   auto engine = std::make_shared<ManagedInferenceEngine>(model_root, options);
   std::string error;
   if (engine->Initialize("", &error)) {

@@ -12,14 +12,30 @@ The preferred production entry is `distill-any-depth-base`.
 
 These model IDs are resolved through the local remote service:
 
-- [tools/distill_any_depth_remote_service.py](/Users/Yongkyu/code/Z-Soda/tools/distill_any_depth_remote_service.py)
+- [tools/distill_any_depth_remote_service.py](../tools/distill_any_depth_remote_service.py)
 
 That means normal AE operation does not depend on checked-in ONNX weights under this
 folder. The manifest still exists so model identity and packaging stay deterministic.
 
+For zero-install release packaging, the helper can now prefer bundled local
+Hugging Face snapshots laid out as:
+
+```text
+models/
+  models.manifest
+  hf/
+    distill-any-depth-base/
+      config.json
+      ...
+```
+
+At runtime the service checks `models/hf/<model_id>/` first. If that directory
+exists, it loads the model locally; otherwise it falls back to the configured
+remote Hugging Face repo name.
+
 ## Manifest
 
-- [models.manifest](/Users/Yongkyu/code/Z-Soda/models/models.manifest)
+- [models.manifest](models.manifest)
 
 Format:
 

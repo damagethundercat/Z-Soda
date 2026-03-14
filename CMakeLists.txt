@@ -4,6 +4,15 @@ if(POLICY CMP0091)
   cmake_policy(SET CMP0091 NEW)
 endif()
 
+if(APPLE)
+  if(NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET OR CMAKE_OSX_DEPLOYMENT_TARGET STREQUAL "")
+    set(CMAKE_OSX_DEPLOYMENT_TARGET
+        "12.0"
+        CACHE STRING
+        "Minimum macOS deployment target for Z-Soda builds")
+  endif()
+endif()
+
 project(z_soda LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)

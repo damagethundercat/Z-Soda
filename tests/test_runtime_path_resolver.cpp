@@ -175,6 +175,56 @@ void TestEffectsInstallFallsBackToAdobeMediaCoreModels() {
   assert(std::filesystem::path(resolved.model_manifest_path) == manifest);
 }
 
+void TestMacBundleModuleDirectoryUsesResources() {
+  TempDir temp_dir;
+  const auto bundle_root = temp_dir.path() / "MediaCore" / "ZSoda.plugin";
+  const auto module_dir = bundle_root / "Contents" / "MacOS";
+  const auto resources_dir = bundle_root / "Contents" / "Resources";
+  const auto models_dir = resources_dir / "models";
+  const auto manifest_path = models_dir / "models.manifest";
+  const auto ort_path =
+      resources_dir / "zsoda_ort" / zsoda::inference::DefaultOnnxRuntimeLibraryFileName();
+
+  std::filesystem::create_directories(module_dir);
+  WriteTextFile(manifest_path, "# bundle manifest");
+  WriteTextFile(ort_path, "bundle-runtime");
+
+  zsoda::inference::RuntimePathHints hints;
+  hints.plugin_directory = module_dir.string();
+
+  const auto resolved = zsoda::inference::ResolveRuntimePaths(hints);
+  assert(std::filesystem::path(resolved.model_root) == models_dir);
+  assert(std::filesystem::path(resolved.model_manifest_path) == manifest_path);
+  assert(std::filesystem::path(resolved.onnxruntime_library_path) == ort_path);
+  assert(std::filesystem::path(resolved.onnxruntime_library_dir) == ort_path.parent_path());
+}
+
+void TestEmbeddedPayloadAssetRootTakesPrecedence() {
+  TempDir temp_dir;
+  const auto plugin_dir = temp_dir.path() / "plugin";
+  const auto embedded_root = temp_dir.path() / "payload-cache" / "deadbeef";
+  const auto embedded_models_dir = embedded_root / "models";
+  const auto embedded_manifest = embedded_models_dir / "models.manifest";
+  const auto embedded_ort =
+      embedded_root / "zsoda_ort" / zsoda::inference::DefaultOnnxRuntimeLibraryFileName();
+  const auto adjacent_models_dir = plugin_dir / "models";
+
+  std::filesystem::create_directories(plugin_dir);
+  WriteTextFile(adjacent_models_dir / "models.manifest", "# plugin manifest");
+  WriteTextFile(embedded_manifest, "# embedded manifest");
+  WriteTextFile(embedded_ort, "embedded runtime");
+
+  zsoda::inference::RuntimePathHints hints;
+  hints.plugin_directory = plugin_dir.string();
+  hints.bundled_asset_root = embedded_root.string();
+
+  const auto resolved = zsoda::inference::ResolveRuntimePaths(hints);
+  assert(std::filesystem::path(resolved.model_root) == embedded_models_dir);
+  assert(std::filesystem::path(resolved.model_manifest_path) == embedded_manifest);
+  assert(std::filesystem::path(resolved.onnxruntime_library_path) == embedded_ort);
+  assert(std::filesystem::path(resolved.onnxruntime_library_dir) == embedded_ort.parent_path());
+}
+
 }  // namespace
 
 void RunRuntimePathResolverTests() {
@@ -186,4 +236,6 @@ void RunRuntimePathResolverTests() {
   TestFallbackToRepositoryRelativeDefaults();
   TestPluginDirectoryWithoutModelsUsesAbsoluteFallback();
   TestEffectsInstallFallsBackToAdobeMediaCoreModels();
+  TestMacBundleModuleDirectoryUsesResources();
+  TestEmbeddedPayloadAssetRootTakesPrecedence();
 }

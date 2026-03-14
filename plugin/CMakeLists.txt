@@ -23,6 +23,7 @@ set(ZSODA_PLUGIN_SOURCES
   core/RenderPipeline.cpp
   core/Tiler.cpp
   inference/DummyInferenceEngine.cpp
+  inference/EmbeddedPayload.cpp
   inference/EngineFactory.cpp
   inference/ManagedInferenceEngine.cpp
   inference/ModelAutoDownloader.cpp
@@ -103,6 +104,28 @@ if(ZSODA_WITH_AE_SDK)
   if(NOT EXISTS "${AE_SDK_UTIL_DIR}")
     set(AE_SDK_UTIL_DIR "")
   endif()
+  set(AE_SDK_SP_INCLUDE_DIR "${AE_SDK_INCLUDE_DIR}/SP")
+  if(NOT EXISTS "${AE_SDK_SP_INCLUDE_DIR}")
+    set(AE_SDK_SP_INCLUDE_DIR "")
+  endif()
+  set(AE_SDK_RESOURCE_DIR "${AE_SDK_EXAMPLES_DIR}/Resources")
+  if(NOT EXISTS "${AE_SDK_RESOURCE_DIR}")
+    set(AE_SDK_RESOURCE_DIR "")
+  endif()
+  find_program(ZSODA_XCRUN_EXECUTABLE xcrun REQUIRED)
+  set(ZSODA_REZ_ARCHITECTURES ${CMAKE_OSX_ARCHITECTURES})
+  if(NOT ZSODA_REZ_ARCHITECTURES)
+    set(ZSODA_REZ_ARCHITECTURES "${CMAKE_SYSTEM_PROCESSOR}")
+  endif()
+  if(NOT ZSODA_REZ_ARCHITECTURES)
+    set(ZSODA_REZ_ARCHITECTURES "arm64")
+  endif()
+  set(ZSODA_REZ_ARCH_ARGS)
+  foreach(zsoda_rez_arch IN LISTS ZSODA_REZ_ARCHITECTURES)
+    if(zsoda_rez_arch)
+      list(APPEND ZSODA_REZ_ARCH_ARGS -arch "${zsoda_rez_arch}")
+    endif()
+  endforeach()
 
   if(WIN32)
     add_library(zsoda_aex MODULE ${ZSODA_PLUGIN_SOURCES})
@@ -201,15 +224,51 @@ if(ZSODA_WITH_AE_SDK)
     target_compile_definitions(zsoda_loader_probe_aex PRIVATE ZSODA_WITH_AE_SDK=1)
     target_compile_features(zsoda_loader_probe_aex PRIVATE cxx_std_20)
   elseif(APPLE)
+    set(ZSODA_PIPL_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/ae/ZSodaPiPL.r")
+    if(NOT EXISTS "${ZSODA_PIPL_SOURCE}")
+      message(FATAL_ERROR "Missing PiPL source file: ${ZSODA_PIPL_SOURCE}")
+    endif()
+
     add_library(zsoda_plugin_bundle MODULE ${ZSODA_PLUGIN_SOURCES})
     set_target_properties(
       zsoda_plugin_bundle
       PROPERTIES
         BUNDLE TRUE
         BUNDLE_EXTENSION "plugin"
+        MACOSX_BUNDLE_GUI_IDENTIFIER "com.zsoda.aftereffects.plugin"
         MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/ae/Info.plist.in"
         OUTPUT_NAME "ZSoda"
         PREFIX ""
+        XCODE_ATTRIBUTE_GENERATE_PKGINFO_FILE "YES"
+        XCODE_ATTRIBUTE_INFOPLIST_KEY_CFBundlePackageType "eFKT"
+        XCODE_ATTRIBUTE_INFOPLIST_KEY_CFBundleSignature "FXTC"
+        XCODE_ATTRIBUTE_INFOPLIST_KEY_LSRequiresCarbon "YES"
+        XCODE_ATTRIBUTE_PRODUCT_BUNDLE_PACKAGE_TYPE "eFKT"
+        XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "com.zsoda.aftereffects.plugin"
+    )
+    add_custom_command(
+      TARGET zsoda_plugin_bundle
+      POST_BUILD
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_BUNDLE_CONTENT_DIR:zsoda_plugin_bundle>/Resources"
+      COMMAND
+        "${ZSODA_XCRUN_EXECUTABLE}" Rez
+        -o "$<TARGET_BUNDLE_CONTENT_DIR:zsoda_plugin_bundle>/Resources/ZSoda.rsrc"
+        -d SystemSevenOrLater=1
+        -useDF
+        -script Roman
+        -define __MACH__
+        ${ZSODA_REZ_ARCH_ARGS}
+        -i "${CMAKE_BINARY_DIR}/plugin/$<CONFIG>"
+        -i "${CMAKE_BINARY_DIR}/plugin/$<CONFIG>"
+        -i "${CMAKE_BINARY_DIR}/plugin/$<CONFIG>/include"
+        -i "${AE_SDK_INCLUDE_DIR}"
+        -i "${AE_SDK_UTIL_DIR}"
+        -i "${AE_SDK_SP_INCLUDE_DIR}"
+        -i "${AE_SDK_RESOURCE_DIR}"
+        -isysroot "${CMAKE_OSX_SYSROOT}"
+        "${ZSODA_PIPL_SOURCE}"
+      VERBATIM
+      COMMENT "Generating macOS PiPL resource bundle"
     )
     list(APPEND ZSODA_PLUGIN_TARGETS zsoda_plugin_bundle)
   endif()
@@ -248,6 +307,8 @@ foreach(target_name IN LISTS ZSODA_PLUGIN_TARGETS)
       ${CMAKE_CURRENT_SOURCE_DIR}
       $<$<BOOL:${ZSODA_WITH_AE_SDK}>:${AE_SDK_INCLUDE_DIR}>
       $<$<BOOL:${AE_SDK_UTIL_DIR}>:${AE_SDK_UTIL_DIR}>
+      $<$<BOOL:${AE_SDK_SP_INCLUDE_DIR}>:${AE_SDK_SP_INCLUDE_DIR}>
+      $<$<BOOL:${AE_SDK_RESOURCE_DIR}>:${AE_SDK_RESOURCE_DIR}>
   )
 
   target_compile_definitions(${target_name}

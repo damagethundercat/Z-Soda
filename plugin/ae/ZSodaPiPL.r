@@ -1,6 +1,5 @@
 #include "AEConfig.h"
 #include "AE_EffectVers.h"
-#include "AE_Effect.h"
 #include "ZSodaAeFlags.h"
 #include "ZSodaVersion.h"
 

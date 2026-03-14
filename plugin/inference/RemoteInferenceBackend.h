@@ -29,9 +29,7 @@ class RemoteInferenceBackend final : public IOnnxRuntimeBackend {
 
  private:
   bool ResolveEndpointConfigurationLocked(std::string* error);
-#if defined(_WIN32)
   bool EnsureAutoStartedServiceReadyLocked(std::string* error);
-#endif
 
   RuntimeOptions options_;
   RemoteBackendCommandConfig command_config_;

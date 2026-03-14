@@ -6,6 +6,10 @@
 #include <string>
 #include <vector>
 
+#if defined(__APPLE__)
+#include <dlfcn.h>
+#endif
+
 #if defined(_WIN32)
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -49,7 +53,57 @@ bool IsSameOnnxRuntimeFileName(const std::filesystem::path& path) {
   for (const char ch : filename) {
     lowered.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
   }
-  return lowered == "onnxruntime.dll";
+  return lowered == "onnxruntime.dll" || lowered == "libonnxruntime.dylib" ||
+         lowered == "libonnxruntime.so";
+}
+
+void AppendUniquePath(std::vector<std::filesystem::path>* paths,
+                      const std::filesystem::path& candidate) {
+  if (paths == nullptr || candidate.empty()) {
+    return;
+  }
+
+  const auto normalized = candidate.lexically_normal();
+  if (normalized.empty()) {
+    return;
+  }
+  for (const auto& existing : *paths) {
+    if (existing == normalized) {
+      return;
+    }
+  }
+  paths->push_back(normalized);
+}
+
+std::optional<std::filesystem::path> TryResolveBundleContentsDirectory(
+    const std::filesystem::path& plugin_directory) {
+  if (plugin_directory.empty()) {
+    return std::nullopt;
+  }
+
+  const std::string leaf = ToLowerCopy(plugin_directory.filename().string());
+  if (leaf == "contents") {
+    return plugin_directory;
+  }
+
+  const auto parent = plugin_directory.parent_path();
+  if (!parent.empty() && ToLowerCopy(parent.filename().string()) == "contents") {
+    return parent;
+  }
+
+  if (ToLowerCopy(plugin_directory.extension().string()) == ".plugin") {
+    return plugin_directory / "Contents";
+  }
+
+  return std::nullopt;
+}
+
+std::filesystem::path PreferredRuntimeAssetRoot(const std::filesystem::path& plugin_directory) {
+  if (const auto contents_dir = TryResolveBundleContentsDirectory(plugin_directory);
+      contents_dir.has_value()) {
+    return *contents_dir / "Resources";
+  }
+  return plugin_directory;
 }
 
 std::filesystem::path PreferIsolatedOnnxRuntimePath(const std::filesystem::path& candidate) {
@@ -173,23 +227,56 @@ const char* DefaultOnnxRuntimeLibraryFileName() {
 #endif
 }
 
+std::vector<std::filesystem::path> BuildRuntimeAssetSearchRoots(
+    const std::filesystem::path& plugin_directory,
+    const std::filesystem::path& extra_asset_root) {
+  std::vector<std::filesystem::path> roots;
+  AppendUniquePath(&roots, extra_asset_root);
+  AppendUniquePath(&roots, plugin_directory);
+
+  const auto contents_dir = TryResolveBundleContentsDirectory(plugin_directory);
+  if (!contents_dir.has_value()) {
+    return roots;
+  }
+
+  AppendUniquePath(&roots, *contents_dir);
+  AppendUniquePath(&roots, *contents_dir / "Resources");
+  AppendUniquePath(&roots, *contents_dir / "MacOS");
+  AppendUniquePath(&roots, contents_dir->parent_path());
+  return roots;
+}
+
 RuntimePathResolution ResolveRuntimePaths(const RuntimePathHints& hints) {
   RuntimePathResolution resolved;
   const auto plugin_directory = ParsePluginDirectoryPath(hints.plugin_directory);
+  const std::vector<std::filesystem::path> search_roots =
+      plugin_directory.has_value()
+          ? BuildRuntimeAssetSearchRoots(*plugin_directory,
+                                        std::filesystem::path(hints.bundled_asset_root))
+                                   : std::vector<std::filesystem::path>{};
+  const std::filesystem::path preferred_asset_root =
+      plugin_directory.has_value() ? PreferredRuntimeAssetRoot(*plugin_directory)
+                                   : std::filesystem::path{};
 
   if (HasText(hints.model_root_env)) {
     resolved.model_root = hints.model_root_env;
   } else if (plugin_directory.has_value()) {
-    const auto plugin_models = *plugin_directory / "models";
-    if (IsExistingDirectory(plugin_models)) {
-      resolved.model_root = plugin_models.string();
-    } else if (const auto media_core_models =
-                   ResolveAdobeMediaCoreModelsDirectory(*plugin_directory);
-               media_core_models.has_value()) {
-      resolved.model_root = media_core_models->string();
-    } else {
-      // Keep model root deterministic/absolute to avoid process working-directory drift.
-      resolved.model_root = plugin_models.string();
+    for (const auto& root : search_roots) {
+      const auto plugin_models = root / "models";
+      if (IsExistingDirectory(plugin_models)) {
+        resolved.model_root = plugin_models.string();
+        break;
+      }
+    }
+    if (resolved.model_root.empty()) {
+      if (const auto media_core_models =
+              ResolveAdobeMediaCoreModelsDirectory(*plugin_directory);
+          media_core_models.has_value()) {
+        resolved.model_root = media_core_models->string();
+      } else {
+        // Keep model root deterministic/absolute to avoid process working-directory drift.
+        resolved.model_root = (preferred_asset_root / "models").string();
+      }
     }
   }
 
@@ -204,9 +291,12 @@ RuntimePathResolution ResolveRuntimePaths(const RuntimePathHints& hints) {
     if (IsExistingFile(model_root_manifest)) {
       resolved.model_manifest_path = model_root_manifest.string();
     } else if (plugin_directory.has_value()) {
-      const auto plugin_manifest = *plugin_directory / "models" / "models.manifest";
-      if (IsExistingFile(plugin_manifest)) {
-        resolved.model_manifest_path = plugin_manifest.string();
+      for (const auto& root : search_roots) {
+        const auto plugin_manifest = root / "models" / "models.manifest";
+        if (IsExistingFile(plugin_manifest)) {
+          resolved.model_manifest_path = plugin_manifest.string();
+          break;
+        }
       }
     }
   }
@@ -214,15 +304,20 @@ RuntimePathResolution ResolveRuntimePaths(const RuntimePathHints& hints) {
   if (HasText(hints.onnxruntime_library_env)) {
     SetResolvedOnnxRuntimeLibraryPath(&resolved, std::filesystem::path(hints.onnxruntime_library_env));
   } else if (plugin_directory.has_value()) {
-    const std::vector<std::filesystem::path> candidates = {
-        *plugin_directory / "zsoda_ort" / DefaultOnnxRuntimeLibraryFileName(),
-        *plugin_directory / "runtime" / "win-x64" / DefaultOnnxRuntimeLibraryFileName(),
-        *plugin_directory / "runtime" / DefaultOnnxRuntimeLibraryFileName(),
-        *plugin_directory / DefaultOnnxRuntimeLibraryFileName(),
-    };
-    for (const auto& candidate : candidates) {
-      if (IsExistingFile(candidate)) {
-        SetResolvedOnnxRuntimeLibraryPath(&resolved, candidate);
+    for (const auto& root : search_roots) {
+      const std::vector<std::filesystem::path> candidates = {
+          root / "zsoda_ort" / DefaultOnnxRuntimeLibraryFileName(),
+          root / "runtime" / "win-x64" / DefaultOnnxRuntimeLibraryFileName(),
+          root / "runtime" / DefaultOnnxRuntimeLibraryFileName(),
+          root / DefaultOnnxRuntimeLibraryFileName(),
+      };
+      for (const auto& candidate : candidates) {
+        if (IsExistingFile(candidate)) {
+          SetResolvedOnnxRuntimeLibraryPath(&resolved, candidate);
+          break;
+        }
+      }
+      if (!resolved.onnxruntime_library_path.empty()) {
         break;
       }
     }
@@ -231,8 +326,23 @@ RuntimePathResolution ResolveRuntimePaths(const RuntimePathHints& hints) {
   return resolved;
 }
 
-std::optional<std::string> TryResolveCurrentModuleDirectory(std::string* error) {
-#if !defined(_WIN32)
+std::optional<std::string> TryResolveCurrentModulePath(std::string* error) {
+#if defined(__APPLE__)
+  Dl_info info = {};
+  if (::dladdr(reinterpret_cast<const void*>(&TryResolveCurrentModulePath), &info) == 0 ||
+      info.dli_fname == nullptr || info.dli_fname[0] == '\0') {
+    if (error != nullptr) {
+      *error = "dladdr failed to resolve current module path";
+    }
+    return std::nullopt;
+  }
+
+  const std::filesystem::path module_path(info.dli_fname);
+  if (error != nullptr) {
+    error->clear();
+  }
+  return module_path.string();
+#elif !defined(_WIN32)
   if (error != nullptr) {
     error->clear();
   }
@@ -242,7 +352,7 @@ std::optional<std::string> TryResolveCurrentModuleDirectory(std::string* error) 
   const BOOL ok = ::GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
                                            GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                                        reinterpret_cast<LPCWSTR>(
-                                           reinterpret_cast<const void*>(&TryResolveCurrentModuleDirectory)),
+                                           reinterpret_cast<const void*>(&TryResolveCurrentModulePath)),
                                        &module);
   if (!ok || module == nullptr) {
     if (error != nullptr) {
@@ -264,16 +374,9 @@ std::optional<std::string> TryResolveCurrentModuleDirectory(std::string* error) 
     if (written < buffer.size() - 1U) {
       const std::filesystem::path module_path(
           std::wstring(buffer.data(), static_cast<std::size_t>(written)));
-      const auto parent = module_path.parent_path();
-      if (parent.empty()) {
-        if (error != nullptr) {
-          *error = "module path has no parent directory";
-        }
-        return std::nullopt;
-      }
       std::string utf8;
       std::string utf8_error;
-      if (!WideToUtf8(parent.native(), &utf8, &utf8_error)) {
+      if (!WideToUtf8(module_path.native(), &utf8, &utf8_error)) {
         if (error != nullptr) {
           *error = utf8_error;
         }
@@ -292,6 +395,26 @@ std::optional<std::string> TryResolveCurrentModuleDirectory(std::string* error) 
   }
   return std::nullopt;
 #endif
+}
+
+std::optional<std::string> TryResolveCurrentModuleDirectory(std::string* error) {
+  const auto module_path = TryResolveCurrentModulePath(error);
+  if (!module_path.has_value() || module_path->empty()) {
+    return std::nullopt;
+  }
+
+  const auto parent = std::filesystem::path(*module_path).parent_path();
+  if (parent.empty()) {
+    if (error != nullptr) {
+      *error = "module path has no parent directory";
+    }
+    return std::nullopt;
+  }
+
+  if (error != nullptr) {
+    error->clear();
+  }
+  return parent.string();
 }
 
 }  // namespace zsoda::inference

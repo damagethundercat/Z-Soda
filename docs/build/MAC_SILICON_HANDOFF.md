@@ -53,33 +53,41 @@ Adobe's current guidance is the key baseline:
 - [`tools/package_plugin.sh`](../../tools/package_plugin.sh) and
   [`tools/package_plugin.ps1`](../../tools/package_plugin.ps1) already know
   that the mac artifact name should be `ZSoda.plugin`.
+- [`tools/build_plugin_macos.sh`](../../tools/build_plugin_macos.sh) now provides
+  a native mac configure/build/package helper with optional MediaCore copy.
 - [`plugin/inference/RuntimePathResolver.cpp`](../../plugin/inference/RuntimePathResolver.cpp)
-  already recognizes `libonnxruntime.dylib` as the mac runtime filename.
+  now recognizes `libonnxruntime.dylib` and resolves bundle-relative assets from
+  `Contents/MacOS` into `Contents/Resources`.
+- [`plugin/inference/RemoteInferenceBackend.cpp`](../../plugin/inference/RemoteInferenceBackend.cpp)
+  now supports non-Windows helper autostart and localhost HTTP transport, so
+  the packaged mac bundle can reach the bundled Python service script.
 
 ### Current Gaps / Blockers
 
-- Apple CMake wiring is incomplete. The mac branch builds a `.plugin` bundle,
-  but there is no Apple-side PiPL generation or resource embedding path
-  comparable to the Windows `PiPLtool.exe` flow in
-  [`plugin/CMakeLists.txt`](../../plugin/CMakeLists.txt).
-- There is no mac build/deploy helper equivalent to
-  [`tools/build_aex.ps1`](../../tools/build_aex.ps1). Bring-up currently
-  depends on manual CMake/Xcode work.
-- Packaging is incomplete for runtime payloads. The existing mac package path
-  copies the bundle only; it does not stage `zsoda_py`, `models`, or a mac
-  runtime `.dylib` payload.
-- Non-Windows module directory discovery is missing. `TryResolveCurrentModuleDirectory()`
-  returns `nullopt` on mac today, so plug-in-relative discovery of `models/`,
-  `zsoda_py/`, and `zsoda_ort/` is not ready.
-- The current remote service is CUDA/CPU-biased.
-  [`tools/distill_any_depth_remote_service.py`](../../tools/distill_any_depth_remote_service.py)
-  currently auto-selects `cuda` or `cpu`; it does not prefer or validate `mps`.
+- AE bundle recognition is now working on AE 2026: PiPL generation,
+  `Info.plist`, `PkgInfo`, and `EffectMain` export are in place and the plugin
+  shows up in the host effect list.
+- Packaging now stages `models/` and `zsoda_py/` under
+  `Contents/Resources`, but it still does not bundle a full arm64 Python
+  runtime or Python wheels by default.
+  - The packaging scripts now accept external `--python-runtime-dir`,
+    `--model-repo-dir`, and `--hf-cache-dir` inputs so a self-contained mac
+    bundle can be assembled at release time.
+  - End-user machines still need a compatible Python environment unless those
+    assets are supplied during packaging.
+- Model weights are still resolved by the helper at runtime rather than bundled
+  into the mac deliverable. First-run inference still depends on network access
+  unless the Hugging Face cache is preseeded separately.
 - Diagnostics are still Windows-focused. AE runtime trace and several
   inference diagnostics write only under `_WIN32`, so first mac bring-up will
   have weak observability unless this is expanded.
 - CI does not exercise macOS at all.
   [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) currently runs
   only the Linux `g++` lane.
+- AE loadability is host-validated at the discovery level, but not yet at the
+  shipping inference level. The bundle loads in AE 2026, however real depth
+  inference still falls back to the dummy engine on machines that do not have a
+  compatible bundled runtime/model payload.
 
 ## Recommended Delivery Strategy
 
@@ -137,9 +145,8 @@ cmake -S . -B build-mac -G Xcode \
 cmake --build build-mac --config Release --target zsoda_plugin_bundle
 ```
 
-This is only a starting point. Expect first bring-up work in
-[`plugin/CMakeLists.txt`](../../plugin/CMakeLists.txt) before the produced
-bundle is actually loadable by AE.
+This is now a working build path for a loadable AE bundle. The remaining work
+is packaging a truly self-contained runtime/model payload for inference.
 
 ## First Implementation Tasks
 
@@ -149,41 +156,28 @@ bundle is actually loadable by AE.
      and compile coverage.
    - Lock `CMAKE_OSX_ARCHITECTURES=arm64` first.
 
-2. Finish mac PiPL and symbol-export wiring.
-   - Ensure the `.plugin` bundle embeds a valid PiPL resource for
-     `CodeMacARM64`.
-   - Verify `EffectMain` is exported and visible on mac.
-   - Validate with `nm -gU` and bundle inspection before opening AE.
-
-3. Implement plug-in-relative path resolution on mac.
-   - Add a non-Windows implementation for
-     `TryResolveCurrentModuleDirectory()`.
-   - On mac this should resolve the bundle location reliably, typically via
-     `dladdr`.
-   - Decide whether runtime assets live under `Contents/Resources` or a sibling
-     folder and update every resolver consistently.
-
-4. Define a canonical mac bundle payload layout.
-   - Example target layout:
+2. Finish the canonical mac bundle payload.
+   - Keep the current layout:
      - `ZSoda.plugin/Contents/MacOS/ZSoda`
      - `ZSoda.plugin/Contents/Resources/models/...`
      - `ZSoda.plugin/Contents/Resources/zsoda_py/...`
      - `ZSoda.plugin/Contents/Resources/zsoda_ort/...`
-   - Then update:
-     - [`plugin/inference/EngineFactory.cpp`](../../plugin/inference/EngineFactory.cpp)
-     - [`plugin/inference/RuntimePathResolver.cpp`](../../plugin/inference/RuntimePathResolver.cpp)
-     - [`tools/package_plugin.sh`](../../tools/package_plugin.sh)
+   - Use the new packaging hooks to stage:
+     - local HF snapshots under `models/hf/<model_id>/...`
+     - portable Python under `zsoda_py/python/...`
+   - Keep `--require-self-contained` as the release gate once the asset source
+     directories are available.
 
-5. Make the remote helper Apple-Silicon aware.
-   - Extend `resolve_device()` so `auto` can choose `mps` on supported systems.
-   - Verify the packaged Python stack is fully arm64-native.
+3. Verify the remote helper on real Apple Silicon machines.
+   - Confirm the selected Python interpreter is arm64-native.
+   - Confirm `torch.backends.mps.is_available()` is true in the packaged
+     environment.
    - Do not ship an x86_64-only Python or wheel set and rely on Rosetta.
 
-6. Add mac deployment and verification helpers.
-   - Build helper equivalent to `tools/build_aex.ps1`
-   - Deploy helper to copy the bundle into MediaCore
-   - Verification helper for `codesign`, `plutil`, `otool`, `nm`, and
-     `lipo`
+4. Expand mac deployment and verification automation.
+   - Keep `tools/build_plugin_macos.sh` as the canonical helper.
+   - Add deeper validation for `codesign`, `plutil`, `otool`, `nm`, and
+     `lipo` if the mac release path becomes formalized.
 
 ## Performance Guidance
 
@@ -256,14 +250,19 @@ Primary install path:
 Package/deploy starting point:
 
 ```bash
-bash tools/package_plugin.sh --platform macos --build-dir build-mac --output-dir dist --include-manifest
-cp -R dist/ZSoda.plugin "/Library/Application Support/Adobe/Common/Plug-ins/7.0/MediaCore/"
+bash tools/build_plugin_macos.sh \
+  --ae-sdk-root "/path/to/AdobeAfterEffectsSDK" \
+  --build-dir build-mac \
+  --output-dir dist-mac
+
+cp -R dist-mac/ZSoda.plugin "/Library/Application Support/Adobe/Common/Plug-ins/7.0/MediaCore/"
 ```
 
 Important:
-- the current package helper does not yet stage mac runtime payloads
-- treat the command above as a bundle-copy baseline, not a complete shipping
-  deploy
+- the current package helper now stages `models/` and `zsoda_py/` inside the bundle
+- `dist-mac/ZSoda-macos.zip` is the handoff-ready archive artifact
+- a compatible arm64 Python + `torch` + `transformers` + `Pillow` stack is
+  still required on the target machine until the runtime is embedded
 
 Smoke checklist after bring-up:
 

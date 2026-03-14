@@ -43,6 +43,84 @@ MODEL_SPECS = {
 }
 
 
+def resolve_service_asset_root() -> Path | None:
+    explicit = (
+        os.getenv("ZSODA_REMOTE_SERVICE_ASSET_ROOT", "").strip()
+        or os.getenv("ZSODA_BUNDLED_ASSET_ROOT", "").strip()
+    )
+    candidates: list[Path] = []
+    if explicit:
+        candidates.append(Path(explicit))
+
+    script_root = Path(__file__).resolve().parent.parent
+    candidates.append(script_root)
+
+    repo_root = os.getenv("ZSODA_DAD_REPO_ROOT", "").strip()
+    if repo_root:
+        candidates.append(Path(repo_root))
+
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
+def resolve_model_cache_dir() -> str | None:
+    for env_name in (
+        "ZSODA_HF_HOME",
+        "HF_HOME",
+        "TRANSFORMERS_CACHE",
+        "HUGGINGFACE_HUB_CACHE",
+    ):
+        configured = os.getenv(env_name, "").strip()
+        if configured:
+            return configured
+
+    asset_root = resolve_service_asset_root()
+    if asset_root is None:
+        return None
+
+    for candidate in (
+        asset_root / "models" / "hf-cache",
+        asset_root / "models" / "cache",
+    ):
+        if candidate.is_dir():
+            return str(candidate)
+    return None
+
+
+def resolve_local_model_repo(model_id: str) -> str | None:
+    spec = MODEL_SPECS.get(model_id)
+    if spec is None:
+        return None
+
+    configured = os.getenv(spec["repo_env"], "").strip()
+    if configured:
+        configured_path = Path(configured)
+        if configured_path.is_dir():
+            return str(configured_path)
+        return configured
+
+    generic_root = os.getenv("ZSODA_DAD_MODEL_ROOT", "").strip()
+    if generic_root:
+        candidate = Path(generic_root) / model_id
+        if candidate.is_dir():
+            return str(candidate)
+
+    asset_root = resolve_service_asset_root()
+    if asset_root is None:
+        return None
+
+    for candidate in (
+        asset_root / "models" / "hf" / model_id,
+        asset_root / "models" / "repos" / model_id,
+        asset_root / "models" / model_id,
+    ):
+        if candidate.is_dir():
+            return str(candidate)
+    return None
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Persistent local HTTP service for DistillAnyDepth inference."
@@ -69,9 +147,10 @@ def resolve_model_repo(model_id: str) -> str:
             f"unsupported model_id for DistillAnyDepth service: {model_id!r}. "
             f"Supported ids: {', '.join(sorted(MODEL_SPECS))}"
         )
-    configured = os.getenv(spec["repo_env"], "").strip()
-    if configured:
-        return configured
+
+    local_repo = resolve_local_model_repo(model_id)
+    if local_repo:
+        return local_repo
     return spec["default_repo"]
 
 
@@ -94,8 +173,14 @@ def resolve_resize_mode(payload: dict[str, Any]) -> str:
 
 def resolve_device(requested: str, torch_module) -> str:
     normalized = requested.strip().lower()
+    mps_backend = getattr(getattr(torch_module, "backends", None), "mps", None)
+    mps_available = bool(mps_backend is not None and mps_backend.is_available())
     if normalized in {"", "auto"}:
+        if mps_available:
+            return "mps"
         return "cuda" if torch_module.cuda.is_available() else "cpu"
+    if normalized == "mps" and not mps_available:
+        raise RuntimeError("MPS device requested, but torch.backends.mps.is_available() is false")
     if normalized == "cuda" and not torch_module.cuda.is_available():
         raise RuntimeError("CUDA device requested, but torch.cuda.is_available() is false")
     return normalized
@@ -179,6 +264,9 @@ class ModelManager:
 
             device = resolve_device(requested_device, self.torch)
             model_repo = resolve_model_repo(model_id)
+            model_repo_path = Path(model_repo)
+            model_repo_is_local = model_repo_path.is_dir()
+            cache_dir = resolve_model_cache_dir()
             if (
                 self.model is None
                 or self.loaded_model_id != model_id
@@ -187,8 +275,16 @@ class ModelManager:
             ):
                 processor_cls = self.transformers["AutoImageProcessor"]
                 model_cls = self.transformers["AutoModelForDepthEstimation"]
-                self.processor = processor_cls.from_pretrained(model_repo, use_fast=True)
-                self.model = model_cls.from_pretrained(model_repo)
+                processor_kwargs: dict[str, Any] = {"use_fast": True}
+                model_kwargs: dict[str, Any] = {}
+                if model_repo_is_local:
+                    processor_kwargs["local_files_only"] = True
+                    model_kwargs["local_files_only"] = True
+                if cache_dir:
+                    processor_kwargs["cache_dir"] = cache_dir
+                    model_kwargs["cache_dir"] = cache_dir
+                self.processor = processor_cls.from_pretrained(model_repo, **processor_kwargs)
+                self.model = model_cls.from_pretrained(model_repo, **model_kwargs)
                 self.model = self.model.to(device=device)
                 self.model.eval()
                 self.loaded_model_id = model_id
@@ -202,6 +298,9 @@ class ModelManager:
             "loaded": self.model is not None,
             "loaded_model_id": self.loaded_model_id,
             "model_repo": self.model_repo,
+            "service_asset_root": str(resolve_service_asset_root() or ""),
+            "model_cache_dir": resolve_model_cache_dir() or "",
+            "model_repo_is_local": bool(self.model_repo and Path(self.model_repo).is_dir()),
             "device": self.device,
             "loaded_at": self.loaded_at,
         }

@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -21,6 +22,8 @@
 #include <utility>
 #include <vector>
 
+#include "inference/RuntimePathResolver.h"
+
 #if defined(_WIN32)
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -28,6 +31,10 @@
 #include <winhttp.h>
 #include <windows.h>
 #else
+#include <fcntl.h>
+#include <netdb.h>
+#include <sys/socket.h>
+#include <sys/time.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #endif
@@ -235,14 +242,17 @@ std::filesystem::path ResolveRemoteServiceScriptPath(const RuntimeOptions& optio
 
   if (!options.plugin_directory.empty()) {
     const std::filesystem::path plugin_dir(options.plugin_directory);
-    const std::array<std::filesystem::path, 3> candidates = {
-        plugin_dir / "zsoda_py" / "distill_any_depth_remote_service.py",
-        plugin_dir / "tools" / "distill_any_depth_remote_service.py",
-        plugin_dir / "distill_any_depth_remote_service.py",
-    };
-    for (const auto& candidate : candidates) {
-      if (IsExistingFile(candidate)) {
-        return candidate;
+    for (const auto& root : BuildRuntimeAssetSearchRoots(
+             plugin_dir, std::filesystem::path(options.runtime_asset_root))) {
+      const std::array<std::filesystem::path, 3> candidates = {
+          root / "zsoda_py" / "distill_any_depth_remote_service.py",
+          root / "tools" / "distill_any_depth_remote_service.py",
+          root / "distill_any_depth_remote_service.py",
+      };
+      for (const auto& candidate : candidates) {
+        if (IsExistingFile(candidate)) {
+          return candidate;
+        }
       }
     }
   }
@@ -609,6 +619,86 @@ std::string QuoteShellArgument(std::string_view argument) {
   }
   quoted.push_back('"');
   return quoted;
+}
+
+std::filesystem::path DefaultRemoteServiceLogPath() {
+  std::error_code temp_error;
+  const std::filesystem::path temp_root = std::filesystem::temp_directory_path(temp_error);
+  if (!temp_error) {
+    return temp_root / "ZSoda_RemoteService.log";
+  }
+  return std::filesystem::path("ZSoda_RemoteService.log");
+}
+
+std::string BuildPythonRuntimeProbeScript() {
+  return "import torch, PIL, transformers; "
+         "from transformers import AutoImageProcessor, AutoModelForDepthEstimation; "
+         "print('MPS=1' if getattr(getattr(torch,'backends',None),'mps',None) is not None and "
+         "torch.backends.mps.is_available() else ('CUDA=1' if torch.cuda.is_available() else 'CPU=1'))";
+}
+
+std::string CollapseWhitespace(std::string_view text) {
+  std::string collapsed;
+  collapsed.reserve(text.size());
+  bool last_was_space = false;
+  for (const char ch : text) {
+    if (std::isspace(static_cast<unsigned char>(ch)) != 0) {
+      if (!last_was_space) {
+        collapsed.push_back(' ');
+        last_was_space = true;
+      }
+      continue;
+    }
+    collapsed.push_back(ch);
+    last_was_space = false;
+  }
+  return collapsed;
+}
+
+std::string SummarizePythonProbeOutput(std::string_view output) {
+  std::string summary = CollapseWhitespace(output);
+  while (!summary.empty() && std::isspace(static_cast<unsigned char>(summary.front())) != 0) {
+    summary.erase(summary.begin());
+  }
+  while (!summary.empty() && std::isspace(static_cast<unsigned char>(summary.back())) != 0) {
+    summary.pop_back();
+  }
+  constexpr std::size_t kMaxSummaryLength = 320U;
+  if (summary.size() > kMaxSummaryLength) {
+    summary.resize(kMaxSummaryLength);
+    summary.append("...");
+  }
+  return summary;
+}
+
+std::string ReadLogTail(const std::filesystem::path& path, std::size_t max_bytes = 2048U) {
+  if (path.empty()) {
+    return {};
+  }
+  std::error_code ec;
+  const auto size = std::filesystem::file_size(path, ec);
+  if (ec) {
+    return {};
+  }
+
+  std::ifstream stream(path, std::ios::binary);
+  if (!stream.is_open()) {
+    return {};
+  }
+
+  const std::streamoff bytes_to_read =
+      static_cast<std::streamoff>(std::min<std::uintmax_t>(size, max_bytes));
+  if (bytes_to_read > 0) {
+    stream.seekg(-bytes_to_read, std::ios::end);
+  }
+  std::string content(static_cast<std::size_t>(bytes_to_read), '\0');
+  if (bytes_to_read > 0) {
+    stream.read(content.data(), bytes_to_read);
+    content.resize(static_cast<std::size_t>(stream.gcount()));
+  } else {
+    content.clear();
+  }
+  return content;
 }
 
 #if defined(_WIN32)
@@ -1482,15 +1572,6 @@ bool GetEndpointText(std::string_view endpoint,
   return true;
 }
 
-std::filesystem::path DefaultRemoteServiceLogPath() {
-  std::error_code temp_error;
-  const std::filesystem::path temp_root = std::filesystem::temp_directory_path(temp_error);
-  if (!temp_error) {
-    return temp_root / "ZSoda_RemoteService.log";
-  }
-  return std::filesystem::path("ZSoda_RemoteService.log");
-}
-
 #if defined(_WIN32)
 enum class PythonTorchCapability {
   kUnavailable,
@@ -1535,8 +1616,18 @@ void PushUniquePythonCandidate(const std::filesystem::path& path,
   candidates->push_back(normalized);
 }
 
-std::vector<std::filesystem::path> GatherPythonAutostartCandidates() {
+std::vector<std::filesystem::path> GatherPythonAutostartCandidates(const RuntimeOptions& options) {
   std::vector<std::filesystem::path> candidates;
+  if (!options.plugin_directory.empty()) {
+    const std::filesystem::path plugin_dir(options.plugin_directory);
+    for (const auto& root : BuildRuntimeAssetSearchRoots(
+             plugin_dir, std::filesystem::path(options.runtime_asset_root))) {
+      PushUniquePythonCandidate(root / "zsoda_py" / "python.exe", &candidates);
+      PushUniquePythonCandidate(root / "zsoda_py" / "python" / "python.exe", &candidates);
+      PushUniquePythonCandidate(root / "zsoda_py" / "runtime" / "python.exe", &candidates);
+    }
+  }
+
   if (const auto path_python = ResolveExecutableOnPath(L"python.exe")) {
     PushUniquePythonCandidate(*path_python, &candidates);
   }
@@ -1620,11 +1711,17 @@ PythonTorchCapability ProbePythonTorchCapability(const std::filesystem::path& py
   }
 
   const std::wstring python_wide = python_path.wstring();
+  std::wstring probe_script;
+  if (!Utf8ToWide(BuildPythonRuntimeProbeScript(), &probe_script, nullptr)) {
+    ::CloseHandle(output_handle);
+    return PythonTorchCapability::kUnavailable;
+  }
+
   std::wstring command_line = L"\"";
   command_line.append(python_wide);
-  command_line.append(
-      L"\" -c \"import importlib.util as u; s=u.find_spec('torch'); print('ERROR=no_torch' if s is None else "
-      L"('CUDA=1' if __import__('torch').cuda.is_available() else 'CUDA=0'))\"");
+  command_line.append(L"\" -c \"");
+  command_line.append(probe_script);
+  command_line.append(L"\"");
 
   STARTUPINFOW startup_info = {};
   startup_info.cb = sizeof(startup_info);
@@ -1655,6 +1752,8 @@ PythonTorchCapability ProbePythonTorchCapability(const std::filesystem::path& py
     ::TerminateProcess(process_info.hProcess, 1);
     ::WaitForSingleObject(process_info.hProcess, 2000);
   }
+  DWORD exit_code = 1;
+  ::GetExitCodeProcess(process_info.hProcess, &exit_code);
   ::CloseHandle(process_info.hThread);
   ::CloseHandle(process_info.hProcess);
 
@@ -1671,10 +1770,13 @@ PythonTorchCapability ProbePythonTorchCapability(const std::filesystem::path& py
     *probe_output = captured;
   }
 
+  if (exit_code != 0) {
+    return PythonTorchCapability::kUnavailable;
+  }
   if (captured.find("CUDA=1") != std::string::npos) {
     return PythonTorchCapability::kTorchCuda;
   }
-  if (captured.find("CUDA=0") != std::string::npos) {
+  if (captured.find("CPU=1") != std::string::npos) {
     return PythonTorchCapability::kTorchCpu;
   }
   return PythonTorchCapability::kUnavailable;
@@ -1686,7 +1788,7 @@ std::string ResolvePythonCommandForAutostart(const RuntimeOptions& options) {
   }
 
   try {
-    const auto candidates = GatherPythonAutostartCandidates();
+    const auto candidates = GatherPythonAutostartCandidates(options);
     std::filesystem::path cpu_fallback;
     for (const auto& candidate : candidates) {
       std::string probe_output;
@@ -1722,6 +1824,19 @@ bool StartDetachedPythonService(const RuntimeOptions& options,
 
   std::wstring python_wide;
   const std::string python_command = ResolvePythonCommandForAutostart(options);
+  std::string python_probe_output;
+  const auto python_capability =
+      ProbePythonTorchCapability(std::filesystem::path(python_command), &python_probe_output);
+  if (python_capability == PythonTorchCapability::kUnavailable) {
+    if (error != nullptr) {
+      *error = "remote inference python runtime is unavailable or missing required packages (python=" +
+               python_command + ")" +
+               (python_probe_output.empty()
+                    ? std::string()
+                    : ": " + SummarizePythonProbeOutput(python_probe_output));
+    }
+    return false;
+  }
   {
     const std::string trace_detail =
         std::string("python=") + python_command + ", script=" + script_path.string();
@@ -1842,7 +1957,932 @@ bool StartDetachedPythonService(const RuntimeOptions& options,
 
   if (error != nullptr) {
     *error = "remote inference service did not become healthy at " + std::string(status_endpoint) +
+             " (python=" + python_command + ", log=" + log_path.string() + ")" +
              (status_error.empty() ? std::string() : ": " + status_error);
+    const std::string log_tail = SummarizePythonProbeOutput(ReadLogTail(log_path));
+    if (!log_tail.empty()) {
+      *error += " | service_log=" + log_tail;
+    }
+  }
+  return false;
+}
+#endif
+
+#if !defined(_WIN32)
+struct ParsedHttpUrl {
+  std::string connect_host;
+  std::string host_header;
+  std::string port = "80";
+  std::string path = "/";
+};
+
+struct SimpleHttpHeader {
+  std::string name;
+  std::string value;
+};
+
+struct SimpleHttpResponse {
+  int status_code = 0;
+  std::vector<SimpleHttpHeader> headers;
+  std::string body;
+};
+
+std::string TrimAsciiWhitespace(std::string_view text) {
+  std::size_t start = 0U;
+  while (start < text.size() &&
+         std::isspace(static_cast<unsigned char>(text[start])) != 0) {
+    ++start;
+  }
+  std::size_t end = text.size();
+  while (end > start &&
+         std::isspace(static_cast<unsigned char>(text[end - 1U])) != 0) {
+    --end;
+  }
+  return std::string(text.substr(start, end - start));
+}
+
+std::string NormalizeHttpHeaderName(std::string_view name) {
+  std::string normalized;
+  normalized.reserve(name.size());
+  for (const char ch : name) {
+    normalized.push_back(
+        static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
+  }
+  return normalized;
+}
+
+bool TryGetHttpHeaderValue(const SimpleHttpResponse& response,
+                           std::string_view name,
+                           std::string* value) {
+  if (value == nullptr) {
+    return false;
+  }
+  const std::string normalized_name = NormalizeHttpHeaderName(name);
+  for (const auto& header : response.headers) {
+    if (header.name == normalized_name) {
+      *value = header.value;
+      return true;
+    }
+  }
+  value->clear();
+  return false;
+}
+
+bool ParseHttpEndpointUrl(std::string_view endpoint,
+                          ParsedHttpUrl* parsed,
+                          std::string* error) {
+  if (parsed == nullptr) {
+    if (error != nullptr) {
+      *error = "internal error: parsed URL output is null";
+    }
+    return false;
+  }
+
+  constexpr std::string_view kHttpPrefix = "http://";
+  if (endpoint.compare(0, kHttpPrefix.size(), kHttpPrefix) != 0) {
+    if (error != nullptr) {
+      *error = "non-Windows remote service only supports http:// endpoints";
+    }
+    return false;
+  }
+
+  std::string_view remainder = endpoint.substr(kHttpPrefix.size());
+  if (remainder.empty()) {
+    if (error != nullptr) {
+      *error = "HTTP endpoint is missing a host";
+    }
+    return false;
+  }
+
+  const std::size_t slash_pos = remainder.find('/');
+  const std::string_view authority =
+      slash_pos == std::string_view::npos ? remainder : remainder.substr(0, slash_pos);
+  const std::string_view raw_path =
+      slash_pos == std::string_view::npos ? std::string_view() : remainder.substr(slash_pos);
+  if (authority.empty()) {
+    if (error != nullptr) {
+      *error = "HTTP endpoint is missing an authority";
+    }
+    return false;
+  }
+
+  parsed->port = "80";
+  parsed->path = raw_path.empty() ? "/" : std::string(raw_path);
+  if (authority.front() == '[') {
+    const std::size_t bracket_end = authority.find(']');
+    if (bracket_end == std::string_view::npos || bracket_end <= 1U) {
+      if (error != nullptr) {
+        *error = "HTTP endpoint contains an invalid IPv6 host";
+      }
+      return false;
+    }
+    parsed->connect_host = std::string(authority.substr(1U, bracket_end - 1U));
+    parsed->host_header = std::string(authority.substr(0U, bracket_end + 1U));
+    if (bracket_end + 1U < authority.size()) {
+      if (authority[bracket_end + 1U] != ':') {
+        if (error != nullptr) {
+          *error = "HTTP endpoint contains an invalid IPv6 authority";
+        }
+        return false;
+      }
+      parsed->port = std::string(authority.substr(bracket_end + 2U));
+    }
+  } else {
+    const std::size_t colon_pos = authority.rfind(':');
+    const bool has_single_port_delimiter =
+        colon_pos != std::string_view::npos &&
+        authority.find(':') == colon_pos;
+    if (has_single_port_delimiter) {
+      parsed->connect_host = std::string(authority.substr(0U, colon_pos));
+      parsed->host_header = parsed->connect_host;
+      parsed->port = std::string(authority.substr(colon_pos + 1U));
+    } else {
+      parsed->connect_host = std::string(authority);
+      parsed->host_header = parsed->connect_host;
+    }
+  }
+
+  if (parsed->connect_host.empty()) {
+    if (error != nullptr) {
+      *error = "HTTP endpoint is missing a host";
+    }
+    return false;
+  }
+  if (parsed->port.empty()) {
+    if (error != nullptr) {
+      *error = "HTTP endpoint is missing a port";
+    }
+    return false;
+  }
+  if (error != nullptr) {
+    error->clear();
+  }
+  return true;
+}
+
+bool ConfigureSocketTimeouts(int socket_fd, int timeout_ms) {
+  if (socket_fd < 0) {
+    return false;
+  }
+  const int effective_timeout = timeout_ms > 0 ? timeout_ms : 5000;
+  timeval timeout = {};
+  timeout.tv_sec = effective_timeout / 1000;
+  timeout.tv_usec = (effective_timeout % 1000) * 1000;
+  if (::setsockopt(socket_fd,
+                   SOL_SOCKET,
+                   SO_RCVTIMEO,
+                   &timeout,
+                   static_cast<socklen_t>(sizeof(timeout))) != 0) {
+    return false;
+  }
+  if (::setsockopt(socket_fd,
+                   SOL_SOCKET,
+                   SO_SNDTIMEO,
+                   &timeout,
+                   static_cast<socklen_t>(sizeof(timeout))) != 0) {
+    return false;
+  }
+#if defined(SO_NOSIGPIPE)
+  int no_sigpipe = 1;
+  (void)::setsockopt(socket_fd,
+                     SOL_SOCKET,
+                     SO_NOSIGPIPE,
+                     &no_sigpipe,
+                     static_cast<socklen_t>(sizeof(no_sigpipe)));
+#endif
+  return true;
+}
+
+bool SendAllOnSocket(int socket_fd,
+                     const std::string& payload,
+                     std::string* error) {
+  std::size_t sent = 0U;
+  while (sent < payload.size()) {
+    const ssize_t written = ::send(socket_fd,
+                                   payload.data() + sent,
+                                   payload.size() - sent,
+                                   0);
+    if (written < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      if (error != nullptr) {
+        *error = "socket send failed (" + std::to_string(errno) + ")";
+      }
+      return false;
+    }
+    if (written == 0) {
+      if (error != nullptr) {
+        *error = "socket send produced no progress";
+      }
+      return false;
+    }
+    sent += static_cast<std::size_t>(written);
+  }
+  if (error != nullptr) {
+    error->clear();
+  }
+  return true;
+}
+
+bool ParseSimpleHttpResponse(const std::string& raw_response,
+                             SimpleHttpResponse* response,
+                             std::string* error) {
+  if (response == nullptr) {
+    if (error != nullptr) {
+      *error = "internal error: HTTP response output is null";
+    }
+    return false;
+  }
+
+  const std::size_t header_end = raw_response.find("\r\n\r\n");
+  if (header_end == std::string::npos) {
+    if (error != nullptr) {
+      *error = "HTTP response is missing a header terminator";
+    }
+    return false;
+  }
+  const std::size_t status_end = raw_response.find("\r\n");
+  if (status_end == std::string::npos || status_end > header_end) {
+    if (error != nullptr) {
+      *error = "HTTP response is missing a status line";
+    }
+    return false;
+  }
+
+  const std::string_view status_line(raw_response.data(), status_end);
+  const std::size_t first_space = status_line.find(' ');
+  const std::size_t second_space =
+      first_space == std::string_view::npos
+          ? std::string_view::npos
+          : status_line.find(' ', first_space + 1U);
+  if (first_space == std::string_view::npos) {
+    if (error != nullptr) {
+      *error = "HTTP response status line is malformed";
+    }
+    return false;
+  }
+  const std::size_t code_length =
+      second_space == std::string_view::npos ? status_line.size() - first_space - 1U
+                                             : second_space - first_space - 1U;
+  const std::string code_text(status_line.substr(first_space + 1U, code_length));
+  try {
+    response->status_code = std::stoi(code_text);
+  } catch (const std::exception&) {
+    if (error != nullptr) {
+      *error = "HTTP response contains an invalid status code";
+    }
+    return false;
+  }
+
+  response->headers.clear();
+  std::size_t cursor = status_end + 2U;
+  while (cursor < header_end) {
+    const std::size_t line_end = raw_response.find("\r\n", cursor);
+    if (line_end == std::string::npos || line_end > header_end) {
+      break;
+    }
+    const std::string_view line(raw_response.data() + cursor, line_end - cursor);
+    if (!line.empty()) {
+      const std::size_t colon_pos = line.find(':');
+      if (colon_pos != std::string_view::npos) {
+        response->headers.push_back(
+            {.name = NormalizeHttpHeaderName(line.substr(0U, colon_pos)),
+             .value = TrimAsciiWhitespace(line.substr(colon_pos + 1U))});
+      }
+    }
+    cursor = line_end + 2U;
+  }
+
+  response->body.assign(raw_response.data() + header_end + 4U,
+                        raw_response.size() - header_end - 4U);
+  if (error != nullptr) {
+    error->clear();
+  }
+  return true;
+}
+
+bool PerformSimpleHttpRequest(std::string_view method,
+                              std::string_view endpoint,
+                              const std::vector<SimpleHttpHeader>& headers,
+                              std::string_view body,
+                              int timeout_ms,
+                              SimpleHttpResponse* response,
+                              std::string* error) {
+  if (response == nullptr) {
+    if (error != nullptr) {
+      *error = "internal error: HTTP response output is null";
+    }
+    return false;
+  }
+
+  ParsedHttpUrl parsed;
+  if (!ParseHttpEndpointUrl(endpoint, &parsed, error)) {
+    return false;
+  }
+
+  addrinfo hints = {};
+  hints.ai_family = AF_UNSPEC;
+  hints.ai_socktype = SOCK_STREAM;
+  hints.ai_protocol = IPPROTO_TCP;
+
+  addrinfo* addr_list = nullptr;
+  const int addr_status =
+      ::getaddrinfo(parsed.connect_host.c_str(), parsed.port.c_str(), &hints, &addr_list);
+  if (addr_status != 0) {
+    if (error != nullptr) {
+      *error = "getaddrinfo failed for " + parsed.connect_host + ":" + parsed.port +
+               " (" + std::string(::gai_strerror(addr_status)) + ")";
+    }
+    return false;
+  }
+
+  int socket_fd = -1;
+  int last_error = 0;
+  for (addrinfo* current = addr_list; current != nullptr; current = current->ai_next) {
+    socket_fd = ::socket(current->ai_family, current->ai_socktype, current->ai_protocol);
+    if (socket_fd < 0) {
+      last_error = errno;
+      continue;
+    }
+    (void)ConfigureSocketTimeouts(socket_fd, timeout_ms);
+    if (::connect(socket_fd, current->ai_addr, current->ai_addrlen) == 0) {
+      break;
+    }
+    last_error = errno;
+    ::close(socket_fd);
+    socket_fd = -1;
+  }
+  ::freeaddrinfo(addr_list);
+  if (socket_fd < 0) {
+    if (error != nullptr) {
+      *error = "socket connect failed for " + parsed.connect_host + ":" + parsed.port +
+               " (" + std::to_string(last_error) + ")";
+    }
+    return false;
+  }
+
+  std::string request;
+  request.reserve(256U + body.size());
+  request.append(method);
+  request.push_back(' ');
+  request.append(parsed.path);
+  request.append(" HTTP/1.1\r\nHost: ");
+  request.append(parsed.host_header);
+  request.append("\r\nConnection: close\r\n");
+  for (const auto& header : headers) {
+    request.append(header.name);
+    request.append(": ");
+    request.append(header.value);
+    request.append("\r\n");
+  }
+  if (!body.empty()) {
+    request.append("Content-Length: ");
+    request.append(std::to_string(body.size()));
+    request.append("\r\n");
+  }
+  request.append("\r\n");
+  request.append(body.data(), body.size());
+
+  if (!SendAllOnSocket(socket_fd, request, error)) {
+    ::close(socket_fd);
+    return false;
+  }
+
+  std::string raw_response;
+  std::array<char, 8192> buffer{};
+  while (true) {
+    const ssize_t read = ::recv(socket_fd, buffer.data(), buffer.size(), 0);
+    if (read == 0) {
+      break;
+    }
+    if (read < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      ::close(socket_fd);
+      if (error != nullptr) {
+        *error = "socket receive failed (" + std::to_string(errno) + ")";
+      }
+      return false;
+    }
+    raw_response.append(buffer.data(), static_cast<std::size_t>(read));
+  }
+  ::close(socket_fd);
+
+  if (raw_response.empty()) {
+    if (error != nullptr) {
+      *error = "HTTP request returned an empty response";
+    }
+    return false;
+  }
+  return ParseSimpleHttpResponse(raw_response, response, error);
+}
+
+bool ParsePositiveHeaderValue(std::string_view text,
+                              int* value,
+                              std::string* error) {
+  if (value == nullptr) {
+    if (error != nullptr) {
+      *error = "internal error: integer output is null";
+    }
+    return false;
+  }
+  const std::string normalized = TrimAsciiWhitespace(text);
+  if (normalized.empty()) {
+    if (error != nullptr) {
+      *error = "required integer header is empty";
+    }
+    return false;
+  }
+  try {
+    const int parsed = std::stoi(normalized);
+    if (parsed <= 0) {
+      throw std::invalid_argument("non-positive");
+    }
+    *value = parsed;
+    if (error != nullptr) {
+      error->clear();
+    }
+    return true;
+  } catch (const std::exception&) {
+    if (error != nullptr) {
+      *error = "invalid integer header value";
+    }
+    return false;
+  }
+}
+
+bool ParseFiniteHeaderValue(std::string_view text,
+                            float* value,
+                            std::string* error) {
+  if (value == nullptr) {
+    if (error != nullptr) {
+      *error = "internal error: float output is null";
+    }
+    return false;
+  }
+  const std::string normalized = TrimAsciiWhitespace(text);
+  if (normalized.empty()) {
+    *value = 0.0F;
+    if (error != nullptr) {
+      error->clear();
+    }
+    return true;
+  }
+  try {
+    const float parsed = std::stof(normalized);
+    *value = std::isfinite(parsed) ? parsed : 0.0F;
+    if (error != nullptr) {
+      error->clear();
+    }
+    return true;
+  } catch (const std::exception&) {
+    if (error != nullptr) {
+      *error = "invalid float header value";
+    }
+    return false;
+  }
+}
+
+bool PostJsonToEndpoint(std::string_view endpoint,
+                        std::string_view payload,
+                        std::string_view api_key,
+                        int timeout_ms,
+                        std::string* response_payload,
+                        std::string* error) {
+  if (response_payload == nullptr) {
+    if (error != nullptr) {
+      *error = "internal error: response payload output is null";
+    }
+    return false;
+  }
+
+  std::vector<SimpleHttpHeader> headers = {
+      {.name = "Content-Type", .value = "application/json"},
+  };
+  if (!api_key.empty()) {
+    headers.push_back({.name = "Authorization", .value = "Bearer " + std::string(api_key)});
+  }
+
+  SimpleHttpResponse response;
+  if (!PerformSimpleHttpRequest("POST", endpoint, headers, payload, timeout_ms, &response, error)) {
+    return false;
+  }
+  *response_payload = std::move(response.body);
+  if (response.status_code < 200 || response.status_code >= 300) {
+    if (error != nullptr) {
+      *error = "remote endpoint returned HTTP " + std::to_string(response.status_code) +
+               (response_payload->empty() ? std::string() : ": " + *response_payload);
+    }
+    return false;
+  }
+  if (error != nullptr) {
+    error->clear();
+  }
+  return true;
+}
+
+bool PostBinaryToEndpoint(std::string_view endpoint,
+                          const BinaryRequestMetadata& metadata,
+                          const std::vector<std::uint8_t>& payload,
+                          std::string_view api_key,
+                          int timeout_ms,
+                          BinaryEndpointResponse* response,
+                          std::string* error) {
+  if (response == nullptr) {
+    if (error != nullptr) {
+      *error = "internal error: binary response output is null";
+    }
+    return false;
+  }
+  response->body.clear();
+  response->width = 0;
+  response->height = 0;
+  response->elapsed_ms = 0.0F;
+  response->resolved_model_id.clear();
+
+  std::vector<SimpleHttpHeader> headers = {
+      {.name = "Content-Type", .value = kBinaryContentType},
+      {.name = "Accept", .value = kBinaryContentType},
+      {.name = kHeaderModelId, .value = metadata.model_id},
+      {.name = kHeaderQuality, .value = std::to_string(metadata.quality)},
+      {.name = kHeaderResizeMode, .value = ResizeModeName(metadata.resize_mode)},
+      {.name = kHeaderFrameHash, .value = std::to_string(metadata.frame_hash)},
+      {.name = kHeaderWidth, .value = std::to_string(metadata.width)},
+      {.name = kHeaderHeight, .value = std::to_string(metadata.height)},
+      {.name = kHeaderChannels, .value = std::to_string(metadata.channels)},
+  };
+  if (!api_key.empty()) {
+    headers.push_back({.name = "Authorization", .value = "Bearer " + std::string(api_key)});
+  }
+
+  const std::string payload_view(reinterpret_cast<const char*>(payload.data()), payload.size());
+  SimpleHttpResponse http_response;
+  if (!PerformSimpleHttpRequest(
+          "POST", endpoint, headers, payload_view, timeout_ms, &http_response, error)) {
+    return false;
+  }
+
+  response->body = std::move(http_response.body);
+  if (http_response.status_code < 200 || http_response.status_code >= 300) {
+    if (error != nullptr) {
+      *error = "remote endpoint returned HTTP " + std::to_string(http_response.status_code) +
+               (response->body.empty() ? std::string() : ": " + response->body);
+    }
+    return false;
+  }
+
+  std::string width_header;
+  std::string height_header;
+  std::string elapsed_header;
+  std::string resolved_model_header;
+  const bool width_ok = TryGetHttpHeaderValue(http_response, kHeaderResponseWidth, &width_header);
+  const bool height_ok = TryGetHttpHeaderValue(http_response, kHeaderResponseHeight, &height_header);
+  const bool elapsed_ok =
+      TryGetHttpHeaderValue(http_response, kHeaderResponseElapsedMs, &elapsed_header);
+  const bool resolved_model_ok =
+      TryGetHttpHeaderValue(http_response, kHeaderResponseModelId, &resolved_model_header);
+  if (!width_ok || !height_ok || !elapsed_ok || !resolved_model_ok) {
+    if (error != nullptr) {
+      *error = "remote endpoint omitted required depth response headers";
+    }
+    return false;
+  }
+  if (!ParsePositiveHeaderValue(width_header, &response->width, error) ||
+      !ParsePositiveHeaderValue(height_header, &response->height, error) ||
+      !ParseFiniteHeaderValue(elapsed_header, &response->elapsed_ms, error)) {
+    return false;
+  }
+  response->resolved_model_id = resolved_model_header;
+  if (error != nullptr) {
+    error->clear();
+  }
+  return true;
+}
+
+bool GetEndpointText(std::string_view endpoint,
+                     int timeout_ms,
+                     std::string* response_payload,
+                     std::string* error) {
+  if (response_payload == nullptr) {
+    if (error != nullptr) {
+      *error = "internal error: response payload output is null";
+    }
+    return false;
+  }
+
+  SimpleHttpResponse response;
+  if (!PerformSimpleHttpRequest("GET", endpoint, {}, {}, timeout_ms, &response, error)) {
+    return false;
+  }
+  *response_payload = std::move(response.body);
+  if (response.status_code < 200 || response.status_code >= 300) {
+    if (error != nullptr) {
+      *error = "remote endpoint returned HTTP " + std::to_string(response.status_code) +
+               (response_payload->empty() ? std::string() : ": " + *response_payload);
+    }
+    return false;
+  }
+  if (error != nullptr) {
+    error->clear();
+  }
+  return true;
+}
+
+enum class PythonTorchCapability {
+  kUnavailable,
+  kTorchCpu,
+  kTorchCuda,
+  kTorchMps,
+};
+
+void PushUniquePythonCandidate(const std::filesystem::path& path,
+                               std::vector<std::filesystem::path>* candidates) {
+  if (candidates == nullptr || path.empty()) {
+    return;
+  }
+  std::error_code status_error;
+  if (!std::filesystem::is_regular_file(path, status_error) || status_error) {
+    return;
+  }
+  if (::access(path.c_str(), X_OK) != 0) {
+    return;
+  }
+  const auto normalized = path.lexically_normal();
+  for (const auto& existing : *candidates) {
+    if (existing.lexically_normal() == normalized) {
+      return;
+    }
+  }
+  candidates->push_back(normalized);
+}
+
+std::optional<std::filesystem::path> ResolveExecutableOnPath(const char* executable) {
+  if (executable == nullptr || executable[0] == '\0') {
+    return std::nullopt;
+  }
+
+  const std::string executable_name(executable);
+  const std::string path_env = ReadEnvOrEmpty("PATH");
+  std::size_t start = 0U;
+  while (start <= path_env.size()) {
+    const std::size_t delimiter = path_env.find(':', start);
+    const std::string_view entry =
+        delimiter == std::string::npos
+            ? std::string_view(path_env).substr(start)
+            : std::string_view(path_env).substr(start, delimiter - start);
+    if (!entry.empty()) {
+      const std::filesystem::path candidate =
+          std::filesystem::path(std::string(entry)) / executable_name;
+      if (::access(candidate.c_str(), X_OK) == 0) {
+        return candidate;
+      }
+    }
+    if (delimiter == std::string::npos) {
+      break;
+    }
+    start = delimiter + 1U;
+  }
+  return std::nullopt;
+}
+
+std::vector<std::filesystem::path> GatherPythonAutostartCandidates(const RuntimeOptions& options) {
+  std::vector<std::filesystem::path> candidates;
+  if (!options.plugin_directory.empty()) {
+    const std::filesystem::path plugin_dir(options.plugin_directory);
+    for (const auto& root : BuildRuntimeAssetSearchRoots(
+             plugin_dir, std::filesystem::path(options.runtime_asset_root))) {
+      PushUniquePythonCandidate(root / "zsoda_py" / "bin" / "python3", &candidates);
+      PushUniquePythonCandidate(root / "zsoda_py" / "bin" / "python", &candidates);
+      PushUniquePythonCandidate(root / "zsoda_py" / "python" / "bin" / "python3", &candidates);
+      PushUniquePythonCandidate(root / "zsoda_py" / "python" / "bin" / "python", &candidates);
+    }
+  }
+
+  if (const auto python3 = ResolveExecutableOnPath("python3")) {
+    PushUniquePythonCandidate(*python3, &candidates);
+  }
+  if (const auto python = ResolveExecutableOnPath("python")) {
+    PushUniquePythonCandidate(*python, &candidates);
+  }
+
+  const std::array<std::filesystem::path, 4> known_candidates = {
+      "/opt/homebrew/bin/python3",
+      "/usr/local/bin/python3",
+      "/usr/bin/python3",
+      "/Library/Frameworks/Python.framework/Versions/Current/bin/python3",
+  };
+  for (const auto& candidate : known_candidates) {
+    PushUniquePythonCandidate(candidate, &candidates);
+  }
+  return candidates;
+}
+
+PythonTorchCapability ProbePythonTorchCapability(const std::filesystem::path& python_path,
+                                                 std::string* probe_output) {
+  if (probe_output != nullptr) {
+    probe_output->clear();
+  }
+  if (python_path.empty()) {
+    return PythonTorchCapability::kUnavailable;
+  }
+
+  const std::string command = QuoteShellArgument(python_path.string()) + " -c " +
+                              QuoteShellArgument(BuildPythonRuntimeProbeScript()) + " 2>&1";
+  FILE* pipe = ::popen(command.c_str(), "r");
+  if (pipe == nullptr) {
+    return PythonTorchCapability::kUnavailable;
+  }
+
+  std::string captured;
+  std::array<char, 256> buffer{};
+  while (std::fgets(buffer.data(), static_cast<int>(buffer.size()), pipe) != nullptr) {
+    captured.append(buffer.data());
+  }
+  const int close_result = ::pclose(pipe);
+  if (probe_output != nullptr) {
+    *probe_output = captured;
+  }
+  if (close_result != 0) {
+    return PythonTorchCapability::kUnavailable;
+  }
+  if (captured.find("MPS=1") != std::string::npos) {
+    return PythonTorchCapability::kTorchMps;
+  }
+  if (captured.find("CUDA=1") != std::string::npos) {
+    return PythonTorchCapability::kTorchCuda;
+  }
+  if (captured.find("CPU=1") != std::string::npos) {
+    return PythonTorchCapability::kTorchCpu;
+  }
+  return PythonTorchCapability::kUnavailable;
+}
+
+std::string ResolvePythonCommandForAutostart(const RuntimeOptions& options) {
+  if (!options.remote_service_python.empty()) {
+    return options.remote_service_python;
+  }
+
+  try {
+    const auto candidates = GatherPythonAutostartCandidates(options);
+    std::filesystem::path mps_fallback;
+    std::filesystem::path cuda_fallback;
+    std::filesystem::path cpu_fallback;
+    for (const auto& candidate : candidates) {
+      std::string probe_output;
+      const auto capability = ProbePythonTorchCapability(candidate, &probe_output);
+      if (capability == PythonTorchCapability::kTorchMps) {
+        return candidate.string();
+      }
+      if (capability == PythonTorchCapability::kTorchCuda && cuda_fallback.empty()) {
+        cuda_fallback = candidate;
+      }
+      if (capability == PythonTorchCapability::kTorchCpu && cpu_fallback.empty()) {
+        cpu_fallback = candidate;
+      }
+      if (capability != PythonTorchCapability::kUnavailable && mps_fallback.empty()) {
+        mps_fallback = candidate;
+      }
+    }
+
+    if (!cuda_fallback.empty()) {
+      return cuda_fallback.string();
+    }
+    if (!cpu_fallback.empty()) {
+      return cpu_fallback.string();
+    }
+    if (!mps_fallback.empty()) {
+      return mps_fallback.string();
+    }
+  } catch (...) {
+    // Autodiscovery must never break AE loader setup. Fall back to PATH python.
+  }
+  return "python3";
+}
+
+bool StartDetachedPythonService(const RuntimeOptions& options,
+                                std::string_view status_endpoint,
+                                std::string* error) {
+  const std::filesystem::path script_path = ResolveRemoteServiceScriptPath(options);
+  if (script_path.empty()) {
+    if (error != nullptr) {
+      *error = "remote service script was not found";
+    }
+    return false;
+  }
+
+  const std::string python_command = ResolvePythonCommandForAutostart(options);
+  std::string python_probe_output;
+  const auto python_capability =
+      ProbePythonTorchCapability(std::filesystem::path(python_command), &python_probe_output);
+  if (python_capability == PythonTorchCapability::kUnavailable) {
+    if (error != nullptr) {
+      *error = "remote inference python runtime is unavailable or missing required packages (python=" +
+               python_command + ")" +
+               (python_probe_output.empty()
+                    ? std::string()
+                    : ": " + SummarizePythonProbeOutput(python_probe_output));
+    }
+    return false;
+  }
+  const std::string host = NormalizeLoopbackHost(options.remote_service_host);
+  const int port =
+      options.remote_service_port > 0 ? options.remote_service_port : kDefaultLocalRemotePort;
+  const std::string preload_model_id = ResolvePreloadModelId(options, script_path);
+  const std::filesystem::path log_path = options.remote_service_log_path.empty()
+                                             ? DefaultRemoteServiceLogPath()
+                                             : std::filesystem::path(options.remote_service_log_path);
+  {
+    const std::string trace_detail =
+        std::string("python=") + python_command + ", script=" + script_path.string();
+    AppendRemoteTrace("service_autostart_python", trace_detail.c_str());
+  }
+
+  const auto log_parent = log_path.parent_path();
+  if (!log_parent.empty()) {
+    std::error_code create_error;
+    std::filesystem::create_directories(log_parent, create_error);
+  }
+
+  const pid_t pid = ::fork();
+  if (pid < 0) {
+    if (error != nullptr) {
+      *error = "fork failed for remote inference service";
+    }
+    return false;
+  }
+
+  if (pid == 0) {
+    const std::filesystem::path working_directory = script_path.parent_path();
+    if (!working_directory.empty()) {
+      (void)::chdir(working_directory.c_str());
+    }
+
+    (void)::setsid();
+
+    const int stdin_handle = ::open("/dev/null", O_RDONLY);
+    if (stdin_handle >= 0) {
+      (void)::dup2(stdin_handle, STDIN_FILENO);
+      if (stdin_handle > STDERR_FILENO) {
+        (void)::close(stdin_handle);
+      }
+    }
+
+    const int log_handle = ::open(log_path.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (log_handle >= 0) {
+      (void)::dup2(log_handle, STDOUT_FILENO);
+      (void)::dup2(log_handle, STDERR_FILENO);
+      if (log_handle > STDERR_FILENO) {
+        (void)::close(log_handle);
+      }
+    }
+
+    std::vector<std::string> args_storage;
+    args_storage.reserve(preload_model_id.empty() ? 6U : 8U);
+    args_storage.push_back(python_command);
+    args_storage.push_back(script_path.string());
+    args_storage.push_back("--host");
+    args_storage.push_back(host);
+    args_storage.push_back("--port");
+    args_storage.push_back(std::to_string(port));
+    if (!preload_model_id.empty()) {
+      args_storage.push_back("--preload-model-id");
+      args_storage.push_back(preload_model_id);
+    }
+
+    std::vector<char*> argv;
+    argv.reserve(args_storage.size() + 1U);
+    for (auto& value : args_storage) {
+      argv.push_back(value.data());
+    }
+    argv.push_back(nullptr);
+    ::execvp(python_command.c_str(), argv.data());
+    std::fprintf(stderr, "execvp failed for remote inference service\n");
+    _exit(127);
+  }
+
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+  std::string status_payload;
+  std::string status_error;
+  while (std::chrono::steady_clock::now() < deadline) {
+    if (GetEndpointText(status_endpoint, 2000, &status_payload, &status_error)) {
+      if (error != nullptr) {
+        error->clear();
+      }
+      return true;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+  }
+
+  if (error != nullptr) {
+    *error = "remote inference service did not become healthy at " + std::string(status_endpoint) +
+             " (python=" + python_command + ", log=" + log_path.string() + ")" +
+             (status_error.empty() ? std::string() : ": " + status_error);
+    const std::string log_tail = SummarizePythonProbeOutput(ReadLogTail(log_path));
+    if (!log_tail.empty()) {
+      *error += " | service_log=" + log_tail;
+    }
   }
   return false;
 }
@@ -2593,7 +3633,6 @@ bool RemoteInferenceBackend::ResolveEndpointConfigurationLocked(std::string* err
   return true;
 }
 
-#if defined(_WIN32)
 bool RemoteInferenceBackend::EnsureAutoStartedServiceReadyLocked(std::string* error) {
   if (!service_autostart_enabled_ || resolved_remote_endpoint_.empty() ||
       resolved_status_endpoint_.empty()) {
@@ -2614,7 +3653,6 @@ bool RemoteInferenceBackend::EnsureAutoStartedServiceReadyLocked(std::string* er
 
   return StartDetachedPythonService(options_, resolved_status_endpoint_, error);
 }
-#endif
 
 bool RemoteInferenceBackend::Initialize(std::string* error) {
   zsoda::core::CompatLockGuard lock(mutex_);
@@ -2625,18 +3663,12 @@ bool RemoteInferenceBackend::Initialize(std::string* error) {
     return true;
   }
 
-#if defined(_WIN32)
   if (!ResolveEndpointConfigurationLocked(error)) {
     return false;
   }
   if (!EnsureAutoStartedServiceReadyLocked(error)) {
     return false;
   }
-#else
-  if (!ResolveEndpointConfigurationLocked(error)) {
-    return false;
-  }
-#endif
 
   if (!resolved_remote_endpoint_.empty()) {
     initialized_ = true;
@@ -2738,7 +3770,6 @@ bool RemoteInferenceBackend::Run(const InferenceRequest& request,
   RemoteTimingBreakdown timings;
 
   if (!remote_endpoint.empty() && remote_protocol == RemoteTransportProtocol::kBinary) {
-#if defined(_WIN32)
     const auto convert_started = SteadyClock::now();
     const std::vector<std::uint8_t> rgb_payload = EncodeRgb8Payload(*request.source);
     timings.host_convert_ms = ElapsedMilliseconds(convert_started);
@@ -2777,12 +3808,6 @@ bool RemoteInferenceBackend::Run(const InferenceRequest& request,
       return false;
     }
     timings.response_decode_ms = ElapsedMilliseconds(decode_started);
-#else
-    if (error != nullptr) {
-      *error = backend_name + ": remote endpoint mode is only implemented on Windows";
-    }
-    return false;
-#endif
   } else {
     std::filesystem::path source_path;
     if (!MakeUniqueTempFilePath("zsoda-remote-source", ".ppm", &source_path, error)) {
@@ -2821,7 +3846,6 @@ bool RemoteInferenceBackend::Run(const InferenceRequest& request,
 
     std::string command_line;
     if (!remote_endpoint.empty()) {
-#if defined(_WIN32)
       const auto service_started = SteadyClock::now();
       if (!PostJsonToEndpoint(remote_endpoint,
                               request_payload,
@@ -2835,12 +3859,6 @@ bool RemoteInferenceBackend::Run(const InferenceRequest& request,
         return false;
       }
       timings.service_ms = ElapsedMilliseconds(service_started);
-#else
-      if (error != nullptr) {
-        *error = backend_name + ": remote endpoint mode is only implemented on Windows";
-      }
-      return false;
-#endif
     } else {
       if (!BuildCommandLine(
               command_template, request_file.path(), response_file.path(), &command_line, error)) {
