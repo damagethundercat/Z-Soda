@@ -302,3 +302,40 @@
 - 커밋에 포함하면 안 되는 로컬 생성물을 분명히 하기 위해
   `.gitignore`에 `.DS_Store`, `.cache/`, `dist-mac/`, `release-assets/`
   를 추가했다.
+
+### D245 (2026-03-15)
+- Windows release lane을 실제로 다시 돌리면서 build/package helper의
+  stale blocker를 정리했다.
+- `tools/build_aex.ps1`는 현재 `plugin/ae/ZSodaAeFlags.h`의
+  symbolic outflags 형식도 읽도록 파서를 보강했다.
+- `plugin/CMakeLists.txt`는 mac Rez/xcrun 탐색이 Windows configure에
+  새지 않도록 `APPLE` 분기 안으로 옮겼다.
+- `plugin/ae/ZSodaAeFlags.h`, `plugin/ae/ZSodaPiPL.r`,
+  `plugin/ae/ZSodaLoaderProbePiPL.r`는 Windows `PiPLtool`이 괄호식
+  outflags 표현을 거부하지 않도록 literal PiPL outflags 경로를 추가했다.
+
+### D246 (2026-03-15)
+- self-contained Windows release asset을 로컬에서 다시 준비했다.
+- `C:\\Python313` 설치를 portable runtime source로 검증해
+  `release-assets/python-win`에 stage했고,
+  Hugging Face `lc700x/Distill-Any-Depth-Base-hf` snapshot 을
+  `release-assets/models/distill-any-depth-base`로 준비했다.
+- `tools/package_plugin.ps1`와 `tools/package_plugin.sh`는
+  `--include-manifest`가 repo `models/` 전체를 중복 embedding 하지 않고
+  `models.manifest`/`README.md` metadata만 복사하도록 수정했다.
+- `tools/package_plugin.ps1`는 대형 `.aex`에서도 zip 생성이 가능하도록
+  Windows archive path를 `Compress-Archive` 대신 `tar -a` 경로로 정리했다.
+- 검증:
+  - `tools/build_aex.ps1 -AeSdkIncludeDir ... -BuildDir build-win -Config Release`
+  - `tools/package_plugin.ps1 -Platform windows -BuildDir build-win -OutputDir dist -IncludeManifest -RequireSelfContained`
+  - 결과물:
+    - `dist/ZSoda.aex`
+    - `dist/ZSoda.aex.sha256`
+    - `dist/ZSoda-windows.zip`
+    - `dist/ZSoda-windows.zip.sha256`
+  - 최종 크기:
+    - `ZSoda.aex`: `595,048,992` bytes
+    - `ZSoda-windows.zip`: `411,013,971` bytes
+  - 최종 SHA256:
+    - `ZSoda.aex`: `0ba2738a27b64dace75af911c363f508a97464a20f849f289da74b204f640172`
+    - `ZSoda-windows.zip`: `12bc5fd6fe30391d0c3a2b24354ef195132a7aed079cd41e43f9a2ad59406f61`

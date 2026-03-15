@@ -93,9 +93,25 @@ function Get-ZsodaGlobalOutFlagsToken {
   $pattern = '(?m)^\s*#define\s+ZSODA_AE_GLOBAL_OUTFLAGS\s+(0x[0-9A-Fa-f]+)\b'
   $match = [regex]::Match($content, $pattern)
   if (-not $match.Success) {
+    $basePattern = '(?ms)#else\s*#define\s+ZSODA_AE_GLOBAL_OUTFLAGS_BASE\s+(0x[0-9A-Fa-f]+)\b'
+    $baseMatch = [regex]::Match($content, $basePattern)
+    $maskPattern = '(?ms)#define\s+ZSODA_AE_GLOBAL_OUTFLAGS\s+\\?\s*\(\s*ZSODA_AE_GLOBAL_OUTFLAGS_BASE\s*\|\s*(0x[0-9A-Fa-f]+)\s*\)'
+    $maskMatch = [regex]::Match($content, $maskPattern)
+    if ($baseMatch.Success -and $maskMatch.Success) {
+      $baseValue = [Convert]::ToUInt32($baseMatch.Groups[1].Value, 16)
+      $maskValue = [Convert]::ToUInt32($maskMatch.Groups[1].Value, 16)
+      return ("0x{0:X8}" -f ($baseValue -bor $maskValue))
+    }
+
+    $baseOnlyPattern = '(?ms)#else\s*#define\s+ZSODA_AE_GLOBAL_OUTFLAGS\s+(0x[0-9A-Fa-f]+)\b'
+    $baseOnlyMatch = [regex]::Match($content, $baseOnlyPattern)
+    if ($baseOnlyMatch.Success) {
+      return $baseOnlyMatch.Groups[1].Value.ToUpperInvariant()
+    }
+
     throw "Failed to parse ZSODA_AE_GLOBAL_OUTFLAGS from: $HeaderPath"
   }
-  return $match.Groups[1].Value
+  return $match.Groups[1].Value.ToUpperInvariant()
 }
 
 function Invoke-CMake {

@@ -41,10 +41,10 @@ resource 'PiPL' (16001) {
       0
     },
     AE_Effect_Global_OutFlags {
-      ZSODA_AE_GLOBAL_OUTFLAGS
+      ZSODA_AE_GLOBAL_OUTFLAGS_LITERAL
     },
     AE_Effect_Global_OutFlags_2 {
-      ZSODA_AE_GLOBAL_OUTFLAGS2
+      ZSODA_AE_GLOBAL_OUTFLAGS2_LITERAL
     },
     AE_Effect_Match_Name {
       "ZSoda Loader Probe"

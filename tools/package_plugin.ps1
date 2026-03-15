@@ -230,6 +230,21 @@ function Stage-ModelRepos {
   }
 }
 
+function Stage-ModelsMetadata {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$DestinationRoot
+  )
+
+  New-Item -ItemType Directory -Path $DestinationRoot -Force | Out-Null
+  foreach ($metadataName in @("models.manifest", "README.md")) {
+    $sourcePath = Join-Path "models" $metadataName
+    if (Test-Path -LiteralPath $sourcePath -PathType Leaf) {
+      Copy-Item -LiteralPath $sourcePath -Destination (Join-Path $DestinationRoot $metadataName) -Force
+    }
+  }
+}
+
 function Assert-SelfContainedPayload {
   param(
     [Parameter(Mandatory = $true)]
@@ -345,7 +360,7 @@ if ($IncludeManifest) {
     if (Test-Path -LiteralPath $modelsStageDir) {
       Remove-Item -LiteralPath $modelsStageDir -Recurse -Force
     }
-    Copy-DirectoryContents -SourceDir $modelsSourceDir -DestinationDir $modelsStageDir
+    Stage-ModelsMetadata -DestinationRoot $modelsStageDir
     $modelsCopiedPath = $modelsStageDir
   }
 }
@@ -483,20 +498,37 @@ if ($Platform -eq "macos") {
   }
 }
 
-if (Get-Command Compress-Archive -ErrorAction SilentlyContinue) {
-  if ($Platform -eq "macos") {
-    $archivePath = Join-Path $OutputDir "ZSoda-macos.zip"
-    if (Test-Path -LiteralPath $archivePath) {
-      Remove-Item -LiteralPath $archivePath -Force
+if ($Platform -eq "windows") {
+  $archivePath = Join-Path $OutputDir "ZSoda-windows.zip"
+  if (Test-Path -LiteralPath $archivePath) {
+    Remove-Item -LiteralPath $archivePath -Force
+  }
+
+  $tar = Get-Command tar.exe -ErrorAction SilentlyContinue
+  if ($null -eq $tar) {
+    $tar = Get-Command tar -ErrorAction SilentlyContinue
+  }
+
+  if ($tar) {
+    $archiveLeaf = Split-Path -Path $archivePath -Leaf
+    Push-Location $OutputDir
+    try {
+      & $tar.Source -a -cf $archiveLeaf $artifactName
+      if ($LASTEXITCODE -ne 0) {
+        throw "tar failed to create archive: $archivePath"
+      }
+    } finally {
+      Pop-Location
     }
-    Compress-Archive -LiteralPath $destination -DestinationPath $archivePath -Force
-  } else {
-    $archivePath = Join-Path $OutputDir "ZSoda-windows.zip"
-    if (Test-Path -LiteralPath $archivePath) {
-      Remove-Item -LiteralPath $archivePath -Force
-    }
+  } elseif (Get-Command Compress-Archive -ErrorAction SilentlyContinue) {
     Compress-Archive -LiteralPath $destination -DestinationPath $archivePath -Force
   }
+} elseif (Get-Command Compress-Archive -ErrorAction SilentlyContinue) {
+  $archivePath = Join-Path $OutputDir "ZSoda-macos.zip"
+  if (Test-Path -LiteralPath $archivePath) {
+    Remove-Item -LiteralPath $archivePath -Force
+  }
+  Compress-Archive -LiteralPath $destination -DestinationPath $archivePath -Force
 }
 
 if (Get-Command Get-FileHash -ErrorAction SilentlyContinue) {

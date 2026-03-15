@@ -42,6 +42,17 @@ copy_dir_contents() {
   cp -R "${source_dir}/." "${destination_dir}/"
 }
 
+stage_models_metadata() {
+  local destination_dir="$1"
+  mkdir -p "${destination_dir}"
+  local metadata_name=""
+  for metadata_name in models.manifest README.md; do
+    if [[ -f "models/${metadata_name}" ]]; then
+      cp "models/${metadata_name}" "${destination_dir}/${metadata_name}"
+    fi
+  done
+}
+
 stage_model_repos() {
   local source_root="$1"
   local destination_root="$2"
@@ -259,7 +270,7 @@ fi
 if [[ "${include_manifest}" == "1" && -d "models" ]]; then
   models_output_dir="${payload_stage_dir}/models"
   rm -rf "${models_output_dir}"
-  copy_dir_contents "models" "${models_output_dir}"
+  stage_models_metadata "${models_output_dir}"
 fi
 
 if [[ -n "${model_repo_dir}" ]]; then
