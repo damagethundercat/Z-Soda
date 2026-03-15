@@ -339,3 +339,18 @@
   - 최종 SHA256:
     - `ZSoda.aex`: `0ba2738a27b64dace75af911c363f508a97464a20f849f289da74b204f640172`
     - `ZSoda-windows.zip`: `12bc5fd6fe30391d0c3a2b24354ef195132a7aed079cd41e43f9a2ad59406f61`
+
+### D247 (2026-03-15)
+- `main`에 Windows release lane fix를 `63b8406`
+  (`release: fix windows self-contained packaging`)로 커밋하고 푸시했다.
+- 이 머신에 `GitHub CLI`를 설치하고, git credential helper(`manager`)를
+  통해 GitHub release API 접근을 확인했다.
+- draft release `v0.1.0`을 다시 조회해 기존 `ZSoda-macos.zip` 외에
+  `ZSoda-windows.zip`, `ZSoda-windows.zip.sha256`를 asset으로 업로드했다.
+- 현재 draft asset 상태:
+  - `ZSoda-macos.zip`
+  - `ZSoda-windows.zip`
+  - `ZSoda-windows.zip.sha256`
+- `ZSoda-windows.zip`의 release asset digest는
+  `sha256:12bc5fd6fe30391d0c3a2b24354ef195132a7aed079cd41e43f9a2ad59406f61`
+  로 로컬 `dist/ZSoda-windows.zip.sha256`와 일치한다.
