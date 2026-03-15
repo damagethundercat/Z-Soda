@@ -354,3 +354,19 @@
 - `ZSoda-windows.zip`의 release asset digest는
   `sha256:12bc5fd6fe30391d0c3a2b24354ef195132a7aed079cd41e43f9a2ad59406f61`
   로 로컬 `dist/ZSoda-windows.zip.sha256`와 일치한다.
+
+### D248 (2026-03-16)
+- self-contained release zip 크기와 현재 사용자층을 다시 검토한 뒤,
+  기본 배포 계약을 `thin plug-in + first-run setup` 방향으로 전환하기로 했다.
+- `docs/build/THIN_SETUP_DESIGN.md`에 다음 설계를 정리했다.
+  - 첫 실제 effect 사용 시 setup 시작
+  - runtime/model bundle manifest + per-user cache layout
+  - setup progress를 보여주는 setup slate
+  - release path에서 dummy depth fallback 대신 explicit setup state 사용
+- `docs/build/README.md`에는 새 설계 문서를 연결했고,
+  `PLAN.md`에는 thin bootstrap용 `RF-05` workstream과
+  release bootstrap 요구사항을 추가했다.
+- 후속 구현 우선순위:
+  - native bootstrap manager / manifest / checksum / extract flow
+  - `RenderPipeline` setup pending/status card path
+  - downloaded cache root를 기준으로 한 remote runtime discovery

@@ -47,6 +47,10 @@ the shipping path directly.
 - Reuse inference sessions and remote service process.
 - Keep the default path fixed to `distill-any-depth-base`.
 - Never require legacy DA3 tooling or cloud services for normal operation.
+- Move release builds toward thin distribution with first-run bootstrap into a
+  per-user cache instead of embedding the full runtime/model payload by default.
+- Surface setup progress and setup failure explicitly instead of presenting
+  dummy depth output as a successful render path.
 
 ### AE UX behavior
 - Single-pass DAD-base remains the only shipping render path.
@@ -75,6 +79,12 @@ the shipping path directly.
 - Expose depth-map display as `Output` plus `Color Map`.
 - Expose slicing as `Output`, `Slice Mode`, `Position (%)`, `Range (%)`, and `Soft Border (%)`.
 - Do not reintroduce UI-facing quality boost or temporal toggles in the shipping path.
+
+### `RF-05` Thin release bootstrap
+- Replace the self-contained default release path with thin plug-in packaging.
+- Download runtime/model bundles on first real effect use into a per-user cache.
+- Add explicit setup lifecycle states and a visible setup slate in the render path.
+- Keep the shipping AE control surface unchanged while setup runs in the background.
 
 ## Validation
 

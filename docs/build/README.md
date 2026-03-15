@@ -25,6 +25,7 @@ shipping `Z-Soda` After Effects effect.
 - [LOCAL_AGENT_HANDOFF.md](LOCAL_AGENT_HANDOFF.md)
 - [MAC_SILICON_HANDOFF.md](MAC_SILICON_HANDOFF.md)
 - [RELEASE_ASSETS.md](RELEASE_ASSETS.md)
+- [THIN_SETUP_DESIGN.md](THIN_SETUP_DESIGN.md)
 - [AE_SMOKE_TEST.md](AE_SMOKE_TEST.md)
 - [ORT_RUNTIME_DEPLOY.md](ORT_RUNTIME_DEPLOY.md)
 - [ORT_RUNTIME_ISOLATION_PLAN.md](ORT_RUNTIME_ISOLATION_PLAN.md)
@@ -183,6 +184,9 @@ Expected packaged bundle:
   before falling back to remote Hugging Face repo names.
 - `%TEMP%\ZSoda_AE_Runtime.log` is failure-focused by default.
 - Optional verbose host/router tracing can be enabled with `ZSODA_AE_TRACE=1`.
+- The current packaged path is still self-contained, but the planned next
+  release direction is thin distribution plus first-run setup.
+  See [THIN_SETUP_DESIGN.md](THIN_SETUP_DESIGN.md).
 
 ## Smoke Checklist
 
