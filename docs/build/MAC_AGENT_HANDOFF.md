@@ -12,6 +12,14 @@ Windows has been moved to:
 - dynamic `distill-any-depth-base` ONNX export
 - no Python remote-service requirement on the happy path
 
+Windows release-candidate status as of the latest handoff:
+
+- package: `C:\Users\ikidk\Documents\Code\01 Z-Soda\artifacts\15_ort-sidecar-release-candidate\ZSoda-windows.zip`
+- install shape: `MediaCore\Z-Soda\ZSoda.aex + models + zsoda_ort`
+- user smoke status: pass
+- practical outcome: Windows should now be treated as the validated reference lane
+  for the shared ORT-first core
+
 The macOS work should continue from that same product direction. Do not fork
 the core design back to Python-first or self-contained embedded payloads unless
 there is a hard blocker that is documented with evidence.
@@ -95,6 +103,19 @@ If CoreML does not work, the fallback should be:
 6. Verify whether ORT provider probing sees CoreML.
 7. Enable CoreML if available and stable.
 8. Package `ZSoda.plugin` and run AE smoke.
+
+If the macOS agent needs a short starting instruction, use:
+
+```text
+git fetch origin
+git checkout codex/self-contained-stabilization
+git pull
+
+Read docs/build/MAC_AGENT_HANDOFF.md first.
+Keep the ORT-first design and the current model/runtime contract.
+Do not reintroduce Python-first shipping or giant embedded payloads unless a
+documented blocker makes ORT bring-up impossible.
+```
 
 ## Do Not Re-solve These Problems
 

@@ -55,7 +55,7 @@ download for the current release path.
 
 The current manual-test package is:
 
-- `C:\Users\ikidk\Documents\Code\01 Z-Soda\artifacts\14_ort-sidecar-dynamic-quality-manual-test\ZSoda-windows.zip`
+- `C:\Users\ikidk\Documents\Code\01 Z-Soda\artifacts\15_ort-sidecar-release-candidate\ZSoda-windows.zip`
 
 That zip expands to:
 
@@ -64,6 +64,14 @@ That zip expands to:
 - `Z-Soda/zsoda_ort/onnxruntime.dll`
 - `Z-Soda/zsoda_ort/onnxruntime_providers_shared.dll`
 - `Z-Soda/zsoda_ort/DirectML.dll`
+
+Windows smoke has already passed on this package:
+
+- plug-in loads in AE
+- first load is responsive compared to the old embedded payload path
+- `Quality` visibly changes the result
+- slice/depth-map interaction behaves normally
+- the user reported no visible regression on the Windows release-candidate smoke
 
 ## Important Scripts
 
@@ -137,6 +145,8 @@ Expected outputs:
 - Windows ORT sidecar is the preferred shipping path.
 - Python remote service should not be treated as the default user-facing path.
 - No dummy-engine success masking in release behavior.
+- Windows release-candidate validation is complete enough to hand off the
+  cross-platform core to the macOS bring-up owner.
 
 ## Windows Smoke Test Focus
 

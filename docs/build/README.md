@@ -25,6 +25,8 @@ shipping `Z-Soda` After Effects effect.
   - `Position (%)`
   - `Range (%)`
   - `Soft Border (%)`
+- Current validated Windows RC package:
+  - `C:\Users\ikidk\Documents\Code\01 Z-Soda\artifacts\15_ort-sidecar-release-candidate\ZSoda-windows.zip`
 
 ## Primary References
 

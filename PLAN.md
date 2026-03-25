@@ -140,7 +140,7 @@ the shipping path directly.
   - plugin loads as `ZSoda`
   - slicing controls are shown in the main UI
 - Use the current Windows native ORT sidecar package at
-  `artifacts/14_ort-sidecar-dynamic-quality-manual-test/ZSoda-windows.zip` for the next
+  `artifacts/15_ort-sidecar-release-candidate/ZSoda-windows.zip` for the next
   manual AE smoke.
 - Installation contract for the current Windows ORT package:
   - unzip the package
@@ -151,6 +151,9 @@ the shipping path directly.
   - quality changes alter render resolution
   - `Color Map` changes the depth-map visualization immediately
   - slice parameters alter the matte/output immediately
+- Current Windows status:
+  - release-candidate smoke has passed
+  - next platform milestone is macOS ORT bring-up
 
 ## Progress Tracking Contract
 

@@ -706,3 +706,17 @@
   - `cmake --build build-origin-main-tests --config Release --target zsoda_core_tests zsoda_inference_tests zsoda_render_tests`
   - `ctest -C Release -R "zsoda_core_tests|zsoda_inference_tests|zsoda_render_tests" --output-on-failure`
   - `python tools\\run_packaging_smoke.py --windows-build-dir build-origin-main-ae --output-dir artifacts\\packaging-smoke-refactor`
+
+### D269 (2026-03-26)
+- Windows ORT sidecar release candidate를 다시 빌드하고 handoff 문서를 최신화했다.
+  - 최신 패키지: `artifacts/15_ort-sidecar-release-candidate/ZSoda-windows.zip`
+  - 설치 폴더: `Z-Soda/ZSoda.aex + models + zsoda_ort`
+  - MediaCore 설치 경로도 최신 RC 패키지 기준으로 교체했다.
+- 사용자 최종 smoke 결과:
+  - AE 로드 정상
+  - `Quality` 반영 정상
+  - depth/slice 출력 정상
+  - Windows 쪽은 제품 기준 release-candidate 상태로 판단
+- macOS handoff 문서도 이 상태를 반영했다.
+  - `docs/build/LOCAL_AGENT_HANDOFF.md`: 최신 Windows RC 패키지와 smoke pass 상태 반영
+  - `docs/build/MAC_AGENT_HANDOFF.md`: Windows를 검증된 reference lane으로 명시하고, mac agent 시작 지시문 추가
