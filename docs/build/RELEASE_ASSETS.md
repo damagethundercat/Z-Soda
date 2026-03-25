@@ -1,5 +1,9 @@
 # Release Assets
 
+Historical note: this document describes the legacy self-contained packaging
+path. The current shipping path is the ORT sidecar contract documented in
+[README.md](README.md) and [LOCAL_AGENT_HANDOFF.md](LOCAL_AGENT_HANDOFF.md).
+
 This document defines the canonical `release-assets/` layout used by
 self-contained `Z-Soda` packaging.
 

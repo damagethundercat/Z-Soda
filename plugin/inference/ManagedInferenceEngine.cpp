@@ -191,60 +191,19 @@ bool ManagedInferenceEngine::Run(const InferenceRequest& request,
     return true;
   }
 
-  if (!options_.allow_dummy_fallback) {
-    last_run_used_fallback_ = true;
-    if (error != nullptr) {
-      if (!fallback_reason_.empty()) {
-        *error = fallback_reason_;
-      } else if (!model_file_exists_) {
-        *error = "selected model assets are not fully installed";
-      } else {
-        *error = "inference backend is unavailable";
-      }
-    }
-    AppendInferenceTrace("run_exit_backend_unavailable",
-                         fallback_reason_.empty() ? "<none>" : fallback_reason_.c_str());
-    return false;
-  }
-
-  std::string dummy_error;
-  AppendInferenceTrace("fallback_run_begin");
-  if (!fallback_engine_.Run(request, out_depth, &dummy_error)) {
-    last_run_used_fallback_ = true;
-    if (!dummy_error.empty()) {
-      fallback_reason_ = dummy_error;
-    }
-    if (error) {
-      *error = dummy_error;
-    }
-    AppendInferenceTrace("fallback_run_failed",
-                         dummy_error.empty() ? "<none>" : dummy_error.c_str());
-    return false;
-  }
   last_run_used_fallback_ = true;
-  AppendInferenceTrace("fallback_run_ok");
-
-  // Apply a small model-specific curve shift so model switching has visible effect
-  // while the fallback depth path is active.
-  const auto& desc = out_depth->desc();
-  const float bias = ModelBias();
-  for (int y = 0; y < desc.height; ++y) {
-    for (int x = 0; x < desc.width; ++x) {
-      float value = out_depth->at(x, y, 0);
-      value = std::clamp(value + bias, 0.0F, 1.0F);
-      out_depth->at(x, y, 0) = value;
+  if (error != nullptr) {
+    if (!fallback_reason_.empty()) {
+      *error = fallback_reason_;
+    } else if (!model_file_exists_) {
+      *error = "selected model assets are not fully installed";
+    } else {
+      *error = "inference backend is unavailable";
     }
   }
-
-  if (!fallback_reason_.empty() && error != nullptr) {
-    *error = fallback_reason_;
-  } else if (!model_file_exists_ && error != nullptr) {
-    *error = "selected model assets are not fully installed";
-  } else if (error != nullptr) {
-    error->clear();
-  }
-  AppendInferenceTrace("run_exit_fallback");
-  return true;
+  AppendInferenceTrace("run_exit_backend_unavailable",
+                       fallback_reason_.empty() ? "<none>" : fallback_reason_.c_str());
+  return false;
 }
 
 RuntimeBackend ManagedInferenceEngine::RequestedBackend() const {
@@ -271,16 +230,11 @@ InferenceBackendStatus ManagedInferenceEngine::BackendStatus() const {
     const std::string backend_name = SafeCStr(onnx_backend_->Name(), "<null backend>");
     if (!using_fallback_engine_ && !status.last_run_used_fallback) {
       status.engine_name = backend_name;
-    } else if (!options_.allow_dummy_fallback) {
-      status.engine_name = "BackendUnavailable (requested=" + backend_name + ")";
     } else {
-      status.engine_name = std::string(SafeCStr(fallback_engine_.Name(), "DummyDepthEngine")) +
-                           " (fallback_from=" + backend_name + ")";
+      status.engine_name = "BackendUnavailable (requested=" + backend_name + ")";
     }
-  } else if (!options_.allow_dummy_fallback) {
-    status.engine_name = "BackendUnavailable";
   } else {
-    status.engine_name = SafeCStr(fallback_engine_.Name(), "DummyDepthEngine");
+    status.engine_name = "BackendUnavailable";
   }
   status.fallback_reason = fallback_reason_;
   return status;
@@ -434,13 +388,6 @@ bool ManagedInferenceEngine::SelectModelLocked(const std::string& model_id, std:
     });
   }
   const bool exists = AreModelAssetsPresent(model_assets);
-  std::string init_error;
-  if (!fallback_engine_.Initialize(model_id, &init_error)) {
-    if (error) {
-      *error = init_error;
-    }
-    return false;
-  }
 
   if (onnx_backend_ != nullptr) {
     std::string backend_error;
@@ -629,19 +576,6 @@ void ManagedInferenceEngine::MaybeQueueModelDownloadLocked(
       fallback_reason_ += " | auto_download=" + failure_message;
     }
   }
-}
-
-float ManagedInferenceEngine::ModelBias() const {
-  if (active_model_id_ == "distill-any-depth-large") {
-    return 0.08F;
-  }
-  if (active_model_id_ == "distill-any-depth-base") {
-    return 0.04F;
-  }
-  if (active_model_id_ == "distill-any-depth") {
-    return 0.02F;
-  }
-  return 0.0F;
 }
 
 }  // namespace zsoda::inference

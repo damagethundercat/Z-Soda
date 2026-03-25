@@ -1,5 +1,9 @@
 # Thin Release and First-Run Setup Design
 
+Historical note: this thin bootstrap design is no longer the active shipping
+direction. Keep it only as archived product exploration; do not treat it as the
+current release contract.
+
 This document records the planned shift from a self-contained shipping bundle
 to a thin plug-in package with first-run setup.
 

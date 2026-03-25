@@ -1,5 +1,9 @@
 # Mac Apple Silicon Handoff
 
+Superseded note: this document captures the older Python-first bring-up plan.
+Use [MAC_AGENT_HANDOFF.md](MAC_AGENT_HANDOFF.md) for the current ORT-first
+macOS handoff contract.
+
 This document is the current handoff note for bringing `Z-Soda` up on
 Apple Silicon macOS as a native After Effects plug-in.
 

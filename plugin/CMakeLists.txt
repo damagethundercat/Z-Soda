@@ -22,7 +22,6 @@ set(ZSODA_PLUGIN_SOURCES
   core/DepthOps.cpp
   core/RenderPipeline.cpp
   core/Tiler.cpp
-  inference/DummyInferenceEngine.cpp
   inference/EmbeddedPayload.cpp
   inference/EngineFactory.cpp
   inference/ManagedInferenceEngine.cpp

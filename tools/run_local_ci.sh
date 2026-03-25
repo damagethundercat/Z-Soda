@@ -6,7 +6,7 @@ g++ -std=c++20 -Iplugin \
   plugin/ae/AeHostAdapter.cpp plugin/ae/AeCommandRouter.cpp plugin/ae/AeParams.cpp plugin/ae/AePluginEntry.cpp \
   plugin/core/BufferPool.cpp plugin/core/Cache.cpp plugin/core/DepthOps.cpp \
   plugin/core/RenderPipeline.cpp plugin/core/Tiler.cpp \
-  plugin/inference/DummyInferenceEngine.cpp plugin/inference/EngineFactory.cpp plugin/inference/ModelAutoDownloader.cpp \
+  plugin/inference/EngineFactory.cpp plugin/inference/ModelAutoDownloader.cpp \
   plugin/inference/ManagedInferenceEngine.cpp plugin/inference/ModelCatalog.cpp plugin/inference/RemoteInferenceBackend.cpp \
   plugin/inference/RuntimePathResolver.cpp \
   tests/test_ae_params.cpp tests/test_ae_router.cpp tests/test_cache.cpp \
@@ -20,7 +20,7 @@ g++ -std=c++20 -DZSODA_WITH_ONNX_RUNTIME=1 -Iplugin \
   plugin/ae/AeHostAdapter.cpp plugin/ae/AeCommandRouter.cpp plugin/ae/AeParams.cpp plugin/ae/AePluginEntry.cpp \
   plugin/core/BufferPool.cpp plugin/core/Cache.cpp plugin/core/DepthOps.cpp \
   plugin/core/RenderPipeline.cpp plugin/core/Tiler.cpp \
-  plugin/inference/DummyInferenceEngine.cpp plugin/inference/EngineFactory.cpp plugin/inference/ModelAutoDownloader.cpp \
+  plugin/inference/EngineFactory.cpp plugin/inference/ModelAutoDownloader.cpp \
   plugin/inference/ManagedInferenceEngine.cpp plugin/inference/ModelCatalog.cpp plugin/inference/RemoteInferenceBackend.cpp \
   plugin/inference/RuntimePathResolver.cpp \
   plugin/inference/OnnxRuntimeBackend.cpp \
@@ -40,7 +40,7 @@ g++ -std=c++20 -Iplugin \
   plugin/ae/AeHostAdapter.cpp plugin/ae/AeCommandRouter.cpp plugin/ae/AeParams.cpp plugin/ae/AePluginEntry.cpp \
   plugin/core/BufferPool.cpp plugin/core/Cache.cpp plugin/core/DepthOps.cpp \
   plugin/core/RenderPipeline.cpp plugin/core/Tiler.cpp \
-  plugin/inference/DummyInferenceEngine.cpp plugin/inference/EngineFactory.cpp plugin/inference/ModelAutoDownloader.cpp \
+  plugin/inference/EngineFactory.cpp plugin/inference/ModelAutoDownloader.cpp \
   plugin/inference/ManagedInferenceEngine.cpp plugin/inference/ModelCatalog.cpp plugin/inference/RemoteInferenceBackend.cpp \
   plugin/inference/RuntimePathResolver.cpp \
   tests/perf_harness.cpp \

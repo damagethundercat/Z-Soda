@@ -158,26 +158,30 @@ std::shared_ptr<IInferenceEngine> CreateDefaultEngine() {
   path_hints.model_root_env = ReadEnvOrEmpty("ZSODA_MODEL_ROOT");
   path_hints.model_manifest_env = ReadEnvOrEmpty("ZSODA_MODEL_MANIFEST");
   path_hints.onnxruntime_library_env = ReadEnvOrEmpty("ZSODA_ONNXRUNTIME_LIBRARY");
+  const std::string locked_model_id = ResolveLockedModelIdOrDefault();
 
   std::string module_path_error;
   const auto module_path = TryResolveCurrentModulePath(&module_path_error);
   std::string module_dir_error;
   path_hints.plugin_directory = TryResolveCurrentModuleDirectory(&module_dir_error);
-  if (module_path.has_value() && !module_path->empty()) {
+  RuntimePathResolution runtime_paths = ResolveRuntimePaths(path_hints);
+  const bool has_native_sidecar_assets =
+      !runtime_paths.onnxruntime_library_path.empty() &&
+      HasNativeOnnxModelAssets(runtime_paths, locked_model_id);
+  if (!has_native_sidecar_assets && module_path.has_value() && !module_path->empty()) {
     std::string payload_error;
     const EmbeddedPayloadInfo payload =
         EnsureEmbeddedPayloadAvailable(*module_path, &payload_error);
     if (payload.extracted && !payload.asset_root.empty()) {
       path_hints.bundled_asset_root = payload.asset_root;
+      runtime_paths = ResolveRuntimePaths(path_hints);
     } else if (!payload_error.empty()) {
       std::fprintf(stderr,
                    "[Z-Soda] Embedded payload preparation failed: %s\n",
                    payload_error.c_str());
     }
   }
-  const RuntimePathResolution runtime_paths = ResolveRuntimePaths(path_hints);
   const std::string model_root = runtime_paths.model_root.empty() ? "models" : runtime_paths.model_root;
-  const std::string locked_model_id = ResolveLockedModelIdOrDefault();
 
   RuntimeOptions options;
   const std::string env_backend = ReadEnvOrEmpty("ZSODA_INFERENCE_BACKEND");
@@ -213,8 +217,6 @@ std::shared_ptr<IInferenceEngine> CreateDefaultEngine() {
   options.remote_service_python = ReadEnvOrEmpty("ZSODA_REMOTE_SERVICE_PYTHON");
   options.remote_service_script_path = ReadEnvOrEmpty("ZSODA_REMOTE_SERVICE_SCRIPT");
   options.remote_service_log_path = ReadEnvOrEmpty("ZSODA_REMOTE_SERVICE_LOG");
-  options.allow_dummy_fallback =
-      ParseBoolEnvOrDefault(std::getenv("ZSODA_ALLOW_DUMMY_FALLBACK"), false);
   if (path_hints.plugin_directory.has_value()) {
     options.plugin_directory = *path_hints.plugin_directory;
   }

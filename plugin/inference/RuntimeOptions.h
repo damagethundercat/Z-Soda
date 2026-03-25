@@ -12,7 +12,6 @@ enum class RuntimeBackend {
   kTensorRT,
   kCuda,
   kDirectML,
-  kMetal,
   kCoreML,
   kRemote,
 };
@@ -50,7 +49,6 @@ struct RuntimeOptions {
   std::string remote_service_python;
   std::string remote_service_script_path;
   std::string remote_service_log_path;
-  bool allow_dummy_fallback = false;
 };
 
 [[nodiscard]] inline const char* RuntimeBackendName(RuntimeBackend backend) {
@@ -65,8 +63,6 @@ struct RuntimeOptions {
       return "cuda";
     case RuntimeBackend::kDirectML:
       return "directml";
-    case RuntimeBackend::kMetal:
-      return "metal";
     case RuntimeBackend::kCoreML:
       return "coreml";
     case RuntimeBackend::kRemote:
@@ -96,9 +92,6 @@ struct RuntimeOptions {
   }
   if (normalized == "directml" || normalized == "dml") {
     return RuntimeBackend::kDirectML;
-  }
-  if (normalized == "metal") {
-    return RuntimeBackend::kMetal;
   }
   if (normalized == "coreml") {
     return RuntimeBackend::kCoreML;

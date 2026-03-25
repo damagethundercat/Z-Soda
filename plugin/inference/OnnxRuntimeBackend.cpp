@@ -162,7 +162,6 @@ bool SupportsRequestedBackend(const RuntimeProviderCapabilities& capabilities,
       return capabilities.has_coreml;
     case RuntimeBackend::kAuto:
       return true;
-    case RuntimeBackend::kMetal:
     case RuntimeBackend::kRemote:
       return false;
   }
@@ -978,7 +977,6 @@ bool ConfigureExecutionProvider(const OrtApi* api,
         *applied_detail = "cpu";
       }
       return true;
-    case RuntimeBackend::kMetal:
     case RuntimeBackend::kRemote:
       if (error != nullptr) {
         *error = "requested backend is not supported by ONNX runtime backend";

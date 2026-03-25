@@ -6,7 +6,6 @@
 #include <vector>
 
 #include "core/CompatMutex.h"
-#include "inference/DummyInferenceEngine.h"
 #include "inference/InferenceEngine.h"
 #include "inference/ModelCatalog.h"
 #include "inference/OnnxRuntimeBackend.h"
@@ -54,7 +53,6 @@ class ManagedInferenceEngine final : public IInferenceEngine {
   void TryPromoteActiveModelToOnnxLocked();
   void MaybeQueueModelDownloadLocked(const ModelSpec& model,
                                      const std::vector<ResolvedModelAsset>& assets);
-  float ModelBias() const;
 
   std::string model_root_;
   RuntimeOptions options_;
@@ -69,7 +67,6 @@ class ManagedInferenceEngine final : public IInferenceEngine {
   mutable bool last_run_used_fallback_ = true;
   mutable std::string fallback_reason_;
   std::chrono::steady_clock::time_point last_backend_recovery_attempt_{};
-  DummyInferenceEngine fallback_engine_;
   std::unique_ptr<IOnnxRuntimeBackend> onnx_backend_;
 };
 

@@ -1,15 +1,19 @@
 # Z-Soda
 
-After Effects depth effect plugin focused on a single production path:
+After Effects depth effect plugin focused on one shipping path:
 
-- model: `distill-any-depth-base`
 - host: Adobe After Effects
-- runtime: local Python remote service + binary localhost transport
-- primary outputs: depth map / depth-driven compositing
+- model: `distill-any-depth-base`
+- runtime: native ONNX Runtime sidecar
+- outputs: `Depth Map` and `Depth Slice`
 
 ## Current Product Shape
 
-- AE UI exposes the shipping controls:
+- Windows shipping install shape:
+  - `Z-Soda/ZSoda.aex`
+  - `Z-Soda/models/`
+  - `Z-Soda/zsoda_ort/`
+- AE UI exposes only the shipping controls:
   - `Quality`
   - `Preserve Ratio`
   - `Output`
@@ -18,12 +22,8 @@ After Effects depth effect plugin focused on a single production path:
   - `Position (%)`
   - `Range (%)`
   - `Soft Border (%)`
-- The plugin always runs the single production DAD path.
-- `Color Map` affects `Depth Map` only and currently offers `Gray`, `Turbo`,
-  `Viridis`, `Inferno`, and `Magma`.
-- Depth slicing is part of the shipping UI and uses the internal slice-matte path.
-- Quality boost, preview/final mode switches, and time-consistency toggles are no longer part of the shipping UI.
-- The default display mapping for DistillAnyDepth is raw/linear grayscale.
+- `Quality` maps to real process-resolution changes.
+- Python remote service remains available only for explicit debug/fallback work.
 
 ## Repository Layout
 
@@ -34,87 +34,45 @@ After Effects depth effect plugin focused on a single production path:
 - [plugin/inference](plugin/inference): engine/runtime/backend glue
 - [tools](tools): build/package/runtime helper scripts
 - [tests](tests): unit/integration harnesses
+- [docs/build/README.md](docs/build/README.md): current build/package guide
 
 ## Runtime Notes
 
 - Production model is fixed to `distill-any-depth-base`.
-- The plugin prefers the remote backend for DistillAnyDepth and auto-starts
-  [distill_any_depth_remote_service.py](tools/distill_any_depth_remote_service.py)
-  when needed.
-- The hot path uses binary HTTP on `127.0.0.1`, not `PPM + JSON float array`.
-- If the remote path is unavailable, the plugin must fall back safely and never crash AE.
+- The preferred user-facing path is bundled ORT sidecar inference.
+- The plugin should resolve `models/` and `zsoda_ort/` next to `ZSoda.aex`
+  before considering any legacy embedded or remote fallback path.
+- Hard failures must return safe output through the render pipeline and never crash AE.
 
 ## Build
 
-Windows plugin build:
+Windows build and package guidance lives in:
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build_aex.ps1
-```
+- [docs/build/README.md](docs/build/README.md)
+- [docs/build/LOCAL_AGENT_HANDOFF.md](docs/build/LOCAL_AGENT_HANDOFF.md)
 
-macOS plugin build/package:
+macOS handoff guidance lives in:
 
-```bash
-bash tools/build_plugin_macos.sh --ae-sdk-root "/path/to/AdobeAfterEffectsSDK"
-```
-
-Native CMake path:
-
-```powershell
-cmake -S . -B build-win -DZSODA_WITH_AE_SDK=ON
-cmake --build build-win --config Release --target zsoda_aex
-```
-
-Debug/unit test path:
-
-```powershell
-cmake -S . -B build-cleanup
-cmake --build build-cleanup --config Debug --target zsoda_tests
-build-cleanup\tests\Debug\zsoda_tests.exe
-```
+- [docs/build/MAC_AGENT_HANDOFF.md](docs/build/MAC_AGENT_HANDOFF.md)
 
 ## Packaging
 
-- Build/package helper: [tools/build_aex.ps1](tools/build_aex.ps1)
-- Mac build/package helper: [tools/build_plugin_macos.sh](tools/build_plugin_macos.sh)
-- Packaging helper: [tools/package_plugin.ps1](tools/package_plugin.ps1)
-- Shell packaging helper: [tools/package_plugin.sh](tools/package_plugin.sh)
-- Release asset prep helper: [tools/prepare_release_assets.py](tools/prepare_release_assets.py)
-- Windows release packaging now targets a single-file `ZSoda.aex`.
-  - `models/`, `zsoda_py/`, and optional `zsoda_ort/` are appended to the
-    `.aex` as an embedded payload during packaging.
-  - On first load, the plug-in extracts that payload into a per-user cache
-    instead of expecting sidecar folders next to the `.aex`.
-- macOS packages stage `models/`, `zsoda_py/`, and optional `zsoda_ort/`
-  under `ZSoda.plugin/Contents/Resources/`, so the release zip still exposes a
-  single `.plugin` bundle to the user.
-- Self-contained release packaging now accepts:
-  - `--python-runtime-dir <dir>`: stages a portable runtime under `zsoda_py/python`
-  - `--model-repo-dir <dir>`: stages local HF repos from `<dir>/<model_id>/...`
-    into `models/hf/<model_id>/...`
-  - `--hf-cache-dir <dir>`: optionally stages a preseeded Hugging Face cache
-    under `models/hf-cache/`
-  - `--require-self-contained`: fails packaging unless both the bundled Python
-    runtime and at least one local model repo are present
-- If `release-assets/` exists, packaging helpers auto-detect:
-  - `release-assets/python-macos`
-  - `release-assets/python-win`
-  - `release-assets/models`
-  - `release-assets/hf-cache`
-- Canonical layout details: [docs/build/RELEASE_ASSETS.md](docs/build/RELEASE_ASSETS.md)
-- Packaging helpers now also emit `ZSoda-windows.zip` or `ZSoda-macos.zip`
-  plus matching `.sha256` files for handoff/distribution.
-- The repo still does not contain a bundled Python runtime or local production
-  model weights. For true plug-and-play shipping, those assets must be supplied
-  to the packaging step.
+- Windows shipping package is a zip containing one top-level `Z-Soda/` folder.
+- That folder contains:
+  - `ZSoda.aex`
+  - `models/distill-any-depth/distill_any_depth_base.onnx`
+  - `zsoda_ort/onnxruntime.dll`
+  - provider/runtime DLLs required by the chosen ORT EP
+- Legacy self-contained and thin-bootstrap notes are kept only as historical
+  references under [docs/build](docs/build).
 
 ## Models
 
 - Manifest: [models/models.manifest](models/models.manifest)
-- Current production entries:
+- Shipping model family:
   - `distill-any-depth`
   - `distill-any-depth-base`
   - `distill-any-depth-large`
 
-DistillAnyDepth runs through the remote service, so normal AE usage does not require
-shipping local ONNX weights in the repo.
+The current ORT shipping path uses exported ONNX weights staged under
+`models/distill-any-depth/`.

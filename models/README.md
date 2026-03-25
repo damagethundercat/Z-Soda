@@ -1,37 +1,27 @@
 # Models
 
-Z-Soda currently ships a single production model family:
+Z-Soda currently ships one production model family:
 
 - `distill-any-depth`
 - `distill-any-depth-base`
 - `distill-any-depth-large`
 
-The preferred production entry is `distill-any-depth-base`.
+The preferred shipping entry is `distill-any-depth-base`.
 
-## Important
+## Current Shipping Contract
 
-These model IDs are resolved through the local remote service:
-
-- [tools/distill_any_depth_remote_service.py](../tools/distill_any_depth_remote_service.py)
-
-That means normal AE operation does not depend on checked-in ONNX weights under this
-folder. The manifest still exists so model identity and packaging stay deterministic.
-
-For zero-install release packaging, the helper can now prefer bundled local
-Hugging Face snapshots laid out as:
+- Windows ORT sidecar packages stage the exported ONNX asset under:
 
 ```text
 models/
+  distill-any-depth/
+    distill_any_depth_base.onnx
   models.manifest
-  hf/
-    distill-any-depth-base/
-      config.json
-      ...
 ```
 
-At runtime the service checks `models/hf/<model_id>/` first. If that directory
-exists, it loads the model locally; otherwise it falls back to the configured
-remote Hugging Face repo name.
+- The ORT runtime resolves that local ONNX asset on the happy path.
+- Python/Hugging Face runtime resolution is now legacy debug/fallback behavior,
+  not the primary shipping contract.
 
 ## Manifest
 
@@ -43,5 +33,5 @@ Format:
 id|display_name|relative_path|download_url|preferred_default|auxiliary_assets(relative_path::download_url;...)
 ```
 
-For DistillAnyDepth entries, `download_url` is intentionally `remote://...` because
-runtime resolution is delegated to the remote service rather than local model files.
+The manifest stays versioned so model identity, export targets, and packaging
+remain deterministic even when the runtime path changes.

@@ -692,3 +692,17 @@
   - 우선순위를 `ORT CPU bring-up -> CoreML provider 검증 -> AE smoke` 순서로 고정했다.
 - [docs/build/README.md](docs/build/README.md)에 mac handoff 링크를 추가해서 build docs에서 바로 찾을 수 있게 했다.
 - 현재 브랜치는 커밋/푸시 준비를 마친 상태이며, 다음 단계는 staged 변경을 하나의 브랜치 업데이트로 커밋하고 origin에 푸시하는 것이다.
+
+### D268 (2026-03-26)
+- 최종 shipping 기준에 맞춘 cleanup/refactor 1차를 진행했다.
+  - `DummyInferenceEngine`와 `ZSODA_ALLOW_DUMMY_FALLBACK` 경로를 제거하고, hard failure는 `RenderPipeline`의 safe output 계약으로만 처리하도록 정리했다.
+  - `RuntimeBackend::kMetal`과 미사용 `plugin/backends/BackendConfig.h`를 제거해 런타임 분기 노이즈를 줄였다.
+  - `EngineFactory.cpp`는 이제 plugin-adjacent ORT sidecar 자산을 먼저 해석하고, embedded payload 추출은 native sidecar가 없을 때만 legacy fallback으로 시도한다.
+- 문서 계약도 현재 기준으로 다시 맞췄다.
+  - 루트 `README.md`, `models/README.md`, `docs/build/README.md`를 ORT sidecar shipping 기준으로 다시 작성했다.
+  - `docs/build/RELEASE_ASSETS.md`, `docs/build/THIN_SETUP_DESIGN.md`, `docs/build/MAC_SILICON_HANDOFF.md`에는 legacy/superseded note를 추가했다.
+  - `docs/build/LOCAL_AGENT_HANDOFF.md`는 Python remote service를 명시적 debug/fallback 경로로만 설명하도록 정리했다.
+- 검증:
+  - `cmake --build build-origin-main-tests --config Release --target zsoda_core_tests zsoda_inference_tests zsoda_render_tests`
+  - `ctest -C Release -R "zsoda_core_tests|zsoda_inference_tests|zsoda_render_tests" --output-on-failure`
+  - `python tools\\run_packaging_smoke.py --windows-build-dir build-origin-main-ae --output-dir artifacts\\packaging-smoke-refactor`

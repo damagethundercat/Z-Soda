@@ -25,7 +25,7 @@ download for the current release path.
   - `Z-Soda/ZSoda.aex`
   - `Z-Soda/models/`
   - `Z-Soda/zsoda_ort/`
-- Python remote service: dev/fallback only while ORT parity work remains
+- Python remote service: explicit debug/fallback only
 - Public controls:
   - `Quality`
   - `Preserve Ratio`
