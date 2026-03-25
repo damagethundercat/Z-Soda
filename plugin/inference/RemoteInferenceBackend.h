@@ -39,6 +39,8 @@ class RemoteInferenceBackend final : public IOnnxRuntimeBackend {
   std::string backend_name_;
   std::string active_model_id_;
   std::string active_model_path_;
+  std::string resolved_service_host_;
+  int resolved_service_port_ = 0;
   std::string resolved_remote_endpoint_;
   std::string resolved_status_endpoint_;
   mutable zsoda::core::CompatMutex mutex_;

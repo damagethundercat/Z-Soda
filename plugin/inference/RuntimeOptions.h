@@ -46,9 +46,11 @@ struct RuntimeOptions {
   bool remote_service_autostart = false;
   std::string remote_service_host = "127.0.0.1";
   int remote_service_port = 8345;
+  bool remote_service_port_explicit = false;
   std::string remote_service_python;
   std::string remote_service_script_path;
   std::string remote_service_log_path;
+  bool allow_dummy_fallback = false;
 };
 
 [[nodiscard]] inline const char* RuntimeBackendName(RuntimeBackend backend) {

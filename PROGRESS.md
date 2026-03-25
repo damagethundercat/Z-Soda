@@ -370,3 +370,325 @@
   - native bootstrap manager / manifest / checksum / extract flow
   - `RenderPipeline` setup pending/status card path
   - downloaded cache root를 기준으로 한 remote runtime discovery
+
+### D249 (2026-03-21)
+- self-contained cold-start 안정화를 위해 `bundled_asset_root`만 있어도 runtime/script/python을 찾도록 보강했다.
+- `RuntimePathResolver`는 `plugin_directory`가 비어도 extracted payload root에서 `models`, `models.manifest`, `onnxruntime.dll`을 탐색한다.
+- `EngineFactory`와 `RemoteInferenceBackend`는 `plugin_directory`가 없어도 `zsoda_py/distill_any_depth_remote_service.py`와 bundled Python runtime을 탐색한다.
+- `tests/test_runtime_path_resolver.cpp`에 `bundled_asset_root` 단독 케이스를 추가했다.
+- `cmake --build`는 다시 통과했지만, 전체 `zsoda_tests.exe`는 기존 `EmbeddedPayload` footer mismatch로 AV가 남아 있어 추가 안정화가 필요하다.
+
+### D250 (2026-03-21)
+- self-contained cold-start blocker였던 embedded payload footer/header contract mismatch를 수정했다.
+- `plugin/inference/EmbeddedPayload.cpp`는 16-byte padded magic field를 기준으로 footer/header를 읽도록 고쳤다.
+- `tools/check_release_readiness.py`에 packaged `ZSoda.aex` embedded payload inspector를 추가했고, `tools/package_plugin.ps1`가 Windows self-contained packaging 중 이를 자동으로 실행하도록 묶었다.
+- `tests/test_embedded_payload.cpp`, `tests/test_embedded_payload_main.cpp`, `tests/CMakeLists.txt`로 dedicated embedded payload regression을 추가했고 `zsoda_embedded_payload_tests`는 통과했다.
+- 최신 self-contained 산출물은 `artifacts/self-contained-release-fixed-v2/package/ZSoda-windows.zip`에 재생성했다.
+- 남은 리스크는 monolithic `zsoda_tests`의 기존 SEGFAULT 1건이며, self-contained payload regression과 package validation gate는 현재 통과한다.
+
+### D251 (2026-03-21)
+- self-contained 더미 엔진 fallback의 본질 원인을 `embedded payload overlay`가 아니라 `Windows 경로 길이`로 좁혔다.
+- `AfterFX.exe` manifest에 `longPathAware`가 없고, 현재 self-contained payload는 기존 `%LOCALAPPDATA%\\ZSoda\\PayloadCache\\<sha256>` 기준 절대 경로가 최대 273자까지 늘어나는 것을 확인했다.
+- `plugin/inference/EmbeddedPayload.cpp`의 Windows 기본 payload cache root를 `%LOCALAPPDATA%\\ZS\\<sha256>`로 줄이고, legacy cache 재사용 fallback과 `PayloadTrace` 진단 로그를 추가했다.
+- `tests/test_embedded_payload.cpp`에 Windows short cache root 회귀를 추가했고, `build-origin-main-tests`에서 `ctest -C Release -R zsoda_embedded_payload_tests --output-on-failure`가 통과했다.
+- `tools/check_release_readiness.py`가 Windows embedded payload의 최대 상대 경로 길이와 sample cache root 기준 최대 절대 경로 길이를 리포트하도록 보강했다.
+- 같은 수정으로 다시 패키징한 self-contained 산출물은 `artifacts/origin-main-self-contained-longpath-fixed/package/ZSoda-windows.zip`이며, packaging gate 기준 `max absolute path length: 257`로 AE host path limit 안쪽까지 내려왔다.
+- 추가 조사 결과 self-contained packaging 입력인 `release-assets/**`는 git 밖 자산이며, 현재 rebuild 결과는 source commit보다 이 runtime/model snapshot 상태에 더 크게 좌우된다는 점을 확인했다.
+
+### D252 (2026-03-24)
+- self-contained 기준선에서 더미 엔진으로 바뀌는 최신 원인을 `payload extract`가 아니라 `localhost:8345` 고정 포트 충돌로 확인했다.
+- `UnicornProService.exe`가 `8345`를 점유한 상태에서 helper가 bind하지 못했고, `ZSoda_AE_Runtime.log`에는 `remote inference service did not become healthy at http://127.0.0.1:8345/status`가 남았다.
+- `plugin/inference/RuntimeOptions.h`, `plugin/inference/EngineFactory.cpp`, `plugin/inference/RemoteInferenceBackend.h`, `plugin/inference/RemoteInferenceBackend.cpp`를 수정해 autostart가 고정 `8345` 대신 빈 loopback 포트를 동적으로 배정받고, 성공한 포트를 backend 인스턴스 간에 재사용하도록 바꿨다.
+- `tools/distill_any_depth_remote_service.py`는 `--port-file`을 받아 실제 bind된 포트를 기록하도록 보강했고, plugin은 그 파일을 읽어 status/depth endpoint를 동적으로 구성한다.
+- 검증:
+  - `cmake --build Y:\\build-origin-main-ae --config Release --target zsoda_aex`
+  - `cmake --build Y:\\build-origin-main-tests --config Release --target zsoda_embedded_payload_tests`
+  - `ctest -C Release -R zsoda_embedded_payload_tests --output-on-failure`
+  - `powershell -ExecutionPolicy Bypass -File Y:\\tools\\package_plugin.ps1 ... -RequireSelfContained`
+- 최신 self-contained 산출물은 `artifacts/origin-main-self-contained-dynamic-port/package/ZSoda-windows.zip`이며, long-path gate와 embedded payload validation을 모두 통과했다.
+
+### D253 (2026-03-24)
+- 맥 정상본 `ZSoda.plugin.zip`을 self-contained golden fixture로 삼고, Windows self-contained payload가 같은 계약을 지키는지 비교 검증하는 gate를 추가했다.
+- `tools/check_release_readiness.py`가 이제 macOS fixture `.zip` 또는 `.plugin` 번들을 읽어 `models/**`, `zsoda_py/distill_any_depth_remote_service.py`, `zsoda_py/python/**` 계약을 수집하고 Windows embedded payload와 비교할 수 있다.
+- `tools/package_plugin.ps1`, `tools/package_plugin.sh`에 golden fixture 인자를 추가해서, Windows 패키징 직후 같은 명령에서 맥 기준선 비교까지 같이 수행할 수 있게 했다.
+- 모델 subtree(`models/hf/distill-any-depth-base/**`)는 hash까지 엄격 비교하고, helper script는 Windows 전용 수정이 있을 수 있어 mismatch를 note로만 남기도록 정리했다.
+
+### D254 (2026-03-24)
+- cleanup-first 안정화의 첫 slice로 `RemoteInferenceBackend.cpp`에서 Python runtime candidate 수집, capability probe, autostart selection 로직을 `plugin/inference/PythonAutostart.{h,cpp}`로 분리했다.
+- Windows와 macOS/Linux가 각각 유지하던 Python 탐색 우선순위는 그대로 두고, `RemoteInferenceBackend` 쪽에서는 새 helper API만 사용하도록 경계를 좁혔다.
+- 같은 Python을 선택한 뒤 launch 직전에 다시 probe하던 중복을 없애기 위해 `PythonAutostartSelection`을 도입했고, 선택 결과와 `probe_output`을 함께 넘기도록 정리했다.
+- monolithic `zsoda_tests`만으로는 이 slice를 신뢰하기 어려워서 `tests/test_python_autostart.cpp`와 `zsoda_python_autostart_tests` 타깃을 추가했다.
+- 검증:
+  - `cmake --build build-origin-main-tests --config Release --target zsoda_tests zsoda_embedded_payload_tests`
+  - `cmake --build build-origin-main-tests --config Release --target zsoda_python_autostart_tests zsoda_embedded_payload_tests`
+  - `ctest -C Release -R "zsoda_python_autostart_tests|zsoda_embedded_payload_tests" --output-on-failure`
+  - `zsoda_embedded_payload_tests`: 통과
+  - `zsoda_python_autostart_tests`: 통과
+  - `zsoda_tests`: 기존과 동일하게 SEGFAULT 1건이 남아 있어 별도 정리 대상으로 유지
+- 다음 cleanup slice는 `RemoteInferenceBackend.cpp`에 아직 남아 있는 Windows/non-Windows별 process launch와 health-check 경로를 별도 launcher helper로 분리하는 것이다.
+
+### D255 (2026-03-24)
+- cleanup-first 안정화의 두 번째 slice로 detached remote-service launch, `--port-file` handshake, log-tail 기반 실패 리포트, readiness polling 경로를 `plugin/inference/PythonServiceAutostart.{h,cpp}`로 분리했다.
+- `RemoteInferenceBackend.cpp`는 이제 autostart를 직접 실행하지 않고, `PythonServiceLaunchResult`만 받아 endpoint/state를 갱신하도록 줄였다.
+- 이 과정에서 `ResolveRemoteServiceScriptPath`, preload model 결정, port-file 대기, service log path/log tail 유틸도 launcher helper 쪽으로 옮겨서 backend 책임을 endpoint/state policy 쪽에 더 가깝게 맞췄다.
+- `tests/test_python_autostart.cpp`에 launch helper 조기 실패 경로(스크립트 누락, explicit python unavailable)를 추가해서, 실제 프로세스를 띄우지 않는 범위의 launcher 회귀도 같은 타깃에서 커버하도록 보강했다.
+- 검증:
+  - `cmake --build build-origin-main-tests --config Release --target zsoda_python_autostart_tests zsoda_embedded_payload_tests`
+  - `ctest -C Release -R "zsoda_python_autostart_tests|zsoda_embedded_payload_tests" --output-on-failure`
+  - `cmake --build build-origin-main-tests --config Release --target zsoda_tests`
+  - `ctest -C Release -R "^zsoda_tests$" --output-on-failure`
+  - `cmake --build Y:\\build-origin-main-ae --config Release --target zsoda_aex`
+  - `zsoda_python_autostart_tests`: 통과
+  - `zsoda_embedded_payload_tests`: 통과
+  - `zsoda_aex`: `Y:` 경로 기준 빌드 통과
+  - `zsoda_tests`: 기존과 동일하게 SEGFAULT 1건 유지
+- 다음 cleanup slice는 monolithic `zsoda_tests`를 쪼개거나 crash 원인을 고정해서, cleanup 회귀를 더 작은 타깃으로 신뢰할 수 있게 만드는 것이다.
+
+### D256 (2026-03-24)
+- test 안정화 slice로 monolithic `zsoda_tests`를 `zsoda_core_tests`, `zsoda_ae_params_tests`, `zsoda_ae_router_tests`, `zsoda_inference_tests`, `zsoda_render_tests`로 분리하고, 공통 초기화 코드는 `tests/TestSupport.{h,cpp}`로 모았다.
+- 각 테스트 타깃의 Release 빌드에서 `NDEBUG`를 강제로 끄도록 바꿔, cleanup 중 계약 실패가 assert에서 바로 드러나고 Release-only UB/SEGFAULT로 흘러가지 않게 정리했다.
+- `ZSODA_TEST_TRACE=1`로 `tests/test_ae_router.cpp`를 추적해 `TestParamSetupAndModelMenu()` 구간을 먼저 좁혔고, 실제 원인이 "assert가 사라진 상태에서 계속 진행되며 잘못된 상태를 역참조하는 패턴"임을 확인했다. `zsoda_ae_router_tests`는 현재 통과한다.
+- `plugin/inference/EmbeddedPayload.cpp`에는 Windows에서 1차 cache root 추출이 실패하면 더 짧은 2차 per-user root(`%USERPROFILE%\\ZS`)로 한 번 더 추출을 시도하는 fallback을 넣었다. `tests/test_embedded_payload.cpp`도 긴 `LOCALAPPDATA` + 짧은 `USERPROFILE` 조합을 재현하도록 갱신했다.
+- 검증:
+  - `cmake -S . -B build-origin-main-tests`
+  - `cmake --build build-origin-main-tests --config Release --target zsoda_core_tests zsoda_ae_params_tests zsoda_ae_router_tests zsoda_inference_tests zsoda_render_tests zsoda_python_autostart_tests zsoda_embedded_payload_tests`
+  - `ctest -C Release -R "zsoda_(core|ae_params|ae_router|inference|render|python_autostart|embedded_payload)_tests" --output-on-failure`
+  - `cmake --build Y:\build-origin-main-ae --config Release --target zsoda_aex`
+  - split unit suites: 전부 통과
+  - `zsoda_embedded_payload_tests`: 통과
+  - `zsoda_python_autostart_tests`: 통과
+  - `zsoda_aex`: 통과
+- 다음 cleanup slice는 Windows/macOS 패키징 스크립트와 release validation 규약을 하나의 staging spec으로 더 가깝게 모으는 것이다.
+
+### D257 (2026-03-24)
+- packaging cleanup slice로 Windows/macOS packager가 공통으로 쓰는 stage 규약을 `tools/package_layout.py`로 끌어올리고, `tools/prepare_package_stage.py`가 `.payload-stage`를 만들고 JSON plan을 내보내도록 정리했다.
+- `tools/package_plugin.ps1`와 `tools/package_plugin.sh`는 이제 artifact/source root를 각자 다시 추측하지 않고, shared stage helper가 만든 `artifact_source`, `staged_roots`, `staged_root_paths`를 그대로 사용한다. 즉 `models`, `zsoda_py`, `zsoda_ort`를 무엇을 언제 stage할지에 대한 기준이 한 군데로 모였다.
+- `tools/check_release_readiness.py`도 self-contained root 상수와 bundled Python runtime 후보 규약을 shared helper에서 가져오도록 맞췄다. readiness checker와 packager가 서로 다른 root 계약을 따로 들고 있지 않게 한 것이다.
+- 검증:
+  - `python -m py_compile tools\package_layout.py tools\prepare_package_stage.py tools\check_release_readiness.py`
+  - `python tools\prepare_package_stage.py --platform windows --build-dir Y:\build-origin-main-ae --output-dir artifacts\package-stage-smoke --include-manifest --plan-out artifacts\package-stage-smoke\plan.json`
+  - `python tools\prepare_package_stage.py --platform macos --build-dir artifacts\fake-mac-stage\build-mac --output-dir artifacts\fake-mac-stage\out --python-runtime-dir artifacts\fake-mac-stage\python-macos --model-repo-dir artifacts\fake-mac-stage\models --require-self-contained --plan-out artifacts\fake-mac-stage\out\plan.json`
+  - `powershell -ExecutionPolicy Bypass -File .\tools\package_plugin.ps1 -Platform windows -BuildDir build-origin-main-ae -OutputDir artifacts\package-plugin-smoke -IncludeManifest -PythonRuntimeDir artifacts\fake-package-assets\python-win -ModelRepoDir artifacts\fake-package-assets\models -RequireSelfContained`
+  - shared helper(py_compile): 통과
+  - Windows stage helper smoke: 통과
+  - macOS stage helper smoke(fake bundle 기준): 통과
+  - Windows packager smoke(fake self-contained assets 기준): embedded payload validation까지 통과
+- 다음 cleanup slice는 아직 남아 있는 PowerShell/shell wrapper 중 dead helper를 더 걷어내고, 가능하면 패키징 smoke를 CI성 전용 스크립트로 묶는 것이다.
+
+### D258 (2026-03-25)
+- wrapper cleanup slice로 `tools/package_plugin.ps1`, `tools/package_plugin.sh`에 남아 있던 예전 artifact/stage helper를 걷어내고, 지금은 shared stage plan을 읽는 얇은 wrapper만 남기도록 정리했다.
+- 새 smoke runner `tools/run_packaging_smoke.py`를 추가했다. 이 스크립트는 shared helper py_compile, Windows stage helper smoke, fake mac bundle 기준 stage helper smoke, Windows packager smoke를 한 번에 확인한다.
+- 검증:
+  - `python -m py_compile tools\package_layout.py tools\prepare_package_stage.py tools\check_release_readiness.py tools\run_packaging_smoke.py`
+  - `python tools\run_packaging_smoke.py --windows-build-dir build-origin-main-ae --output-dir artifacts\packaging-smoke`
+  - `run_packaging_smoke.py`: 통과
+  - smoke 산출물: `artifacts\packaging-smoke\windows-package\ZSoda-windows.zip`
+- 현재 기준으로 repo-local 패키징 정리는 여기까지로 보고, 다음은 실제 AE에서 smoke를 보는 단계로 넘길 수 있다. 이 머신에는 `bash`가 없어 `package_plugin.sh` 직접 실행은 못 했지만, shared mac stage helper smoke는 통과했다.
+### D259 (2026-03-25)
+- cleanup 정리 이후 실제 self-contained AE 수동 테스트용 패키지를 다시 생성했다. 기준 빌드는 `build-origin-main-ae`의 최신 `zsoda_aex`이고, 실제 release asset은 `C:\Users\ikidk\Documents\Code\01 Z-Soda\.git-history\release-assets\python-win`, `...\models`를 사용했다.
+- `tools/package_plugin.ps1`를 real asset과 golden mac fixture(`C:\Users\ikidk\Downloads\Telegram Desktop\ZSoda.plugin.zip`) 기준으로 다시 실행해 embedded payload validation까지 통과한 Windows 패키지를 만들었다.
+- 결과물:
+  - `artifacts\ae-manual-test\ZSoda-windows.zip`
+  - `artifacts\ae-manual-test\ZSoda.aex`
+  - 동일 파일을 사용자 작업 레포 `C:\Users\ikidk\Documents\Code\01 Z-Soda\artifacts\ae-manual-test`에도 복사했다.
+- 검증:
+  - `cmake --build build-origin-main-ae --config Release --target zsoda_aex`
+  - `powershell -ExecutionPolicy Bypass -File .\tools\package_plugin.ps1 -Platform windows -BuildDir .\build-origin-main-ae -OutputDir .\artifacts\ae-manual-test -PythonRuntimeDir C:\Users\ikidk\Documents\Code\01 Z-Soda\.git-history\release-assets\python-win -ModelRepoDir C:\Users\ikidk\Documents\Code\01 Z-Soda\.git-history\release-assets\models -RequireSelfContained -GoldenMacFixture C:\Users\ikidk\Downloads\Telegram Desktop\ZSoda.plugin.zip`
+  - `ctest -C Release --output-on-failure` (`build-origin-main-tests`, 9/9 pass)
+- 현재 상태는 AE에서 직접 설치/실행 smoke를 시작해도 되는 handoff 지점이다.
+### D260 (2026-03-25)
+- Windows self-contained가 CPU-only로 돌던 원인을 분리했다. 코어 로직은 이미 `auto -> CUDA if available` 경로였고, 실제 원인은 self-contained에 묶인 `release-assets/python-win`이 `torch==2.10.0+cpu` portable runtime이었다.
+- `tools/build_embedded_payload.py`를 스트리밍 쓰기 방식으로 바꿔, CUDA runtime처럼 훨씬 큰 payload도 메모리 한 번에 올리지 않고 `.aex`에 append하도록 보강했다.
+- `tools/prepare_release_assets.py`에 runtime probe를 추가해 `asset-manifest.json`에 `torch_version`, `cuda_version`, `cuda_available`, `cuda_device_count`를 남기도록 했고, `tools/check_release_readiness.py`도 그 정보를 출력하도록 맞췄다.
+- `tools/distill_any_depth_remote_service.py`는 `/status`와 startup JSON에 runtime 정보를 포함하고, binary depth 응답 헤더에도 `X-ZSoda-Resolved-Device`를 싣도록 보강했다.
+- `C:\Users\ikidk\Documents\Code\01 Z-Soda\.git-history\artifacts\runtime-win-cuda-work`에 official PyTorch CUDA wheel(`torch==2.10.0+cu128`)을 설치해 검증했다.
+  - 검증 결과: `torch.cuda.is_available() == true`, `device_name = NVIDIA GeForce RTX 4070 Ti`, `resolve_device('auto') == 'cuda'`
+- 그 runtime으로 `C:\Users\ikidk\Documents\Code\01 Z-Soda\.git-history\artifacts\release-assets-cuda`를 다시 만들었고, manifest에 `python-win runtime probe: torch 2.10.0+cu128 / cuda 12.8 / cuda_available=true`가 남는 것까지 확인했다.
+- 새 CUDA self-contained 패키지를 생성했다.
+  - `artifacts\ae-manual-test-cuda\ZSoda.aex`
+  - `artifacts\ae-manual-test-cuda\ZSoda-windows.zip`
+  - zip 크기: `3,350,164,293` bytes
+  - `ZSoda.aex` 크기: `5,321,542,432` bytes
+- 같은 패키지를 사용자 작업 레포 `C:\Users\ikidk\Documents\Code\01 Z-Soda\artifacts\ae-manual-test-cuda`에도 복사했고, `C:\Program Files\Adobe\Common\Plug-ins\7.0\MediaCore\ZSoda.aex`도 이 CUDA 패키지로 교체했다.
+- 설치 전 정리:
+  - `HKCU\Software\Adobe\After Effects\26.0\PluginCache\en_US\ZSoda*` 삭제
+  - `C:\Users\ikidk\AppData\Local\ZS` 삭제
+  - `C:\Users\ikidk\AppData\Local\Temp\ZSoda_*.log` 삭제
+- 검증:
+  - `python -m py_compile tools\build_embedded_payload.py tools\prepare_release_assets.py tools\distill_any_depth_remote_service.py tools\check_release_readiness.py`
+  - `python tools\prepare_release_assets.py --output-dir C:\Users\ikidk\Documents\Code\01 Z-Soda\.git-history\artifacts\release-assets-cuda --windows-python-runtime-dir C:\Users\ikidk\Documents\Code\01 Z-Soda\.git-history\artifacts\runtime-win-cuda-work --model-repo-dir C:\Users\ikidk\Documents\Code\01 Z-Soda\.git-history\release-assets\models`
+  - `powershell -ExecutionPolicy Bypass -File .\tools\package_plugin.ps1 -Platform windows -BuildDir .\build-origin-main-ae -OutputDir .\artifacts\ae-manual-test-cuda -PythonRuntimeDir C:\Users\ikidk\Documents\Code\01 Z-Soda\.git-history\artifacts\release-assets-cuda\python-win -ModelRepoDir C:\Users\ikidk\Documents\Code\01 Z-Soda\.git-history\artifacts\release-assets-cuda\models -RequireSelfContained -GoldenMacFixture C:\Users\ikidk\Downloads\Telegram Desktop\ZSoda.plugin.zip`
+- 현재 상태는 CUDA self-contained 설치본으로 AE 재확인 가능한 handoff 지점이다.
+
+### D261 (2026-03-25)
+- Windows release baseline을 다시 `self-contained CPU`로 고정했다. giant CUDA payload는 실험/검증용으로만 남기고, 실제 shipping 후보는 size와 신뢰도를 둘 다 맞추는 쪽으로 되돌렸다.
+- `plugin/inference/EngineFactory.cpp`에서 초기화 실패 시 더 이상 `DummyInferenceEngine`로 갈아타지 않도록 바꿨다. 이제 release build는 backend/setup 실패를 숨기지 않고 `ManagedInferenceEngine` 상태를 그대로 유지한다.
+- `plugin/inference/RuntimeOptions.h`, `plugin/inference/ManagedInferenceEngine.cpp`에 `allow_dummy_fallback=false` 기본값을 두고, backend unavailable 시 dummy gradient를 성공처럼 반환하지 않도록 바꿨다. 상태 문자열도 `BackendUnavailable ...`로 바꿔, 로그와 smoke 결과가 실제 runtime 상태를 더 정직하게 반영한다.
+- `tools/distill_any_depth_remote_service.py`에 `--validate-bundle` / `--validate-device`를 추가했다. 이 경로는 bundled Python으로 실제 local model repo를 한 번 로드하고 JSON status를 출력한 뒤 종료한다.
+- 새 helper `tools/validate_self_contained_runtime.py`를 추가했고, `tools/package_plugin.ps1`, `tools/package_plugin.sh`가 self-contained 패키징 전에 staged runtime을 실제로 검증하도록 묶었다. 이제 packager는 helper script/python/model repo가 “존재하는지”만 보지 않고, `torch + transformers + model load`가 되는지도 확인한다.
+- 이 semantic validation으로 2026-03-15 draft release가 왜 실패했는지도 다시 정리됐다. draft는 embedded payload 구조는 맞았지만, runtime payload에 필요한 Python 패키지가 빠진 상태여서 실제 helper/model load 계약을 만족하지 못했다.
+- 새 release candidate를 CPU self-contained 기준으로 다시 생성했다.
+  - `artifacts\release-self-contained-hardened\ZSoda.aex`
+  - `artifacts\release-self-contained-hardened\ZSoda-windows.zip`
+  - 동일 산출물을 사용자 작업 레포 `C:\Users\ikidk\Documents\Code\01 Z-Soda\artifacts\release-self-contained-hardened\`에도 복사했다.
+- 산출물 크기
+  - `ZSoda.aex`: `1,220,119,372` bytes
+  - `ZSoda-windows.zip`: `596,877,506` bytes
+- 산출물 SHA256
+  - `ZSoda.aex`: `9d44a478bc82b9af3bd84753d612b4a60a430198c40d2730cded6e38783ded13`
+  - `ZSoda-windows.zip`: `34c1be1fce21db344b8f37ded71ebc379e5bd832e74ddf8a1214e084a31c7967`
+- 검증
+  - `python -m py_compile tools\distill_any_depth_remote_service.py tools\validate_self_contained_runtime.py tools\package_layout.py tools\prepare_package_stage.py tools\check_release_readiness.py tools\build_embedded_payload.py tools\prepare_release_assets.py`
+  - `cmake --build build-origin-main-tests --config Release --target zsoda_inference_tests zsoda_embedded_payload_tests zsoda_python_autostart_tests`
+  - `ctest -C Release -R "zsoda_inference_tests|zsoda_embedded_payload_tests|zsoda_python_autostart_tests" --output-on-failure`
+  - `cmake --build build-origin-main-ae --config Release --target zsoda_aex`
+  - `powershell -ExecutionPolicy Bypass -File .\tools\package_plugin.ps1 -Platform windows -BuildDir .\build-origin-main-ae -OutputDir .\artifacts\release-self-contained-hardened -PythonRuntimeDir C:\Users\ikidk\Documents\Code\01 Z-Soda\.git-history\release-assets\python-win -ModelRepoDir C:\Users\ikidk\Documents\Code\01 Z-Soda\.git-history\release-assets\models -RequireSelfContained -GoldenMacFixture C:\Users\ikidk\Downloads\Telegram Desktop\ZSoda.plugin.zip`
+  - `ctest -C Release --output-on-failure` (`build-origin-main-tests`, 9/9 pass)
+- 현재 상태는 “배포 가능한 self-contained baseline”을 다시 확보한 지점이다. 다만 GPU + 1GB 안팎 요구를 동시에 만족하는 최종 Windows shipping 경로는 여전히 native ORT/DirectML(or ORT sidecar) 복원 쪽이 더 유망하다.
+### D262 (2026-03-25)
+- Windows 최종 방향을 `native ORT sidecar + GPU`로 다시 고정하고, `distill-any-depth*` 모델이라는 이유만으로 remote backend를 기본값으로 강제하던 정책을 걷어냈다.
+- `plugin/inference/EngineFactory.cpp`는 이제 remote를 명시적으로 요청했을 때만 `preferred_backend=remote`로 잠그고, remote endpoint/script/autostart가 있더라도 기본은 `auto -> ORT 우선`으로 유지한다.
+- `plugin/inference/ManagedInferenceEngine.{h,cpp}`는 ORT 우선/remote fallback 순서로 backend를 구성하도록 정리했다. `remote_inference_enabled`는 primary 선택자가 아니라 fallback/dev 허용 신호로만 쓰고, local model asset 누락 진단은 explicit remote가 아닐 때 계속 surface되도록 맞췄다.
+- inference 회귀 테스트를 보강했다.
+  - `tests/test_inference_engine.cpp`
+  - `CreateDefaultEngine()`가 remote fallback이 켜져 있어도 `requested_backend=auto`를 유지하는지
+  - explicit remote가 아닐 때 missing local ONNX asset 진단이 계속 보이는지
+  - explicit remote일 때만 local asset 누락을 무시하는지
+- Windows packager에 `sidecar-ort` package mode를 연결했다.
+  - shared stage helper가 `models/` 전체와 `zsoda_ort/`를 sidecar root로 stage
+  - `tools/package_plugin.ps1`, `tools/package_plugin.sh`는 Windows에서 `.aex` 옆에 `models/`, `zsoda_ort/`를 복사하고 zip에도 같이 넣는다
+  - `.aex` embed는 `embedded-windows` mode에서만 유지된다
+- `tools/run_packaging_smoke.py`를 확장해서 `sidecar-ort` smoke를 실제로 돌리게 했다.
+  - fake ONNX model + fake `onnxruntime.dll`로 `windows-sidecar-package/ZSoda-windows.zip` 생성
+  - zip 안에 `ZSoda.aex`, `models/models.manifest`, `models/distill-any-depth/distill_any_depth_base.onnx`, `zsoda_ort/onnxruntime.dll`가 들어가는 것까지 검사한다
+- 실측 결과를 정리했다.
+  - official `onnxruntime-gpu==1.24.2` wheel: 약 `207.1 MB`
+  - official `onnxruntime-directml==1.24.2` wheel: 약 `25.0 MB`
+  - `onnxruntime_providers_cuda.dll` 자체는 unzip 기준 `312,606,240` bytes
+  - CUDA EP가 직접 요구하는 DLL은 `cublasLt64_12.dll`, `cublas64_12.dll`, `cufft64_11.dll`, `cudart64_12.dll`, `cudnn64_9.dll`
+  - 이전 CUDA PyTorch runtime에서 같은 이름 subset만 봐도 `cublasLt64_12.dll` 674MB, `cublas64_12.dll` 113MB, `cufft64_11.dll` 276MB, `cudnn` 계열 추가 DLL들이 수백 MB라서, NVIDIA용 self-contained sidecar도 자칫하면 다시 1GB를 크게 넘길 수 있다는 점을 확인했다
+- 검증
+  - `cmake --build build-origin-main-tests --config Release --target zsoda_inference_tests zsoda_core_tests`
+  - `ctest -C Release -R "zsoda_inference_tests|zsoda_core_tests" --output-on-failure`
+  - `cmake --build build-origin-main-ae --config Release --target zsoda_aex`
+  - `python -m py_compile tools\run_packaging_smoke.py tools\package_layout.py tools\prepare_package_stage.py`
+  - `python tools\run_packaging_smoke.py --windows-build-dir build-origin-main-ae --output-dir artifacts\packaging-smoke-sidecar`
+- 현재 결론
+  - ORT-first + sidecar packaging 레일은 코드/테스트/smoke 기준으로 정리됐다
+  - 남은 실제 blocker는 `real ORT GPU runtime asset`과 `real ONNX model asset` 확보
+  - 특히 NVIDIA self-contained 크기가 다시 커질 가능성이 높아서, 다음 단계는 ONNX export 실현 가능성과 CUDA vs DirectML shipping split를 실제 자산 기준으로 판단하는 것이다
+### D263 (2026-03-25)
+- 실자산 blocker 중 하나였던 `real ONNX model asset` 쪽을 실제로 뚫었다. 현재 workspace에 남아 있던 local HF snapshot(`C:\Users\ikidk\Documents\Code\01 Z-Soda\.git-history\release-assets\models\distill-any-depth-base`)을 portable Python runtime으로 로드해 `DepthAnythingForDepthEstimation` 모델이 정상 생성되는 것을 먼저 확인했다.
+- ONNX export를 일회성 실험이 아니라 반복 가능한 도구로 고정하기 위해 `tools/export_depth_model_onnx.py`를 추가했다.
+  - 입력: local HF snapshot directory
+  - 출력: `.onnx`
+  - export: `torch.onnx.export(..., dynamo=False)`
+  - 선택적 검증: `onnx.checker` + `onnxruntime` CPU smoke session
+- portable runtime에 export용 최소 의존성도 보강했다.
+  - `onnx`
+  - `onnxscript`
+  - `onnxruntime` (CPU smoke validation용)
+- 실제 export/검증 결과
+  - 출력 파일: `artifacts\ort-export-probe\distill_any_depth_base.from-script.onnx`
+  - 크기: `388,981,138` bytes
+  - ORT CPU smoke:
+    - input: `pixel_values ['batch', 3, 'height', 'width']`
+    - output: `predicted_depth [1, 378, 378] float32`
+    - range: 약 `3.37 .. 7.77`
+- 동시에 NVIDIA runtime budget도 실측했다.
+  - official `onnxruntime-gpu==1.24.2` wheel 자체는 약 `207.1 MB`
+  - unzip 기준 `onnxruntime_providers_cuda.dll`는 `312,606,240` bytes
+  - import chain상 직접 필요한 DLL은 `cublasLt64_12.dll`, `cublas64_12.dll`, `cufft64_11.dll`, `cudart64_12.dll`, `cudnn64_9.dll`
+  - 기존 PyTorch CUDA runtime에서 같은 이름 subset만 봐도 이미 1GB를 크게 넘기기 때문에, “CUDA self-contained sidecar도 자연스럽게 1GB 안쪽일 것”이라는 가정은 성립하지 않는다는 점을 확인했다
+- 검증
+  - `python -m py_compile tools\export_depth_model_onnx.py`
+  - `C:\Users\ikidk\Documents\Code\01 Z-Soda\.git-history\release-assets\python-win\python.exe tools\export_depth_model_onnx.py --model-dir C:\Users\ikidk\Documents\Code\01 Z-Soda\.git-history\release-assets\models\distill-any-depth-base --output-path artifacts\ort-export-probe\distill_any_depth_base.from-script.onnx --input-size 384 --opset 17 --validate-ort --overwrite`
+- 현재 상태 요약
+  - `real ONNX model asset`: 확보 가능성이 확인됐고, 자동화 스크립트까지 생겼다
+  - `real ORT GPU runtime asset`: 여전히 남아 있는 blocker
+  - 따라서 다음 단계는 exported ONNX를 repo-sidecar contract에 맞게 정식 staging하고, Windows GPU shipping은 `CUDA 유지 vs DirectML split`를 크기/UX 기준으로 결정하는 것이다
+### D264 (2026-03-25)
+- Windows 최종 방향을 `native ONNX Runtime sidecar`로 고정하고, 실제 DirectML 자산으로 돌아가는 첫 패키지까지 만들었다.
+- `tools/prepare_ort_sidecar_release.py`를 추가해서 실제 ONNX 모델과 실제 ORT/DirectML DLL을 슬림 sidecar 자산 디렉터리로 재구성할 수 있게 했다.
+  - 입력 ONNX: `artifacts/ort-export-probe/distill_any_depth_base.from-script.onnx`
+  - 입력 런타임: `artifacts/ort-wheel-probe/extracted-directml-wheel`
+  - 출력 자산: `artifacts/ort-sidecar-directml-assets`
+- sidecar ORT 패키징 검증도 강화했다.
+  - `tools/package_layout.py`: `zsoda_ort/onnxruntime_providers_shared.dll`까지 필수로 검증
+  - `tools/run_packaging_smoke.py`: Windows sidecar zip smoke가 `onnxruntime_providers_shared.dll`까지 확인
+  - `tools/build_aex.ps1`: ORT 번들 DLL 수집에 `DirectML.dll`을 포함
+- 공식 ORT 헤더는 `artifacts/ort-source-v1.24.2`에 shallow clone으로 가져와서, Windows AE 빌드를 `ORT API enabled + direct-link OFF`로 실제 성공시켰다.
+  - 빌드 산출물: `build-origin-main-ae-ort-dml/plugin/Release/ZSoda.aex`
+  - staged runtime: `build-origin-main-ae-ort-dml/plugin/Release/zsoda_ort/{onnxruntime.dll, onnxruntime_providers_shared.dll, DirectML.dll}`
+- 실제 Windows DirectML sidecar 패키지를 생성했다.
+  - baseline output: `artifacts/ort-sidecar-directml-package/ZSoda-windows.zip`
+  - 사용자용 복사본: `C:\Users\ikidk\Documents\Code\01 Z-Soda\artifacts\12_ort-sidecar-directml-manual-test\ZSoda-windows.zip`
+  - 함께 들어가는 구성:
+    - `ZSoda.aex`
+    - `models/distill-any-depth/distill_any_depth_base.onnx`
+    - `zsoda_ort/onnxruntime.dll`
+    - `zsoda_ort/onnxruntime_providers_shared.dll`
+    - `zsoda_ort/DirectML.dll`
+- 현재 패키지 크기
+  - `ZSoda.aex`: `1,938,432` bytes
+  - `ZSoda-windows.zip`: `377,689,897` bytes
+  - runtime DLL 총합(DirectML sidecar): 약 `39.6 MB`
+  - ONNX 모델: 약 `389.0 MB`
+- 검증
+  - `python -m py_compile tools\prepare_ort_sidecar_release.py tools\run_packaging_smoke.py tools\package_layout.py`
+  - `python tools\run_packaging_smoke.py --windows-build-dir build-origin-main-ae --output-dir artifacts\packaging-smoke-sidecar-v2`
+  - `powershell -ExecutionPolicy Bypass -File .\tools\build_aex.ps1 -AeSdkIncludeDir C:\Users\ikidk\Downloads\AfterEffectsSDK_25.6_61_win\ae25.6_61.64bit.AfterEffectsSDK\Examples\Headers -OrtIncludeDir Y:\artifacts\ort-source-v1.24.2\include -OrtLibrary Y:\artifacts\ort-wheel-probe\extracted-directml-wheel\onnxruntime.dll -OrtRuntimeDllPath Y:\artifacts\ort-wheel-probe\extracted-directml-wheel\onnxruntime.dll -EnableOrtApi -RequireOrtRuntimeDll -OrtDirectLinkMode OFF -BuildDir Y:\build-origin-main-ae-ort-dml -Config Release`
+  - `powershell -ExecutionPolicy Bypass -File .\tools\package_plugin.ps1 -BuildDir Y:\build-origin-main-ae-ort-dml -Platform windows -PackageMode sidecar-ort -ModelRootDir Y:\artifacts\ort-sidecar-directml-assets\models -OrtRuntimeDllPath Y:\artifacts\ort-sidecar-directml-assets\zsoda_ort\onnxruntime.dll -OutputDir Y:\artifacts\ort-sidecar-directml-package -RequireSelfContained -RequireOrtRuntimeDll`
+- 추가 메모
+  - 현재 sidecar 패키지는 `distill-any-depth-base` ONNX만 포함한다. UI 상 small/large 항목은 아직 남아 있을 수 있으므로, 다음 단계에서는 ONNX export 범위를 늘리거나 manifest/모델 노출 정책을 정리해야 한다.
+  - `tools/build_aex.ps1`는 direct-link OFF에서도 `OrtLibrary` 인자를 같이 요구한다. 실제 CMake는 헤더만으로도 빌드 가능하므로, 다음 정리에서는 wrapper 조건도 간결하게 줄이는 것이 맞다.
+### D265 (2026-03-26)
+- Windows ORT sidecar 패키징 계약을 `MediaCore\\Z-Soda\\...` 폴더형으로 고정했다.
+  - `tools/package_layout.py`에 Windows sidecar 전용 `package_root_dir_name = "Z-Soda"`를 추가했다.
+  - `tools/package_plugin.ps1`, `tools/package_plugin.sh`가 이제 `ZSoda.aex`, `models/`, `zsoda_ort/`를 zip 루트가 아니라 `Z-Soda/` 아래에 배치한다.
+  - `tests/test_runtime_path_resolver.cpp`에 `MediaCore\\Z-Soda` 인접 자산이 `MediaCore\\models`보다 우선되는 회귀 테스트를 추가했다.
+- sidecar packaging smoke를 강화했다.
+  - `tools/run_packaging_smoke.py`가 `package_root_dir_name == "Z-Soda"` 계약을 직접 확인한다.
+  - zip 안에 `Z-Soda/...`가 존재해야 하고, 예전 flat root(`ZSoda.aex`, `models/...`, `zsoda_ort/...`)가 남아 있으면 실패하도록 바꿨다.
+  - optional runtime 파일 `DirectML.dll`도 smoke에서 같이 검증한다.
+- `distill-any-depth-base` ONNX export의 본질 원인을 잡고 export 경로를 수정했다.
+  - 원인: legacy ONNX export 중 `DepthAnythingDepthEstimationHead.forward()`의 `int(patch_height * patch_size)` / `int(patch_width * patch_size)`가 상수로 굳어져 출력 shape가 고정됐다.
+  - 대응: `tools/export_depth_model_onnx.py`에서 export 시점에만 head를 monkeypatch해서 `size=(patch_height * patch_size, patch_width * patch_size)`를 그대로 trace하게 만들었다.
+  - export 검증을 다중 shape(정사각/비정사각) ORT smoke로 강화해서, 출력 shape가 계속 같으면 export 단계에서 바로 실패하도록 했다.
+- `plugin/inference/OnnxRuntimeBackend.cpp`도 `distill-any-depth*`를 518 기반 dynamic profile로 다루도록 수정했다.
+  - `use_upper_bound_dynamic_aspect = true`
+  - `patch_multiple = 14`
+  - ImageNet mean/std 사용
+  - quality 값이 실제 `process_res`로 연결되도록 `ResolveDynamicProcessResolution()` 경로로 일반화했다.
+- 새 dynamic ONNX와 새 폴더형 패키지를 다시 생성했다.
+  - ONNX: `artifacts/ort-export-probe/distill_any_depth_base.from-script.onnx`
+  - baseline package: `artifacts/ort-sidecar-directml-folder-package-dynamic/ZSoda-windows.zip`
+  - user-facing copy: `C:\\Users\\ikidk\\Documents\\Code\\01 Z-Soda\\artifacts\\14_ort-sidecar-dynamic-quality-manual-test\\ZSoda-windows.zip`
+  - zip SHA256: `0e96bf8baf29be54f294bea68accceae34faaf5d3195bbb4cc1281af8469f694`
+- 검증
+  - `python -m py_compile tools\\package_layout.py tools\\prepare_package_stage.py tools\\run_packaging_smoke.py tools\\export_depth_model_onnx.py`
+  - `cmake --build build-origin-main-tests --config Release --target zsoda_core_tests zsoda_inference_tests`
+  - `ctest -C Release -R "zsoda_core_tests|zsoda_inference_tests" --output-on-failure`
+  - `python tools\\run_packaging_smoke.py --windows-build-dir build-origin-main-ae --output-dir artifacts\\packaging-smoke-sidecar-folder`
+  - `C:\\Users\\ikidk\\Documents\\Code\\01 Z-Soda\\.git-history\\release-assets\\python-win\\python.exe tools\\export_depth_model_onnx.py --model-dir C:\\Users\\ikidk\\Documents\\Code\\01 Z-Soda\\.git-history\\release-assets\\models\\distill-any-depth-base --output-path artifacts\\ort-export-probe\\distill_any_depth_base.from-script.onnx --input-size 518 --opset 17 --validate-ort --overwrite`
+  - `cmake --build build-origin-main-ae-ort-dml --config Release --target zsoda_aex`
+  - `python tools\\prepare_ort_sidecar_release.py --onnx-model-path artifacts\\ort-export-probe\\distill_any_depth_base.from-script.onnx --ort-runtime-dir Y:\\artifacts\\ort-sidecar-directml-assets\\zsoda_ort --output-dir artifacts\\ort-sidecar-directml-assets-dynamic --overwrite`
+  - `powershell -ExecutionPolicy Bypass -File .\\tools\\package_plugin.ps1 -BuildDir Y:\\build-origin-main-ae-ort-dml -Platform windows -PackageMode sidecar-ort -ModelRootDir artifacts\\ort-sidecar-directml-assets-dynamic\\models -OrtRuntimeDllPath artifacts\\ort-sidecar-directml-assets-dynamic\\zsoda_ort\\onnxruntime.dll -OutputDir artifacts\\ort-sidecar-directml-folder-package-dynamic -RequireSelfContained -RequireOrtRuntimeDll`
+
+### D266 (2026-03-26)
+- 커밋 준비용 hygiene 정리를 진행했다.
+  - `.gitignore`에 `artifacts/*` 기본 무시 규칙을 추가해서 생성 산출물이 작업트리를 계속 더럽히지 않게 했다.
+  - `artifacts/windows/README.md`만 예외로 유지해 기존 추적 파일은 계속 살아 있게 했다.
+- 현재 방향과 맞지 않던 문서를 ORT sidecar 기준으로 정리했다.
+  - `docs/build/LOCAL_AGENT_HANDOFF.md`를 Windows `Z-Soda/` 폴더형 배포 기준으로 전면 갱신했다.
+  - `docs/build/AE_SMOKE_TEST.md`의 설치 전제 조건을 `Z-Soda/ZSoda.aex + models + zsoda_ort` 기준으로 수정했다.
+  - `tools/collect_ae_loader_diagnostics.ps1`의 기본 검사 경로도 `MediaCore\\Z-Soda\\ZSoda.aex`를 우선 보도록 바꿨다.
+- 결과적으로 현재 `git status`에는 코드/테스트/문서/도구 변경만 남고, 생성된 `artifacts/` 디렉터리들은 ignored 상태로 빠진다.
+
+### D267 (2026-03-26)
+- macOS 쪽 작업 이관을 위해 [docs/build/MAC_AGENT_HANDOFF.md](docs/build/MAC_AGENT_HANDOFF.md)를 추가했다.
+  - 공용 코어는 그대로 유지하고
+  - macOS에서는 `.plugin` bundle + `Contents/Resources/models` + `Contents/Resources/zsoda_ort` 기준으로 이어받도록 정리했다.
+  - 우선순위를 `ORT CPU bring-up -> CoreML provider 검증 -> AE smoke` 순서로 고정했다.
+- [docs/build/README.md](docs/build/README.md)에 mac handoff 링크를 추가해서 build docs에서 바로 찾을 수 있게 했다.
+- 현재 브랜치는 커밋/푸시 준비를 마친 상태이며, 다음 단계는 staged 변경을 하나의 브랜치 업데이트로 커밋하고 origin에 푸시하는 것이다.

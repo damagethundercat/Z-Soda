@@ -34,6 +34,7 @@ shipping `Z-Soda` After Effects effect.
 - [prepare_release_assets.py](../../tools/prepare_release_assets.py)
 - [package_plugin.ps1](../../tools/package_plugin.ps1)
 - [package_plugin.sh](../../tools/package_plugin.sh)
+- [MAC_AGENT_HANDOFF.md](MAC_AGENT_HANDOFF.md)
 
 ## Windows Prerequisites
 
@@ -101,15 +102,24 @@ Shell variant:
 bash tools/package_plugin.sh --platform windows --build-dir build-win --output-dir dist --include-manifest
 ```
 
-The Windows package should contain:
+The Windows packager supports two layouts:
 
-- `ZSoda.aex`
-- `ZSoda-windows.zip` and `ZSoda-windows.zip.sha256` for redistribution
-- When present at package time, `models\`, `zsoda_py\`, and `zsoda_ort\` are
-  embedded into `ZSoda.aex` rather than staged as sidecar folders.
-- On first load the plug-in extracts the embedded payload into
-  `%LOCALAPPDATA%\ZSoda\PayloadCache\<sha256>\...`.
-- For a true zero-install release, package with:
+- `embedded-windows`
+  - single-file `ZSoda.aex`
+  - optional `models\`, `zsoda_py\`, and `zsoda_ort\` are embedded into the
+    `.aex`
+  - cold start extracts into `%LOCALAPPDATA%\ZSoda\PayloadCache\<sha256>\...`
+- `sidecar-ort`
+  - the zip contains one top-level `Z-Soda\` folder
+  - that folder contains `ZSoda.aex`, `models\`, and `zsoda_ort\`
+  - install by copying the whole `Z-Soda\` folder into MediaCore
+
+The embedded Windows packager validates the payload before creating the final
+zip. It checks that `ZSoda.aex` contains `models/hf/...`,
+`zsoda_py/distill_any_depth_remote_service.py`, and a bundled Python runtime
+under `zsoda_py/`.
+
+For a true zero-install embedded release, package with:
 
 ```powershell
 .\tools\package_plugin.ps1 `
@@ -164,7 +174,7 @@ Expected packaged bundle:
 - The release zip exposes a single `.plugin` bundle to the user.
 - For a true zero-install release, supply:
   - `release-assets/models/<model_id>/...` local HF repo snapshots
-  - `release-assets/python-macos/...` portable Python runtime
+- `release-assets/python-macos/...` portable Python runtime
 - If `release-assets/` exists, the packager auto-detects it and `build_plugin_macos.sh`
   can stay on the shorter `--require-self-contained` form.
 - Those inputs are staged as:
@@ -174,12 +184,13 @@ Expected packaged bundle:
 ## Runtime Notes
 
 - The plugin no longer depends on old DA3 service scripts for normal operation.
-- The preferred production runtime path is the local Python service payload under
-  `zsoda_py\`.
-- `zsoda_ort\` is optional and only present when the build explicitly includes
-  ONNX Runtime.
-- Windows release packaging now embeds runtime payload directories into the
-  `.aex` itself so distribution can stay single-file from the user's point of view.
+- The Windows target runtime path is now the native ORT sidecar under
+  `Z-Soda\zsoda_ort\` plus ONNX models under `Z-Soda\models\`.
+- The local Python service payload under `zsoda_py\` remains available for
+  self-contained/dev fallback, but it is no longer the preferred Windows
+  shipping path.
+- `Z-Soda\ZSoda.aex`, `Z-Soda\models\`, and `Z-Soda\zsoda_ort\` must stay
+  adjacent when testing the Windows ORT sidecar package.
 - The helper now prefers bundled local HF repos under `models/hf/<model_id>/`
   before falling back to remote Hugging Face repo names.
 - `%TEMP%\ZSoda_AE_Runtime.log` is failure-focused by default.
@@ -191,7 +202,7 @@ Expected packaged bundle:
 ## Smoke Checklist
 
 1. Build succeeds without loader signature warnings.
-2. `ZSoda.aex` is copied into MediaCore.
+2. For sidecar Windows packages, the `Z-Soda\` folder is copied into MediaCore.
 3. After Effects shows `Z-Soda` in the effect list.
 4. New instances expose `Quality`, `Preserve Ratio`, `Output`, `Color Map`,
    `Slice Mode`, `Position (%)`, `Range (%)`, and `Soft Border (%)`.

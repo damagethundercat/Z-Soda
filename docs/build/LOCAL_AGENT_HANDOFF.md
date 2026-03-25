@@ -1,25 +1,31 @@
 # Windows Release Handoff
 
-This document is the current handoff note for the Windows agent that will
-produce the shipping `.aex` package after the macOS bring-up work.
+This document describes the current Windows shipping target for Z-Soda.
 
-The intended end-user flow is fixed:
+## Shipping Contract
 
-1. user downloads a zip
-2. user sees `ZSoda.plugin` or `ZSoda.aex`
-3. user copies that single plug-in file into the AE plug-in folder
-4. user launches After Effects
-5. depth inference works immediately
+The intended user flow is now:
 
-That means Windows release work must preserve the single-file `.aex` UX.
+1. download `ZSoda-windows.zip`
+2. unzip it
+3. copy the single `Z-Soda/` folder into MediaCore
+4. launch After Effects
+5. use the effect immediately
+
+The Windows package should not require a separate installer or first-run model
+download for the current release path.
 
 ## Current Product Baseline
 
 - Public effect name: `Z-Soda`
 - Match name: `Z-Soda Depth Slice`
 - Production model: `distill-any-depth-base`
-- Runtime path: local Python remote service
-- Transport: binary localhost HTTP
+- Windows target runtime: native ONNX Runtime sidecar
+- Sidecar layout:
+  - `Z-Soda/ZSoda.aex`
+  - `Z-Soda/models/`
+  - `Z-Soda/zsoda_ort/`
+- Python remote service: dev/fallback only while ORT parity work remains
 - Public controls:
   - `Quality`
   - `Preserve Ratio`
@@ -32,212 +38,144 @@ That means Windows release work must preserve the single-file `.aex` UX.
 
 ## What Is Already Done
 
-### Cross-platform packaging/runtime
+### Windows packaging/runtime
 
-- Windows packaging is now single-file from the user's point of view.
-  - `models/`, `zsoda_py/`, and optional `zsoda_ort/` are embedded into
-    `ZSoda.aex` instead of being shipped as sidecar folders.
-  - On first load the plug-in extracts those payloads into
-    `%LOCALAPPDATA%\ZSoda\PayloadCache\<sha256>\...`.
-- Embedded payload extraction/runtime discovery is implemented in:
-  - [plugin/inference/EmbeddedPayload.cpp](../../plugin/inference/EmbeddedPayload.cpp)
-  - [plugin/inference/EmbeddedPayload.h](../../plugin/inference/EmbeddedPayload.h)
-  - [plugin/inference/EngineFactory.cpp](../../plugin/inference/EngineFactory.cpp)
-  - [plugin/inference/RuntimePathResolver.cpp](../../plugin/inference/RuntimePathResolver.cpp)
-  - [plugin/inference/RemoteInferenceBackend.cpp](../../plugin/inference/RemoteInferenceBackend.cpp)
-- Packaging helpers support self-contained release inputs:
-  - [tools/package_plugin.ps1](../../tools/package_plugin.ps1)
-  - [tools/package_plugin.sh](../../tools/package_plugin.sh)
-  - [tools/build_embedded_payload.py](../../tools/build_embedded_payload.py)
-  - [tools/prepare_release_assets.py](../../tools/prepare_release_assets.py)
-  - [tools/check_release_readiness.py](../../tools/check_release_readiness.py)
+- Windows sidecar packaging now emits a top-level `Z-Soda/` folder.
+- Runtime resolution prefers plugin-adjacent `models/` and `zsoda_ort/`.
+- Packaging smoke now asserts:
+  - `Z-Soda/ZSoda.aex` exists in the zip
+  - `Z-Soda/models/...` exists
+  - `Z-Soda/zsoda_ort/...` exists
+  - old flat-root sidecar entries do not exist
+- `distill-any-depth-base` ONNX export is now validated across multiple input
+  shapes so fixed-output exports fail during packaging work instead of surfacing
+  later in AE smoke.
 
-### macOS status
+### Current real package
 
-- The macOS `.plugin` path is already working end-to-end.
-- A real self-contained mac bundle was built with:
-  - bundled Python runtime
-  - bundled local `distill-any-depth-base` HF snapshot
-  - helper preload on `mps`
-  - successful `/zsoda/depth` smoke response
-- This is important because the release contract is now validated on one OS.
+The current manual-test package is:
 
-## What Is Still Missing For Windows
+- `C:\Users\ikidk\Documents\Code\01 Z-Soda\artifacts\14_ort-sidecar-dynamic-quality-manual-test\ZSoda-windows.zip`
 
-The repository packaging state after the mac work is effectively `5/8`:
+That zip expands to:
 
-- present:
-  - mac build
-  - mac package
-  - `release-assets` manifest path/tooling
-  - local model repo layout
-  - mac portable runtime layout
-- missing:
-  - `release-assets/python-win`
-  - `build-win/plugin/Release/ZSoda.aex`
-  - `dist/ZSoda-windows.zip`
-
-The Windows agent should treat those three items as the immediate blockers.
+- `Z-Soda/ZSoda.aex`
+- `Z-Soda/models/distill-any-depth/distill_any_depth_base.onnx`
+- `Z-Soda/zsoda_ort/onnxruntime.dll`
+- `Z-Soda/zsoda_ort/onnxruntime_providers_shared.dll`
+- `Z-Soda/zsoda_ort/DirectML.dll`
 
 ## Important Scripts
 
 - [tools/build_aex.ps1](../../tools/build_aex.ps1)
 - [tools/package_plugin.ps1](../../tools/package_plugin.ps1)
-- [tools/distill_any_depth_remote_service.py](../../tools/distill_any_depth_remote_service.py)
-- [tools/prepare_release_assets.py](../../tools/prepare_release_assets.py)
-- [tools/check_release_readiness.py](../../tools/check_release_readiness.py)
+- [tools/package_plugin.sh](../../tools/package_plugin.sh)
+- [tools/package_layout.py](../../tools/package_layout.py)
+- [tools/prepare_package_stage.py](../../tools/prepare_package_stage.py)
+- [tools/prepare_ort_sidecar_release.py](../../tools/prepare_ort_sidecar_release.py)
+- [tools/export_depth_model_onnx.py](../../tools/export_depth_model_onnx.py)
+- [tools/run_packaging_smoke.py](../../tools/run_packaging_smoke.py)
 - [docs/build/README.md](README.md)
-- [docs/build/RELEASE_ASSETS.md](RELEASE_ASSETS.md)
 - [docs/build/AE_SMOKE_TEST.md](AE_SMOKE_TEST.md)
 
 ## Required Windows Deliverables
 
-### 1. Prepare a portable Windows runtime
+### 1. Build the ORT-enabled `.aex`
 
-Stage a relocatable Python runtime under:
-
-- `release-assets/python-win/python.exe`
-  or
-- `release-assets/python-win/python/python.exe`
-
-That runtime must include the packages needed by
-[tools/distill_any_depth_remote_service.py](../../tools/distill_any_depth_remote_service.py):
-
-- `torch`
-- `transformers`
-- `Pillow`
-- `huggingface_hub`
-
-The runtime must be shippable inside the embedded `.aex` payload. Do not rely
-on a system Python installation.
-
-### 2. Reuse the same model layout
-
-The shipping model stays fixed to `distill-any-depth-base`.
-
-Required layout:
-
-```text
-release-assets/
-  models/
-    distill-any-depth-base/
-      config.json
-      model.safetensors
-      preprocessor_config.json
-      ...
-```
-
-The helper already prefers bundled local HF repos under `models/hf/<model_id>/`
-after packaging. Do not switch back to remote-only first-run download as the
-primary release path.
-
-### 3. Produce the real Release `.aex`
-
-Example build flow:
+Example:
 
 ```powershell
-$env:AE_SDK_ROOT = "C:\SDKs\AdobeAfterEffectsSDK"
-$env:AE_HEADERS = "$env:AE_SDK_ROOT\Examples\Headers"
-
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build_aex.ps1 `
   -AeSdkIncludeDir "$env:AE_HEADERS" `
-  -BuildDir "build-win" `
+  -OrtIncludeDir "<onnxruntime include dir>" `
+  -OrtLibrary "<onnxruntime import lib or dll path>" `
+  -OrtRuntimeDllPath "<onnxruntime.dll path>" `
+  -EnableOrtApi `
+  -OrtDirectLinkMode OFF `
+  -BuildDir "build-origin-main-ae-ort-dml" `
   -Config Release
 ```
 
-Expected outputs:
+### 2. Prepare the native sidecar assets
 
-- `build-win\plugin\Release\ZSoda.aex`
-- `build-win\plugin\Release\ZSoda.pdb`
-- `build-win\plugin\Release\ZSoda.map`
+Example:
 
-### 4. Produce the self-contained Windows zip
+```powershell
+python .\tools\prepare_ort_sidecar_release.py `
+  --onnx-model-path artifacts\ort-export-probe\distill_any_depth_base.from-script.onnx `
+  --ort-runtime-dir artifacts\ort-sidecar-directml-assets\zsoda_ort `
+  --output-dir artifacts\ort-sidecar-directml-assets-dynamic `
+  --overwrite
+```
+
+### 3. Package the Windows zip
 
 ```powershell
 .\tools\package_plugin.ps1 `
   -Platform windows `
-  -BuildDir build-win `
+  -PackageMode sidecar-ort `
+  -BuildDir build-origin-main-ae-ort-dml `
+  -ModelRootDir artifacts\ort-sidecar-directml-assets-dynamic\models `
+  -OrtRuntimeDllPath artifacts\ort-sidecar-directml-assets-dynamic\zsoda_ort\onnxruntime.dll `
   -OutputDir dist `
-  -IncludeManifest `
-  -RequireSelfContained
+  -RequireSelfContained `
+  -RequireOrtRuntimeDll
 ```
 
 Expected outputs:
 
-- `dist\ZSoda.aex`
+- `dist\Z-Soda\ZSoda.aex`
+- `dist\Z-Soda\models\...`
+- `dist\Z-Soda\zsoda_ort\...`
 - `dist\ZSoda-windows.zip`
 - `dist\ZSoda-windows.zip.sha256`
 
-The zip should expose a single `ZSoda.aex` file to the user.
-
 ## Runtime Expectations
 
-- The plug-in should auto-start the bundled DistillAnyDepth helper when needed.
-- The helper should prefer bundled Python/runtime before any system Python.
-- The helper should prefer bundled local HF repo snapshots before remote model
-  names.
-- AE should not expose legacy controls such as `Normalize`, `Absolute Depth`,
-  `Minimum`, `Maximum`, `Time Consistency`, or visible model selectors.
-- `zsoda_ort\` may be absent in the default DAD-only production build.
-- Detailed runtime tracing remains opt-in through `ZSODA_AE_TRACE=1`.
+- `Quality` changes must alter actual process resolution.
+- `distill-any-depth-base` ONNX exports must remain dynamically shaped.
+- Windows ORT sidecar is the preferred shipping path.
+- Python remote service should not be treated as the default user-facing path.
+- No dummy-engine success masking in release behavior.
 
 ## Windows Smoke Test Focus
 
 ### Install path
 
-For release validation, test the actual user path:
+For release validation, test the real user path:
 
 1. unzip `ZSoda-windows.zip`
-2. copy `ZSoda.aex` only
-3. place it into MediaCore or the AE plug-ins folder
-4. launch After Effects
-5. confirm immediate usable inference
+2. copy the `Z-Soda/` folder into MediaCore
+3. launch After Effects
+4. apply `Z-Soda`
+5. verify first use succeeds without setup/download requirements
 
 ### Expected behavior
 
 - Plug-in loads as `Z-Soda`
-- UI exposes:
-  - `Quality`
-  - `Preserve Ratio`
-  - `Output`
-  - `Color Map`
-  - `Slice Mode`
-  - `Position (%)`
-  - `Range (%)`
-  - `Soft Border (%)`
-- `Color Map` updates the depth visualization immediately
-  (`Gray`, `Turbo`, `Viridis`, `Inferno`, `Magma`)
-- Slice settings update the matte/output immediately
-- Slider arrow nudges do not crash AE
-- The first inference request does not fall back to the dummy engine
-- The bundled helper starts successfully from the extracted payload root
+- `Quality` visibly changes render resolution/path
+- `Color Map` updates depth visualization immediately
+- Slice controls update the matte/output immediately
+- DirectML/ORT runtime loads from `Z-Soda/zsoda_ort`
+- No fallback to dummy output on the happy path
 
 ## Logs And Failure Checks
 
 - AE runtime log:
   - `%TEMP%\ZSoda_AE_Runtime.log`
-- Remote service log:
-  - `%TEMP%\ZSoda_RemoteService.log`
+- Loader diagnostics:
+  - [tools/collect_ae_loader_diagnostics.ps1](../../tools/collect_ae_loader_diagnostics.ps1)
 
-If Windows falls back to the dummy engine, check:
+If Windows smoke fails, check:
 
-1. whether the embedded payload extracted under `%LOCALAPPDATA%\ZSoda\PayloadCache\...`
-2. whether the extracted Python runtime contains the required packages
-3. whether `distill-any-depth-base` exists under extracted `models\hf\`
-4. whether helper `/status` reports `loaded=true`
+1. whether AE loaded `MediaCore\Z-Soda\ZSoda.aex`
+2. whether `Z-Soda\models\models.manifest` is present
+3. whether `Z-Soda\zsoda_ort\onnxruntime.dll` is present
+4. whether runtime logs show ORT provider selection instead of remote fallback
+5. whether `tools/run_packaging_smoke.py` still passes
 
 ## Commit Hygiene
 
-- Do not commit local generated payloads such as:
-  - `release-assets/`
-  - `dist-mac/`
-  - `.cache/`
-- Commit code, docs, and tooling only.
-
-## Current Priority Order
-
-1. Prepare `release-assets/python-win`
-2. Build `build-win/plugin/Release/ZSoda.aex`
-3. Package `dist/ZSoda-windows.zip`
-4. Smoke test in After Effects on Windows
-5. Report back the exact result and any runtime log excerpts
+- Do not commit generated runtime/model artifacts.
+- Do commit code, tests, docs, and tooling changes that define the shipping path.
+- Keep `PLAN.md` and `PROGRESS.md` aligned with the current ORT sidecar direction.

@@ -249,18 +249,21 @@ std::vector<std::filesystem::path> BuildRuntimeAssetSearchRoots(
 RuntimePathResolution ResolveRuntimePaths(const RuntimePathHints& hints) {
   RuntimePathResolution resolved;
   const auto plugin_directory = ParsePluginDirectoryPath(hints.plugin_directory);
+  const std::filesystem::path bundled_asset_root(hints.bundled_asset_root);
   const std::vector<std::filesystem::path> search_roots =
       plugin_directory.has_value()
-          ? BuildRuntimeAssetSearchRoots(*plugin_directory,
-                                        std::filesystem::path(hints.bundled_asset_root))
-                                   : std::vector<std::filesystem::path>{};
+          ? BuildRuntimeAssetSearchRoots(*plugin_directory, bundled_asset_root)
+          : (bundled_asset_root.empty()
+                 ? std::vector<std::filesystem::path>{}
+                 : std::vector<std::filesystem::path>{bundled_asset_root});
   const std::filesystem::path preferred_asset_root =
-      plugin_directory.has_value() ? PreferredRuntimeAssetRoot(*plugin_directory)
-                                   : std::filesystem::path{};
+      plugin_directory.has_value()
+          ? PreferredRuntimeAssetRoot(*plugin_directory)
+          : bundled_asset_root;
 
   if (HasText(hints.model_root_env)) {
     resolved.model_root = hints.model_root_env;
-  } else if (plugin_directory.has_value()) {
+  } else if (!search_roots.empty()) {
     for (const auto& root : search_roots) {
       const auto plugin_models = root / "models";
       if (IsExistingDirectory(plugin_models)) {
@@ -269,12 +272,16 @@ RuntimePathResolution ResolveRuntimePaths(const RuntimePathHints& hints) {
       }
     }
     if (resolved.model_root.empty()) {
-      if (const auto media_core_models =
-              ResolveAdobeMediaCoreModelsDirectory(*plugin_directory);
-          media_core_models.has_value()) {
-        resolved.model_root = media_core_models->string();
+      if (plugin_directory.has_value()) {
+        if (const auto media_core_models =
+                ResolveAdobeMediaCoreModelsDirectory(*plugin_directory);
+            media_core_models.has_value()) {
+          resolved.model_root = media_core_models->string();
+        } else {
+          // Keep model root deterministic/absolute to avoid process working-directory drift.
+          resolved.model_root = (preferred_asset_root / "models").string();
+        }
       } else {
-        // Keep model root deterministic/absolute to avoid process working-directory drift.
         resolved.model_root = (preferred_asset_root / "models").string();
       }
     }
@@ -290,7 +297,7 @@ RuntimePathResolution ResolveRuntimePaths(const RuntimePathHints& hints) {
     const auto model_root_manifest = std::filesystem::path(resolved.model_root) / "models.manifest";
     if (IsExistingFile(model_root_manifest)) {
       resolved.model_manifest_path = model_root_manifest.string();
-    } else if (plugin_directory.has_value()) {
+    } else {
       for (const auto& root : search_roots) {
         const auto plugin_manifest = root / "models" / "models.manifest";
         if (IsExistingFile(plugin_manifest)) {
@@ -303,7 +310,7 @@ RuntimePathResolution ResolveRuntimePaths(const RuntimePathHints& hints) {
 
   if (HasText(hints.onnxruntime_library_env)) {
     SetResolvedOnnxRuntimeLibraryPath(&resolved, std::filesystem::path(hints.onnxruntime_library_env));
-  } else if (plugin_directory.has_value()) {
+  } else if (!search_roots.empty()) {
     for (const auto& root : search_roots) {
       const std::vector<std::filesystem::path> candidates = {
           root / "zsoda_ort" / DefaultOnnxRuntimeLibraryFileName(),

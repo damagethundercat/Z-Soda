@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import shutil
+import subprocess
 from pathlib import Path
 
 
@@ -99,6 +100,58 @@ def summarize_directory(path: Path) -> dict[str, object]:
     }
 
 
+def probe_python_runtime(root: Path, platform_name: str) -> dict[str, object]:
+    python_entry = detect_python_entry(root, platform_name)
+    interpreter = root / python_entry
+    probe = {
+        "python_entry": python_entry,
+        "executable": str(interpreter),
+    }
+    script = (
+        "import json\n"
+        "payload = {}\n"
+        "try:\n"
+        "    import torch\n"
+        "    payload['torch_version'] = getattr(torch, '__version__', '')\n"
+        "    payload['cuda_version'] = getattr(getattr(torch, 'version', None), 'cuda', None)\n"
+        "    payload['cuda_available'] = bool(getattr(torch, 'cuda', None) and torch.cuda.is_available())\n"
+        "    payload['cuda_device_count'] = int(torch.cuda.device_count()) if getattr(torch, 'cuda', None) else 0\n"
+        "except Exception as exc:\n"
+        "    payload['torch_error'] = str(exc)\n"
+        "print(json.dumps(payload, ensure_ascii=True))\n"
+    )
+    try:
+        completed = subprocess.run(
+            [str(interpreter), "-c", script],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=120,
+        )
+    except Exception as exc:  # noqa: BLE001
+        probe["probe_error"] = str(exc)
+        return probe
+
+    stdout = completed.stdout.strip()
+    if not stdout:
+        probe["probe_error"] = "runtime probe returned empty stdout"
+        return probe
+
+    try:
+        payload = json.loads(stdout)
+    except json.JSONDecodeError as exc:
+        probe["probe_error"] = f"failed to parse runtime probe output: {exc}"
+        probe["probe_stdout"] = stdout
+        return probe
+
+    if isinstance(payload, dict):
+        probe.update(payload)
+    else:
+        probe["probe_error"] = "runtime probe returned a non-object payload"
+        probe["probe_stdout"] = stdout
+    return probe
+
+
 def stage_python_runtime(
     source_text: str,
     output_root: Path,
@@ -120,6 +173,7 @@ def stage_python_runtime(
         **summarize_directory(destination),
         "python_entry": detect_python_entry(destination, platform_name),
         "source": str(source_dir),
+        "runtime_probe": probe_python_runtime(destination, platform_name),
     }
 
 

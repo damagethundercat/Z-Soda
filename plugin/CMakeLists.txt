@@ -28,6 +28,8 @@ set(ZSODA_PLUGIN_SOURCES
   inference/ManagedInferenceEngine.cpp
   inference/ModelAutoDownloader.cpp
   inference/ModelCatalog.cpp
+  inference/PythonAutostart.cpp
+  inference/PythonServiceAutostart.cpp
   inference/RemoteInferenceBackend.cpp
   inference/RuntimePathResolver.cpp
 )

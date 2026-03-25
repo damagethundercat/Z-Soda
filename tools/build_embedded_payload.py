@@ -7,7 +7,7 @@ import argparse
 import hashlib
 import struct
 from pathlib import Path
-from typing import List
+from typing import Iterable
 
 
 HEADER_MAGIC = b"ZSODA_PAYLOAD_V1"
@@ -34,23 +34,39 @@ def iter_payload_entries(root: Path):
     base_name = root.name
     for file_path in sorted(p for p in root.rglob("*") if p.is_file()):
         relative = file_path.relative_to(root)
-        payload_path = Path(base_name) / relative
-        yield file_path, payload_path.as_posix().encode("utf-8")
+        payload_path = (Path(base_name) / relative).as_posix().encode("utf-8")
+        yield file_path, payload_path, file_path.stat().st_size
 
 
-def build_payload_bytes(roots: List[Path]) -> bytes:
-    entries = []
+def collect_entries(roots: Iterable[Path]) -> list[tuple[Path, bytes, int]]:
+    entries: list[tuple[Path, bytes, int]] = []
     for root in roots:
         entries.extend(iter_payload_entries(root))
+    return entries
 
-    payload = bytearray()
-    payload.extend(HEADER_STRUCT.pack(HEADER_MAGIC, len(entries), 0))
-    for source_path, payload_path in entries:
-        file_size = source_path.stat().st_size
-        payload.extend(ENTRY_STRUCT.pack(len(payload_path), file_size))
-        payload.extend(payload_path)
-        payload.extend(source_path.read_bytes())
-    return bytes(payload)
+
+def write_payload(stream, roots: list[Path]) -> tuple[int, int, bytes]:
+    entries = collect_entries(roots)
+    hasher = hashlib.sha256()
+    payload_bytes = 0
+
+    def write_chunk(chunk: bytes) -> None:
+        nonlocal payload_bytes
+        stream.write(chunk)
+        hasher.update(chunk)
+        payload_bytes += len(chunk)
+
+    write_chunk(HEADER_STRUCT.pack(HEADER_MAGIC, len(entries), 0))
+    for source_path, payload_path, file_size in entries:
+        write_chunk(ENTRY_STRUCT.pack(len(payload_path), file_size))
+        write_chunk(payload_path)
+        with source_path.open("rb") as source_stream:
+            while True:
+                chunk = source_stream.read(1024 * 1024)
+                if not chunk:
+                    break
+                write_chunk(chunk)
+    return len(entries), payload_bytes, hasher.digest()
 
 
 def main() -> int:
@@ -69,16 +85,13 @@ def main() -> int:
     if not roots:
         return 0
 
-    payload = build_payload_bytes(roots)
-    digest = hashlib.sha256(payload).digest()
-    footer = FOOTER_STRUCT.pack(FOOTER_MAGIC, len(payload), digest)
-
     with artifact.open("ab") as stream:
-        stream.write(payload)
+        entry_count, payload_size, digest = write_payload(stream, roots)
+        footer = FOOTER_STRUCT.pack(FOOTER_MAGIC, payload_size, digest)
         stream.write(footer)
 
     print(
-        f"Embedded payload appended: artifact={artifact} entries={len(roots)} payload_bytes={len(payload)}"
+        f"Embedded payload appended: artifact={artifact} entries={entry_count} payload_bytes={payload_size}"
     )
     return 0
 

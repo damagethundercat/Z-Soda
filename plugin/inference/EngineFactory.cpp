@@ -10,9 +10,9 @@
 #include <string>
 #include <string_view>
 
-#include "inference/DummyInferenceEngine.h"
 #include "inference/EmbeddedPayload.h"
 #include "inference/ManagedInferenceEngine.h"
+#include "inference/ModelCatalog.h"
 #include "inference/RuntimePathResolver.h"
 #include "inference/RuntimeOptions.h"
 
@@ -100,14 +100,43 @@ bool IsExistingFile(const std::filesystem::path& path) {
   return std::filesystem::is_regular_file(path, ec) && !ec;
 }
 
+bool AreResolvedModelAssetsPresent(const std::vector<ResolvedModelAsset>& assets) {
+  if (assets.empty()) {
+    return false;
+  }
+  for (const auto& asset : assets) {
+    if (!IsExistingFile(std::filesystem::path(asset.absolute_path))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool HasNativeOnnxModelAssets(const RuntimePathResolution& runtime_paths,
+                              std::string_view model_id) {
+  if (runtime_paths.onnxruntime_library_path.empty() || runtime_paths.model_root.empty()) {
+    return false;
+  }
+
+  ModelCatalog catalog;
+  return AreResolvedModelAssetsPresent(
+      catalog.ResolveModelAssets(runtime_paths.model_root, std::string(model_id)));
+}
+
 std::string ResolveBundledDistillServiceScriptPath(const RuntimeOptions& options) {
-  if (options.plugin_directory.empty()) {
+  if (options.plugin_directory.empty() && options.runtime_asset_root.empty()) {
     return {};
   }
 
-  const std::filesystem::path plugin_dir(options.plugin_directory);
-  for (const auto& root :
-       BuildRuntimeAssetSearchRoots(plugin_dir, std::filesystem::path(options.runtime_asset_root))) {
+  std::vector<std::filesystem::path> search_roots;
+  if (!options.plugin_directory.empty()) {
+    const std::filesystem::path plugin_dir(options.plugin_directory);
+    search_roots = BuildRuntimeAssetSearchRoots(plugin_dir, std::filesystem::path(options.runtime_asset_root));
+  } else {
+    search_roots.push_back(std::filesystem::path(options.runtime_asset_root));
+  }
+
+  for (const auto& root : search_roots) {
     const std::array<std::filesystem::path, 3> candidates = {
         root / "zsoda_py" / "distill_any_depth_remote_service.py",
         root / "tools" / "distill_any_depth_remote_service.py",
@@ -152,8 +181,6 @@ std::shared_ptr<IInferenceEngine> CreateDefaultEngine() {
 
   RuntimeOptions options;
   const std::string env_backend = ReadEnvOrEmpty("ZSODA_INFERENCE_BACKEND");
-  const bool has_explicit_backend = !env_backend.empty();
-  const bool has_explicit_remote_enable = HasExplicitEnvValue("ZSODA_REMOTE_INFERENCE_ENABLED");
   const bool has_explicit_remote_autostart = HasExplicitEnvValue("ZSODA_REMOTE_SERVICE_AUTOSTART");
   if (!env_backend.empty()) {
     options.preferred_backend = ParseRuntimeBackend(env_backend);
@@ -182,9 +209,12 @@ std::shared_ptr<IInferenceEngine> CreateDefaultEngine() {
   }
   options.remote_service_port =
       ParsePositiveIntEnvOrDefault(std::getenv("ZSODA_REMOTE_SERVICE_PORT"), 8345);
+  options.remote_service_port_explicit = HasExplicitEnvValue("ZSODA_REMOTE_SERVICE_PORT");
   options.remote_service_python = ReadEnvOrEmpty("ZSODA_REMOTE_SERVICE_PYTHON");
   options.remote_service_script_path = ReadEnvOrEmpty("ZSODA_REMOTE_SERVICE_SCRIPT");
   options.remote_service_log_path = ReadEnvOrEmpty("ZSODA_REMOTE_SERVICE_LOG");
+  options.allow_dummy_fallback =
+      ParseBoolEnvOrDefault(std::getenv("ZSODA_ALLOW_DUMMY_FALLBACK"), false);
   if (path_hints.plugin_directory.has_value()) {
     options.plugin_directory = *path_hints.plugin_directory;
   }
@@ -192,29 +222,25 @@ std::shared_ptr<IInferenceEngine> CreateDefaultEngine() {
     options.runtime_asset_root = path_hints.bundled_asset_root;
   }
 
-  const bool implicit_distill_remote_default =
-      !has_explicit_backend && IsDistillAnyDepthModelId(locked_model_id) &&
-      (!has_explicit_remote_enable || options.remote_inference_enabled);
-  if (implicit_distill_remote_default) {
-    options.preferred_backend = RuntimeBackend::kRemote;
-    options.remote_inference_enabled = true;
-    if (options.remote_endpoint.empty() && !has_explicit_remote_autostart) {
-      options.remote_service_autostart = true;
-    }
-    if (options.remote_service_script_path.empty()) {
-      options.remote_service_script_path = ResolveBundledDistillServiceScriptPath(options);
-    }
+  const bool allows_remote_backend =
+      options.preferred_backend == RuntimeBackend::kRemote || options.remote_inference_enabled ||
+      !options.remote_endpoint.empty() || !options.remote_service_python.empty() ||
+      !options.remote_service_script_path.empty() || options.remote_service_autostart;
+
+  if ((options.preferred_backend == RuntimeBackend::kRemote || options.remote_inference_enabled) &&
+      options.remote_endpoint.empty() && !has_explicit_remote_autostart) {
+    options.remote_service_autostart =
+        ParseBoolEnvOrDefault(std::getenv("ZSODA_REMOTE_SERVICE_AUTOSTART"), true);
+  }
+
+  if (allows_remote_backend && options.remote_service_script_path.empty() &&
+      IsDistillAnyDepthModelId(locked_model_id) &&
+      (options.preferred_backend == RuntimeBackend::kRemote ||
+       !HasNativeOnnxModelAssets(runtime_paths, locked_model_id))) {
+    options.remote_service_script_path = ResolveBundledDistillServiceScriptPath(options);
   }
 
   if (options.preferred_backend == RuntimeBackend::kRemote) {
-    options.remote_inference_enabled = true;
-    if (options.remote_endpoint.empty()) {
-      options.remote_service_autostart =
-          ParseBoolEnvOrDefault(std::getenv("ZSODA_REMOTE_SERVICE_AUTOSTART"), true);
-    }
-  } else if (!has_explicit_backend &&
-             (options.remote_inference_enabled || !options.remote_endpoint.empty())) {
-    options.preferred_backend = RuntimeBackend::kRemote;
     options.remote_inference_enabled = true;
   }
 
@@ -242,16 +268,12 @@ std::shared_ptr<IInferenceEngine> CreateDefaultEngine() {
     return engine;
   }
 
-  // Log why the managed engine failed so the user can diagnose runtime issues.
+  // Keep the managed engine alive so runtime/setup failures surface as safe output
+  // instead of an implicit dummy-depth success path.
   std::fprintf(stderr,
-               "[Z-Soda] ManagedInferenceEngine init failed, falling back to DummyInferenceEngine: %s\n",
+               "[Z-Soda] ManagedInferenceEngine init failed; keeping managed engine active: %s\n",
                error.empty() ? "<no error detail>" : error.c_str());
-
-  auto fallback = std::make_shared<DummyInferenceEngine>();
-  if (!fallback->Initialize("dummy", &error)) {
-    return nullptr;
-  }
-  return fallback;
+  return engine;
 }
 
 }  // namespace zsoda::inference

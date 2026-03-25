@@ -128,6 +128,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--host", default=None, help="Override bind host")
     parser.add_argument("--port", type=int, default=None, help="Override bind port")
     parser.add_argument(
+        "--port-file",
+        default=None,
+        help="Optional file path where the bound port will be written after the server socket is created.",
+    )
+    parser.add_argument(
         "--repo-root",
         default=None,
         help="Compatibility flag accepted for RemoteInferenceBackend auto-start parity.",
@@ -136,6 +141,16 @@ def parse_args() -> argparse.Namespace:
         "--preload-model-id",
         default=None,
         help="Optional model id to preload on service start.",
+    )
+    parser.add_argument(
+        "--validate-bundle",
+        action="store_true",
+        help="Load the bundled model once, print JSON status, and exit.",
+    )
+    parser.add_argument(
+        "--validate-device",
+        default="cpu",
+        help="Requested device used for --validate-bundle (default: cpu).",
     )
     return parser.parse_args()
 
@@ -251,6 +266,27 @@ class ModelManager:
         self.torch = torch
         self.image_module = Image
 
+    def runtime_info(self) -> dict[str, Any]:
+        self._ensure_imports()
+        assert self.torch is not None
+        torch_module = self.torch
+        cuda_module = getattr(torch_module, "cuda", None)
+        cuda_available = bool(cuda_module is not None and torch_module.cuda.is_available())
+        device_count = int(torch_module.cuda.device_count()) if cuda_available else 0
+        device_name = ""
+        if cuda_available and device_count > 0:
+            try:
+                device_name = str(torch_module.cuda.get_device_name(0))
+            except Exception:  # noqa: BLE001
+                device_name = ""
+        return {
+            "torch_version": getattr(torch_module, "__version__", ""),
+            "cuda_version": getattr(getattr(torch_module, "version", None), "cuda", None),
+            "cuda_available": cuda_available,
+            "cuda_device_count": device_count,
+            "cuda_device_name": device_name,
+        }
+
     def get_model(self, model_id: str):
         requested_device = (
             os.getenv("ZSODA_DAD_SERVICE_DEVICE", "").strip()
@@ -301,8 +337,14 @@ class ModelManager:
             "service_asset_root": str(resolve_service_asset_root() or ""),
             "model_cache_dir": resolve_model_cache_dir() or "",
             "model_repo_is_local": bool(self.model_repo and Path(self.model_repo).is_dir()),
+            "requested_device": (
+                os.getenv("ZSODA_DAD_SERVICE_DEVICE", "").strip()
+                or os.getenv("ZSODA_REMOTE_SERVICE_DEVICE", "").strip()
+                or "auto"
+            ),
             "device": self.device,
             "loaded_at": self.loaded_at,
+            "runtime": self.runtime_info(),
         }
 
     def preload(self, model_id: str) -> None:
@@ -345,6 +387,27 @@ def resolve_preload_model_id(args: argparse.Namespace) -> str:
         if candidate:
             return candidate
     return "distill-any-depth-base"
+
+
+def run_bundle_validation(args: argparse.Namespace, preload_model_id: str) -> int:
+    requested_device = (args.validate_device or "cpu").strip() or "cpu"
+    os.environ["ZSODA_DAD_SERVICE_DEVICE"] = requested_device
+    try:
+        STATE.preload(preload_model_id)
+        payload = {
+            "ok": True,
+            "validated_model_id": preload_model_id,
+            "validated_device": requested_device,
+            "status": STATE.status(),
+        }
+        print(json.dumps(payload, ensure_ascii=True), flush=True)
+        return 0
+    except Exception as exc:  # noqa: BLE001
+        payload = build_error_response(str(exc), detail=traceback.format_exc())
+        payload["validated_model_id"] = preload_model_id
+        payload["validated_device"] = requested_device
+        print(json.dumps(payload, ensure_ascii=True), flush=True)
+        return 1
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -526,6 +589,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-ZSoda-Depth-Height", str(int(depth_array.shape[0])))
         self.send_header("X-ZSoda-Elapsed-Ms", f"{float(payload['elapsed_ms']):.3f}")
         self.send_header("X-ZSoda-Resolved-Model-Id", str(payload["model_id"]))
+        self.send_header("X-ZSoda-Resolved-Device", str(STATE.device))
         self.end_headers()
         self.wfile.write(encoded)
 
@@ -535,17 +599,30 @@ def main() -> int:
     if args.repo_root:
         os.environ["ZSODA_DAD_REPO_ROOT"] = args.repo_root
     preload_model_id = resolve_preload_model_id(args)
+    if args.validate_bundle:
+        return run_bundle_validation(args, preload_model_id)
     host = (args.host or os.getenv("ZSODA_DAD_SERVICE_HOST", "127.0.0.1")).strip() or "127.0.0.1"
-    port = args.port or int(os.getenv("ZSODA_DAD_SERVICE_PORT", "8345").strip() or "8345")
-    STATE.preload(preload_model_id)
+    port = (
+        args.port
+        if args.port is not None
+        else int(os.getenv("ZSODA_DAD_SERVICE_PORT", "8345").strip() or "8345")
+    )
     server = ThreadingHTTPServer((host, port), Handler)
+    actual_port = int(server.server_address[1])
+    if args.port_file:
+        port_file = Path(args.port_file)
+        port_file.parent.mkdir(parents=True, exist_ok=True)
+        port_file.write_text(f"{actual_port}\n", encoding="utf-8")
+    STATE.preload(preload_model_id)
     print(
         json.dumps(
             {
                 "service": "distill_any_depth_remote_service",
                 "host": host,
-                "port": port,
+                "port": actual_port,
                 "preloaded_model_id": preload_model_id,
+                "resolved_device": STATE.device,
+                "runtime": STATE.runtime_info(),
                 "models": sorted(MODEL_SPECS),
             },
             ensure_ascii=True,

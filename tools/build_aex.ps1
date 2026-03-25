@@ -579,6 +579,7 @@ function Resolve-OrtRuntimeBundleDlls {
 
   $patterns = @(
     "onnxruntime_providers_*.dll",
+    "DirectML.dll",
     "nvinfer*.dll",
     "nvonnxparser*.dll",
     "myelin*.dll",

@@ -7,7 +7,10 @@ load, main UI controls, interactive updates, preview stability, and render queue
 
 ## Preconditions
 
-- `ZSoda.aex` is installed in MediaCore
+- `Z-Soda/` is installed in MediaCore
+  - `Z-Soda/ZSoda.aex`
+  - `Z-Soda/models/`
+  - `Z-Soda/zsoda_ort/`
 - A test comp is ready
   - 1920x1080
   - 30 fps

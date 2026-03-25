@@ -497,6 +497,10 @@ bool IsDa3MultiviewModelId(std::string_view model_id) {
          model_id.find("multiview") != std::string_view::npos;
 }
 
+bool IsDistillAnyDepthModelId(std::string_view model_id) {
+  return model_id.rfind("distill-any-depth", 0) == 0;
+}
+
 int ResolveDa3MultiviewFrameCount(std::string_view model_id) {
   const int default_frames = IsDa3MultiviewModelId(model_id) ? 5 : 1;
   return ParseIntEnvOrDefault("ZSODA_DA3_MULTIVIEW_FRAMES", default_frames, 1, 128);
@@ -529,15 +533,18 @@ MultiviewReferenceStrategy ResolveDa3MultiviewReferenceStrategy() {
   return MultiviewReferenceStrategy::kMiddle;
 }
 
-int ResolveDa3ProcessResolution(int fallback_long_edge, int quality) {
+int ResolveDynamicProcessResolution(int fallback_long_edge, int quality, int patch_multiple) {
   static constexpr std::array<int, 8> kQualityResolutions = {
       256, 512, 768, 1024, 1280, 1536, 1920, 2048};
   const int clamped_quality = std::clamp(quality, 1, static_cast<int>(kQualityResolutions.size()));
   const int quality_default =
       kQualityResolutions[static_cast<std::size_t>(clamped_quality - 1)];
+  const int safe_patch_multiple = std::max(1, patch_multiple);
   const int fallback =
-      std::max(kDa3PatchMultiple, quality_default > 0 ? quality_default : fallback_long_edge);
-  return ParseIntEnvOrDefault("ZSODA_DA3_PROCESS_RES", fallback, kDa3PatchMultiple, 4096);
+      std::max(safe_patch_multiple, quality_default > 0 ? quality_default : fallback_long_edge);
+  const int legacy_override =
+      ParseIntEnvOrDefault("ZSODA_DA3_PROCESS_RES", fallback, safe_patch_multiple, 4096);
+  return ParseIntEnvOrDefault("ZSODA_DEPTH_PROCESS_RES", legacy_override, safe_patch_multiple, 4096);
 }
 
 int AlignToNearestMultiple(int value, int multiple) {
@@ -1020,6 +1027,20 @@ ModelPipelineProfile ResolvePipelineProfile(const std::string& model_id) {
     }
     return profile;
   }
+  if (IsDistillAnyDepthModelId(model_id)) {
+    ModelPipelineProfile profile;
+    profile.input_width = 518;
+    profile.input_height = 518;
+    profile.input_frame_count = 1;
+    profile.normalize_mean = {0.485F, 0.456F, 0.406F};
+    profile.normalize_std = {0.229F, 0.224F, 0.225F};
+    profile.invert_depth = false;
+    profile.prefer_latest_output_map = false;
+    profile.use_upper_bound_dynamic_aspect = true;
+    profile.patch_multiple = kDa3PatchMultiple;
+    profile.use_middle_reference_strategy = false;
+    return profile;
+  }
   if (model_id.rfind("video-depth-anything", 0) == 0) {
     ModelPipelineProfile profile;
     profile.input_width = 512;
@@ -1248,8 +1269,10 @@ bool PrepareInputForModel(const InferenceRequest& request,
       allow_dynamic_upper_bound_aspect && profile.use_upper_bound_dynamic_aspect &&
       resize_mode == PreprocessResizeMode::kUpperBoundLetterbox;
   if (use_dynamic_upper_bound_aspect) {
-    const int process_res = ResolveDa3ProcessResolution(
-        std::max(configured_tensor_width, configured_tensor_height), request.quality);
+    const int process_res = ResolveDynamicProcessResolution(
+        std::max(configured_tensor_width, configured_tensor_height),
+        request.quality,
+        std::max(1, profile.patch_multiple));
     prepared_input->process_res = process_res;
     prepared_input->dynamic_upper_bound_aspect = true;
     int dynamic_tensor_width = configured_tensor_width;

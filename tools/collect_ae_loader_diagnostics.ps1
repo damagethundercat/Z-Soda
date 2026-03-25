@@ -3,6 +3,7 @@ param(
   [string]$OutputRoot = ".\\artifacts\\diagnostics",
   [int]$ContextLines = 8,
   [string[]]$AexPaths = @(
+    "C:\\Program Files\\Adobe\\Common\\Plug-ins\\7.0\\MediaCore\\Z-Soda\\ZSoda.aex",
     "C:\\Program Files\\Adobe\\Common\\Plug-ins\\7.0\\MediaCore\\ZSoda.aex",
     "C:\\Program Files\\Adobe\\Adobe After Effects 2025\\Support Files\\Plug-ins\\Effects\\ZSoda.aex"
   )

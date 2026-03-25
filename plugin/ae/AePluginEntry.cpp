@@ -84,6 +84,23 @@ void AppendDiagnosticsLine(const char* tag, const char* detail) {
 void AppendDiagnosticsLine(const char* /*tag*/, const char* /*detail*/) {}
 #endif
 
+#if defined(ZSODA_WITH_AE_SDK) && ZSODA_WITH_AE_SDK
+const char* PfCmdName(PF_Cmd cmd) {
+  switch (cmd) {
+    case PF_Cmd_ABOUT:
+      return "PF_Cmd_ABOUT";
+    case PF_Cmd_GLOBAL_SETUP:
+      return "PF_Cmd_GLOBAL_SETUP";
+    case PF_Cmd_PARAMS_SETUP:
+      return "PF_Cmd_PARAMS_SETUP";
+    case PF_Cmd_RENDER:
+      return "PF_Cmd_RENDER";
+    default:
+      return "PF_Cmd_<other>";
+  }
+}
+#endif
+
 // ---------------------------------------------------------------------------
 // Lazy-initialized singletons, deferred until first GLOBAL_SETUP.
 // ---------------------------------------------------------------------------
@@ -463,6 +480,10 @@ extern "C" DllExport PF_Err PluginDataEntryFunction2(PF_PluginDataPtr in_ptr,
   (void)in_host_name;
   (void)in_host_version;
 
+  zsoda::ae::AppendDiagnosticsLine(
+      "PluginDataEntryFunction2Enter",
+      in_plugin_data_callback_ptr != nullptr ? "callback=present" : "callback=null");
+
   if (in_plugin_data_callback_ptr == nullptr) {
     return PF_Err_INVALID_CALLBACK;
   }
@@ -531,6 +552,8 @@ PF_Err EffectMainImpl(PF_Cmd cmd,
   payload.params = params;
   payload.output = output;
   payload.extra = extra;
+
+  zsoda::ae::AppendDiagnosticsLine("EffectMainEnter", zsoda::ae::PfCmdName(cmd));
 
   if (!zsoda::ae::BuildSdkDispatch(payload, &dispatch, &error)) {
     zsoda::ae::AppendDiagnosticsLine("EffectMainBuildDispatchFail", error.c_str());

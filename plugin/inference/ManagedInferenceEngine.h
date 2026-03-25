@@ -47,7 +47,9 @@ class ManagedInferenceEngine final : public IInferenceEngine {
   void ConfigureBackend();
   void LoadManifest();
   bool SelectModelLocked(const std::string& model_id, std::string* error);
+  [[nodiscard]] bool AllowsRemoteFallbackLocked() const;
   [[nodiscard]] bool WantsRemoteBackendLocked() const;
+  [[nodiscard]] bool ShouldAttemptRemoteRecoveryLocked() const;
   void TryRecoverRequestedBackendLocked();
   void TryPromoteActiveModelToOnnxLocked();
   void MaybeQueueModelDownloadLocked(const ModelSpec& model,

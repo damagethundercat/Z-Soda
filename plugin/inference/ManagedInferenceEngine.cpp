@@ -176,7 +176,7 @@ bool ManagedInferenceEngine::Run(const InferenceRequest& request,
     } else {
       last_run_used_fallback_ = true;
       fallback_reason_ = onnx_error.empty()
-                             ? "onnx runtime backend run failed; using fallback depth path"
+                             ? "onnx runtime backend run failed"
                              : onnx_error;
       AppendInferenceTrace("onnx_run_failed",
                            onnx_error.empty() ? "<none>" : onnx_error.c_str());
@@ -189,6 +189,22 @@ bool ManagedInferenceEngine::Run(const InferenceRequest& request,
     }
     AppendInferenceTrace("run_exit_onnx");
     return true;
+  }
+
+  if (!options_.allow_dummy_fallback) {
+    last_run_used_fallback_ = true;
+    if (error != nullptr) {
+      if (!fallback_reason_.empty()) {
+        *error = fallback_reason_;
+      } else if (!model_file_exists_) {
+        *error = "selected model assets are not fully installed";
+      } else {
+        *error = "inference backend is unavailable";
+      }
+    }
+    AppendInferenceTrace("run_exit_backend_unavailable",
+                         fallback_reason_.empty() ? "<none>" : fallback_reason_.c_str());
+    return false;
   }
 
   std::string dummy_error;
@@ -223,7 +239,7 @@ bool ManagedInferenceEngine::Run(const InferenceRequest& request,
   if (!fallback_reason_.empty() && error != nullptr) {
     *error = fallback_reason_;
   } else if (!model_file_exists_ && error != nullptr) {
-    *error = "selected model assets are not fully installed; using fallback depth path";
+    *error = "selected model assets are not fully installed";
   } else if (error != nullptr) {
     error->clear();
   }
@@ -255,10 +271,14 @@ InferenceBackendStatus ManagedInferenceEngine::BackendStatus() const {
     const std::string backend_name = SafeCStr(onnx_backend_->Name(), "<null backend>");
     if (!using_fallback_engine_ && !status.last_run_used_fallback) {
       status.engine_name = backend_name;
+    } else if (!options_.allow_dummy_fallback) {
+      status.engine_name = "BackendUnavailable (requested=" + backend_name + ")";
     } else {
       status.engine_name = std::string(SafeCStr(fallback_engine_.Name(), "DummyDepthEngine")) +
                            " (fallback_from=" + backend_name + ")";
     }
+  } else if (!options_.allow_dummy_fallback) {
+    status.engine_name = "BackendUnavailable";
   } else {
     status.engine_name = SafeCStr(fallback_engine_.Name(), "DummyDepthEngine");
   }
@@ -286,54 +306,101 @@ std::string ManagedInferenceEngine::BackendStatusString() const {
 }
 
 void ManagedInferenceEngine::ConfigureBackend() {
-  std::string backend_error;
-  const bool request_remote_backend =
-      options_.preferred_backend == RuntimeBackend::kRemote || options_.remote_inference_enabled;
-  if (request_remote_backend) {
-    onnx_backend_ = CreateRemoteInferenceBackend(options_, &backend_error);
-    if (onnx_backend_ != nullptr) {
-      using_fallback_engine_ = false;
-      active_backend_ = onnx_backend_->ActiveBackend();
-      last_run_used_fallback_ = false;
-      fallback_reason_.clear();
-      return;
-    }
+  onnx_backend_.reset();
 
-    using_fallback_engine_ = true;
-    active_backend_ = RuntimeBackend::kRemote;
-    last_run_used_fallback_ = true;
-    fallback_reason_ = backend_error.empty()
-                           ? "remote inference backend is unavailable; using fallback depth path"
-                           : "remote inference backend initialization failed: " + backend_error;
-    return;
-  }
-
-#if defined(ZSODA_WITH_ONNX_RUNTIME)
-  onnx_backend_ = CreateOnnxRuntimeBackend(options_, &backend_error);
-  if (onnx_backend_ != nullptr) {
+  auto activate_backend = [this](std::unique_ptr<IOnnxRuntimeBackend> backend,
+                                 const std::string& selection_note) {
+    onnx_backend_ = std::move(backend);
     using_fallback_engine_ = false;
     active_backend_ = onnx_backend_->ActiveBackend();
     last_run_used_fallback_ = false;
-    fallback_reason_.clear();
+    fallback_reason_ = selection_note;
+  };
+
+  auto mark_backend_unavailable = [this](RuntimeBackend backend, std::string reason) {
+    onnx_backend_.reset();
+    using_fallback_engine_ = true;
+    active_backend_ = backend;
+    last_run_used_fallback_ = true;
+    fallback_reason_ = std::move(reason);
+  };
+
+  auto make_remote_options = [this]() {
+    RuntimeOptions remote_options = options_;
+    remote_options.preferred_backend = RuntimeBackend::kRemote;
+    remote_options.remote_inference_enabled = true;
+    return remote_options;
+  };
+
+  if (WantsRemoteBackendLocked()) {
+    std::string remote_error;
+    auto remote_backend = CreateRemoteInferenceBackend(make_remote_options(), &remote_error);
+    if (remote_backend != nullptr) {
+      activate_backend(std::move(remote_backend), "");
+      return;
+    }
+
+    mark_backend_unavailable(
+        RuntimeBackend::kRemote,
+        remote_error.empty()
+            ? "remote inference backend is unavailable"
+            : "remote inference backend initialization failed: " + remote_error);
     return;
   }
 
-  using_fallback_engine_ = true;
-  active_backend_ = RuntimeBackend::kCpu;
-  last_run_used_fallback_ = true;
-  fallback_reason_ = backend_error.empty()
-                         ? "onnx runtime backend is unavailable; using fallback depth path"
-                         : "onnx runtime backend initialization failed: " + backend_error;
+  std::string ort_failure_reason;
+
+#if defined(ZSODA_WITH_ONNX_RUNTIME)
+  std::string ort_error;
+  auto ort_backend = CreateOnnxRuntimeBackend(options_, &ort_error);
+  if (ort_backend != nullptr) {
+    activate_backend(std::move(ort_backend), "");
+    return;
+  }
+
+  ort_failure_reason = ort_error.empty()
+                           ? "onnx runtime backend is unavailable"
+                           : "onnx runtime backend initialization failed: " + ort_error;
 #else
-  using_fallback_engine_ = true;
-  active_backend_ = RuntimeBackend::kCpu;
-  last_run_used_fallback_ = true;
-  fallback_reason_ = "onnx runtime backend is disabled at build time; using fallback depth path";
+  ort_failure_reason = "onnx runtime backend is disabled at build time";
 #endif
+
+  if (AllowsRemoteFallbackLocked()) {
+    std::string remote_error;
+    auto remote_backend = CreateRemoteInferenceBackend(make_remote_options(), &remote_error);
+    if (remote_backend != nullptr) {
+      const std::string remote_selection_note =
+          ort_failure_reason.empty() ? std::string()
+                                     : "native_ort_unavailable: " + ort_failure_reason;
+      activate_backend(std::move(remote_backend), remote_selection_note);
+      return;
+    }
+
+    if (!remote_error.empty()) {
+      if (!ort_failure_reason.empty()) {
+        ort_failure_reason.append(" | remote_fallback=");
+        ort_failure_reason.append(remote_error);
+      } else {
+        ort_failure_reason = "remote inference backend initialization failed: " + remote_error;
+      }
+    }
+  }
+
+  mark_backend_unavailable(RuntimeBackend::kCpu, std::move(ort_failure_reason));
+}
+
+bool ManagedInferenceEngine::AllowsRemoteFallbackLocked() const {
+  return options_.remote_inference_enabled || !options_.remote_endpoint.empty() ||
+         options_.remote_service_autostart || !options_.remote_service_python.empty() ||
+         !options_.remote_service_script_path.empty();
 }
 
 bool ManagedInferenceEngine::WantsRemoteBackendLocked() const {
-  return options_.preferred_backend == RuntimeBackend::kRemote || options_.remote_inference_enabled;
+  return options_.preferred_backend == RuntimeBackend::kRemote;
+}
+
+bool ManagedInferenceEngine::ShouldAttemptRemoteRecoveryLocked() const {
+  return WantsRemoteBackendLocked() || AllowsRemoteFallbackLocked();
 }
 
 void ManagedInferenceEngine::LoadManifest() {
@@ -381,8 +448,8 @@ bool ManagedInferenceEngine::SelectModelLocked(const std::string& model_id, std:
     if (using_fallback_engine_) {
       last_run_used_fallback_ = true;
       fallback_reason_ = backend_error.empty()
-                             ? "onnx runtime backend rejected selected model; using fallback depth path"
-                             : backend_error;
+                            ? "onnx runtime backend rejected selected model"
+                            : backend_error;
     } else {
       last_run_used_fallback_ = false;
       fallback_reason_.clear();
@@ -392,7 +459,7 @@ bool ManagedInferenceEngine::SelectModelLocked(const std::string& model_id, std:
     using_fallback_engine_ = true;
     last_run_used_fallback_ = true;
     if (fallback_reason_.empty()) {
-      fallback_reason_ = "onnx runtime backend is unavailable; using fallback depth path";
+      fallback_reason_ = "onnx runtime backend is unavailable";
     }
   }
 
@@ -426,7 +493,7 @@ bool ManagedInferenceEngine::SelectModelLocked(const std::string& model_id, std:
 }
 
 void ManagedInferenceEngine::TryRecoverRequestedBackendLocked() {
-  if (!WantsRemoteBackendLocked()) {
+  if (!ShouldAttemptRemoteRecoveryLocked()) {
     return;
   }
   if (onnx_backend_ != nullptr && !using_fallback_engine_) {

@@ -8,7 +8,8 @@ the shipping path directly.
 
 - Host: Adobe After Effects
 - Production model: `distill-any-depth-base`
-- Runtime: local Python remote service with binary localhost transport
+- Windows target runtime: native ONNX Runtime sidecar (`models/` + `zsoda_ort/`)
+- Python remote service: dev/fallback only while the ORT path reaches parity
 - Public UI: production controls only
   - `Quality`
   - `Preserve Ratio`
@@ -47,6 +48,16 @@ the shipping path directly.
 - Reuse inference sessions and remote service process.
 - Keep the default path fixed to `distill-any-depth-base`.
 - Never require legacy DA3 tooling or cloud services for normal operation.
+- Until thin bootstrap is production-ready, keep the self-contained release path
+  healthy on cold start.
+- Embedded payload extraction and bundled runtime/model discovery must succeed
+  from a clean machine state before a release is accepted.
+- Keep the Windows embedded payload cache root short enough for After Effects'
+  non-`longPathAware` host process.
+- If the primary Windows payload cache root still fails extraction, retry a
+  shorter secondary per-user cache root before falling back to the dummy path.
+- Remote service auto-start must not depend on a single fixed localhost port.
+- Release builds must not present dummy depth output as a successful inference result.
 - Move release builds toward thin distribution with first-run bootstrap into a
   per-user cache instead of embedding the full runtime/model payload by default.
 - Surface setup progress and setup failure explicitly instead of presenting
@@ -64,6 +75,9 @@ the shipping path directly.
 - Remove generated package artifacts from versioned source paths.
 - Keep `StillQualityHarness` as optional internal diagnostics only.
 - Keep docs and scripts aligned with the current DAD-only production path.
+- Drive packaging stage layout from one shared tools-side spec instead of
+  duplicating root selection and self-contained staging rules across PowerShell
+  and shell packagers.
 
 ### `RF-02` AE layer cleanup
 - Keep only the visible production controls.
@@ -73,6 +87,18 @@ the shipping path directly.
 ### `RF-03` Runtime and core cleanup
 - Keep remote transport binary-first.
 - Treat legacy JSON and file transport as debug-only fallback.
+- Move Python runtime discovery and autostart selection out of
+  `RemoteInferenceBackend.cpp` into smaller dedicated helpers.
+- Move detached remote-service launch, `--port-file` handshake, and readiness
+  polling out of `RemoteInferenceBackend.cpp` into a dedicated helper so the
+  backend keeps only endpoint/state policy.
+- Add focused tests for extracted runtime/autostart helpers instead of relying
+  only on monolithic inference regressions.
+- Keep unit tests split by domain and force Release test targets to preserve
+  assertions so cleanup regressions fail explicitly instead of continuing into
+  undefined behavior.
+- Keep Windows/macOS packagers on the same staged-root contract by preparing
+  `.payload-stage` through one shared Python helper before embedding/copying.
 
 ### `RF-04` Slicing UX
 - Keep the shipping baseline centered on DAD-base.
@@ -86,17 +112,66 @@ the shipping path directly.
 - Add explicit setup lifecycle states and a visible setup slate in the render path.
 - Keep the shipping AE control surface unchanged while setup runs in the background.
 
+### `RF-06` Windows native ORT sidecar GPU
+- Make Windows prefer native ORT sidecar assets when `models/*.onnx` and
+  `zsoda_ort/onnxruntime.dll` are present.
+- Treat remote inference as explicit-only or dev/fallback-only. Do not infer a
+  remote-primary shipping mode from `distill-any-depth*` model ids.
+- Package Windows native GPU releases as a single `Z-Soda/` folder containing
+  `ZSoda.aex`, `models/`, and `zsoda_ort/` instead of embedding Python/HF
+  payloads into the `.aex`.
+- Keep the packaging contract smoke-tested with a repo-local sidecar ORT zip
+  before manual AE validation.
+- Quantify the real NVIDIA runtime budget before freezing the shipping layout,
+  including ORT GPU wheel size and the extra CUDA/cuDNN DLL set that CUDA EP
+  requires.
+- Keep a reproducible local export path from the existing Hugging Face snapshot
+  to `distill_any_depth_base.onnx`, and validate the exported graph with an
+  ORT CPU smoke before treating it as a shippable native model asset.
+- Fail the export step when the ORT graph keeps a constant output shape across
+  multiple square/non-square validation inputs. Quality controls must map to
+  real input/output resolution changes for `distill-any-depth-base`.
+
 ## Validation
 
 ### Automated
 - Build Debug and Release on Windows.
-- Keep `zsoda_tests` passing for current production paths.
+- Keep the split unit suites passing:
+  `zsoda_core_tests`, `zsoda_ae_params_tests`, `zsoda_ae_router_tests`,
+  `zsoda_inference_tests`, and `zsoda_render_tests`.
+- Keep `zsoda_embedded_payload_tests` passing for the self-contained cold-start
+  path.
+- Keep `zsoda_python_autostart_tests` passing for extracted Python runtime
+  discovery logic and early launch-failure paths.
+- Keep the shared packaging stage helper valid on both platforms and run at
+  least one Windows packaging smoke that embeds and validates the prepared
+  stage roots.
+- Keep `sidecar-ort` packaging smoke passing for the Windows `.aex + models +
+  zsoda_ort` release contract.
+- Validate the staged self-contained runtime semantically by loading the bundled
+  model through the bundled Python before embedding it into a Windows release.
+- Keep `tools/run_packaging_smoke.py` green as the repo-local packaging gate
+  before manual AE smoke.
+- Validate packaged Windows self-contained artifacts with an embedded payload
+  inspection gate before release.
+- When a known-good macOS self-contained fixture is available, compare the
+  packaged Windows payload contract against it before release.
+- Report embedded payload path-length budget during Windows packaging so
+  release-assets drift cannot silently exceed the AE host path limit.
 - Validate binary remote transport and remote service startup.
 
 ### Manual
 - New AE project:
   - plugin loads as `ZSoda`
   - slicing controls are shown in the main UI
+- Use the current Windows native ORT sidecar package at
+  `artifacts/ort-sidecar-directml-package/ZSoda-windows.zip` for the next
+  manual AE smoke.
+- Installation contract for the current Windows ORT package:
+  - unzip the package
+  - copy the single `Z-Soda/` folder into MediaCore
+  - keep `Z-Soda/ZSoda.aex`, `Z-Soda/models/`, and `Z-Soda/zsoda_ort/`
+    adjacent under that folder
 - Playback:
   - quality changes alter render resolution
   - `Color Map` changes the depth-map visualization immediately

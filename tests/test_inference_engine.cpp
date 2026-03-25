@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "core/Frame.h"
+#include "inference/InferenceEngine.h"
 #include "inference/ModelAutoDownloader.h"
 #include "inference/ManagedInferenceEngine.h"
 #include "inference/ModelCatalog.h"
@@ -449,10 +450,9 @@ void TestRemoteBackendSafeFallbackWithManagedEngine() {
   request.quality = 1;
 
   zsoda::core::FrameBuffer output;
-  assert(engine.Run(request, &output, &error));
+  assert(!engine.Run(request, &output, &error));
   assert(!error.empty());
   assert(Contains(error, "remote command failed"));
-  assert(!output.empty());
 
   const auto after = engine.BackendStatus();
   assert(after.requested_backend == zsoda::inference::RuntimeBackend::kRemote);
@@ -460,6 +460,7 @@ void TestRemoteBackendSafeFallbackWithManagedEngine() {
   assert(after.last_run_used_fallback);
   assert(!after.fallback_reason.empty());
   assert(Contains(after.fallback_reason, "remote command failed"));
+  assert(Contains(after.engine_name, "BackendUnavailable"));
   assert(Contains(engine.BackendStatusString(), "last_run_fallback=true"));
 }
 
@@ -479,6 +480,80 @@ void TestRemoteBackendEndpointInitialization() {
   assert(error.empty());
   assert(backend->ActiveBackend() == zsoda::inference::RuntimeBackend::kRemote);
   assert(Contains(backend->Name(), "RemoteInferenceBackend"));
+}
+
+void TestCreateDefaultEngineKeepsAutoBackendWhenRemoteFallbackIsEnabled() {
+  TempDir temp_dir;
+  const auto model_path =
+      temp_dir.path() / "distill-any-depth" / "distill_any_depth_base.onnx";
+  const auto ort_runtime_path = temp_dir.path() / "zsoda_ort" / "onnxruntime.dll";
+  WriteTextFile(model_path, "dummy");
+  WriteTextFile(ort_runtime_path, "dummy");
+
+  ScopedEnvironmentOverride clear_backend("ZSODA_INFERENCE_BACKEND", "");
+  ScopedEnvironmentOverride set_model_root("ZSODA_MODEL_ROOT", temp_dir.path().string());
+  ScopedEnvironmentOverride clear_model_manifest("ZSODA_MODEL_MANIFEST", "");
+  ScopedEnvironmentOverride set_ort_runtime("ZSODA_ONNXRUNTIME_LIBRARY", ort_runtime_path.string());
+  ScopedEnvironmentOverride set_remote_enabled("ZSODA_REMOTE_INFERENCE_ENABLED", "1");
+  ScopedEnvironmentOverride set_remote_endpoint("ZSODA_REMOTE_INFERENCE_ENDPOINT",
+                                                "http://127.0.0.1:8345/zsoda/depth");
+  ScopedEnvironmentOverride clear_remote_autostart("ZSODA_REMOTE_SERVICE_AUTOSTART", "0");
+  ScopedEnvironmentOverride clear_remote_script("ZSODA_REMOTE_SERVICE_SCRIPT", "");
+  ScopedEnvironmentOverride clear_remote_python("ZSODA_REMOTE_SERVICE_PYTHON", "");
+
+  auto engine = zsoda::inference::CreateDefaultEngine();
+  auto managed = std::dynamic_pointer_cast<zsoda::inference::ManagedInferenceEngine>(engine);
+  assert(managed != nullptr);
+  assert(managed->RequestedBackend() == zsoda::inference::RuntimeBackend::kAuto);
+
+  const auto status = managed->BackendStatus();
+  assert(status.requested_backend == zsoda::inference::RuntimeBackend::kAuto);
+}
+
+void TestRemoteFallbackDoesNotSuppressMissingLocalModelDiagnostics() {
+  TempDir temp_dir;
+  const auto manifest = temp_dir.path() / zsoda::inference::ModelCatalog::DefaultManifestFilename();
+  const auto missing_model_path = temp_dir.path() / "missing" / "missing_depth_v2.onnx";
+  const auto missing_ort_path = temp_dir.path() / "runtime" / "missing-onnxruntime.dll";
+  WriteTextFile(
+      manifest,
+      "# id|display_name|relative_path|download_url|preferred_default\n"
+      "missing-depth-v2|Missing Depth v2|missing/missing_depth_v2.onnx|https://example.com/missing_depth_v2.onnx|true\n");
+
+  zsoda::inference::RuntimeOptions options;
+  options.preferred_backend = zsoda::inference::RuntimeBackend::kAuto;
+  options.remote_inference_enabled = true;
+  options.remote_endpoint = "http://127.0.0.1:8345/zsoda/depth";
+  options.onnxruntime_library_path = missing_ort_path.string();
+
+  zsoda::inference::ManagedInferenceEngine engine(temp_dir.path().string(), options);
+  std::string error;
+  assert(engine.Initialize("missing-depth-v2", &error));
+  assert(Contains(error, "model asset file not found:"));
+  assert(Contains(error, "missing_depth_v2.onnx"));
+}
+
+void TestExplicitRemoteBackendStillIgnoresMissingLocalModelAssets() {
+  TempDir temp_dir;
+  const auto manifest = temp_dir.path() / zsoda::inference::ModelCatalog::DefaultManifestFilename();
+  WriteTextFile(
+      manifest,
+      "# id|display_name|relative_path|download_url|preferred_default\n"
+      "missing-remote-v1|Missing Remote v1|missing/missing_remote_v1.onnx|https://example.com/missing_remote_v1.onnx|true\n");
+
+  zsoda::inference::RuntimeOptions options;
+  options.preferred_backend = zsoda::inference::RuntimeBackend::kRemote;
+  options.remote_inference_enabled = true;
+  options.remote_endpoint = "http://127.0.0.1:8345/zsoda/depth";
+
+  zsoda::inference::ManagedInferenceEngine engine(temp_dir.path().string(), options);
+  std::string error;
+  assert(engine.Initialize("missing-remote-v1", &error));
+  assert(error.empty());
+
+  const auto status = engine.BackendStatus();
+  assert(status.requested_backend == zsoda::inference::RuntimeBackend::kRemote);
+  assert(status.active_backend == zsoda::inference::RuntimeBackend::kRemote);
 }
 
 void TestRunRequiresSelectedModel() {
@@ -533,14 +608,14 @@ void TestBackendStatusDiagnostics() {
   request.quality = 1;
 
   zsoda::core::FrameBuffer output;
-  assert(engine.Run(request, &output, &error));
+  assert(!engine.Run(request, &output, &error));
 
   const auto after = engine.BackendStatus();
   assert(after.last_run_used_fallback);
   assert(!after.fallback_reason.empty());
 #if defined(ZSODA_WITH_ONNX_RUNTIME)
-  assert(Contains(after.engine_name, "DummyDepthEngine"));
-  const bool has_ort_backend_context = Contains(after.engine_name, "fallback_from=OnnxRuntimeBackend");
+  assert(Contains(after.engine_name, "BackendUnavailable"));
+  const bool has_ort_backend_context = Contains(after.engine_name, "requested=OnnxRuntimeBackend");
   if (has_ort_backend_context) {
     assert(HasOrtRunOrExecutionDiagnostic(after.fallback_reason) ||
            Contains(after.fallback_reason, "model path does not exist:"));
@@ -550,7 +625,7 @@ void TestBackendStatusDiagnostics() {
     assert(HasOrtInitializationDiagnostic(after.fallback_reason));
   }
 #else
-  assert(after.engine_name == "DummyDepthEngine");
+  assert(after.engine_name == "BackendUnavailable");
 #endif
   assert(Contains(engine.BackendStatusString(), "last_run_fallback=true"));
   assert(Contains(engine.BackendStatusString(), "fallback_reason="));
@@ -631,16 +706,18 @@ void TestManifestModelSelectionRunPath() {
   request.quality = 1;
 
   zsoda::core::FrameBuffer output;
-  assert(engine.Run(request, &output, &error));
-  assert(!output.empty());
+  const bool run_ok = engine.Run(request, &output, &error);
 
   const auto status = engine.BackendStatus();
   if (status.last_run_used_fallback) {
+    assert(!run_ok);
     assert(!status.fallback_reason.empty());
     assert(error == status.fallback_reason);
   } else {
+    assert(run_ok);
     assert(status.fallback_reason.empty());
     assert(error.empty());
+    assert(!output.empty());
   }
 }
 
@@ -658,8 +735,8 @@ void TestMissingModelFileDiagnostics() {
   assert(Contains(error, "model asset file not found:"));
 #if defined(ZSODA_WITH_ONNX_RUNTIME)
   const auto status = engine.BackendStatus();
-  assert(Contains(status.engine_name, "DummyDepthEngine"));
-  if (Contains(status.engine_name, "fallback_from=OnnxRuntimeBackend")) {
+  assert(Contains(status.engine_name, "BackendUnavailable"));
+  if (Contains(status.engine_name, "requested=OnnxRuntimeBackend")) {
     assert(Contains(status.fallback_reason, "model path does not exist:"));
     assert(Contains(status.fallback_reason, "missing_depth_v1.onnx"));
   } else {
@@ -674,15 +751,14 @@ void TestMissingModelFileDiagnostics() {
   request.quality = 1;
 
   zsoda::core::FrameBuffer output;
-  assert(engine.Run(request, &output, &error));
-  assert(!output.empty());
+  assert(!engine.Run(request, &output, &error));
 
   const auto run_status = engine.BackendStatus();
   assert(run_status.last_run_used_fallback);
   if (!run_status.fallback_reason.empty()) {
     assert(error == run_status.fallback_reason);
   } else {
-    assert(error == "selected model assets are not fully installed; using fallback depth path");
+    assert(error == "selected model assets are not fully installed");
   }
 }
 
@@ -870,6 +946,9 @@ void RunInferenceEngineTests() {
   TestRemoteBackendCommandValidation();
   TestRemoteBackendSafeFallbackWithManagedEngine();
   TestRemoteBackendEndpointInitialization();
+  TestCreateDefaultEngineKeepsAutoBackendWhenRemoteFallbackIsEnabled();
+  TestRemoteFallbackDoesNotSuppressMissingLocalModelDiagnostics();
+  TestExplicitRemoteBackendStillIgnoresMissingLocalModelAssets();
   TestRunRequiresSelectedModel();
   TestBackendStatusDiagnostics();
   TestManifestLoadingAndDefaults();

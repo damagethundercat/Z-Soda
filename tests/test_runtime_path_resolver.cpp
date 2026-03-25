@@ -175,6 +175,31 @@ void TestEffectsInstallFallsBackToAdobeMediaCoreModels() {
   assert(std::filesystem::path(resolved.model_manifest_path) == manifest);
 }
 
+void TestMediaCoreSubfolderPrefersAdjacentSidecarAssets() {
+  TempDir temp_dir;
+  const auto media_core_root =
+      temp_dir.path() / "Program Files" / "Adobe" / "Common" / "Plug-ins" / "7.0" / "MediaCore";
+  const auto package_root = media_core_root / "Z-Soda";
+  const auto root_models_dir = media_core_root / "models";
+  const auto adjacent_models_dir = package_root / "models";
+  const auto adjacent_manifest = adjacent_models_dir / "models.manifest";
+  const auto adjacent_ort =
+      package_root / "zsoda_ort" / zsoda::inference::DefaultOnnxRuntimeLibraryFileName();
+
+  WriteTextFile(root_models_dir / "models.manifest", "# stale root manifest");
+  WriteTextFile(adjacent_manifest, "# package-root manifest");
+  WriteTextFile(adjacent_ort, "package-root runtime");
+
+  zsoda::inference::RuntimePathHints hints;
+  hints.plugin_directory = package_root.string();
+
+  const auto resolved = zsoda::inference::ResolveRuntimePaths(hints);
+  assert(std::filesystem::path(resolved.model_root) == adjacent_models_dir);
+  assert(std::filesystem::path(resolved.model_manifest_path) == adjacent_manifest);
+  assert(std::filesystem::path(resolved.onnxruntime_library_path) == adjacent_ort);
+  assert(std::filesystem::path(resolved.onnxruntime_library_dir) == adjacent_ort.parent_path());
+}
+
 void TestMacBundleModuleDirectoryUsesResources() {
   TempDir temp_dir;
   const auto bundle_root = temp_dir.path() / "MediaCore" / "ZSoda.plugin";
@@ -225,6 +250,28 @@ void TestEmbeddedPayloadAssetRootTakesPrecedence() {
   assert(std::filesystem::path(resolved.onnxruntime_library_dir) == embedded_ort.parent_path());
 }
 
+void TestStandaloneBundledAssetRootWithoutPluginDirectory() {
+  TempDir temp_dir;
+  const auto embedded_root = temp_dir.path() / "payload-cache" / "cafefeed";
+  const auto embedded_models_dir = embedded_root / "models";
+  const auto embedded_manifest = embedded_models_dir / "models.manifest";
+  const auto embedded_ort =
+      embedded_root / "zsoda_ort" / zsoda::inference::DefaultOnnxRuntimeLibraryFileName();
+
+  std::filesystem::create_directories(embedded_models_dir);
+  WriteTextFile(embedded_manifest, "# standalone embedded manifest");
+  WriteTextFile(embedded_ort, "standalone runtime");
+
+  zsoda::inference::RuntimePathHints hints;
+  hints.bundled_asset_root = embedded_root.string();
+
+  const auto resolved = zsoda::inference::ResolveRuntimePaths(hints);
+  assert(std::filesystem::path(resolved.model_root) == embedded_models_dir);
+  assert(std::filesystem::path(resolved.model_manifest_path) == embedded_manifest);
+  assert(std::filesystem::path(resolved.onnxruntime_library_path) == embedded_ort);
+  assert(std::filesystem::path(resolved.onnxruntime_library_dir) == embedded_ort.parent_path());
+}
+
 }  // namespace
 
 void RunRuntimePathResolverTests() {
@@ -236,6 +283,8 @@ void RunRuntimePathResolverTests() {
   TestFallbackToRepositoryRelativeDefaults();
   TestPluginDirectoryWithoutModelsUsesAbsoluteFallback();
   TestEffectsInstallFallsBackToAdobeMediaCoreModels();
+  TestMediaCoreSubfolderPrefersAdjacentSidecarAssets();
   TestMacBundleModuleDirectoryUsesResources();
   TestEmbeddedPayloadAssetRootTakesPrecedence();
+  TestStandaloneBundledAssetRootWithoutPluginDirectory();
 }

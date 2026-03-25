@@ -11,13 +11,20 @@ param(
 
   [switch]$IncludeManifest,
 
+  [ValidateSet("embedded-windows", "sidecar-ort")]
+  [string]$PackageMode = "embedded-windows",
+
   [string]$PythonRuntimeDir = "",
 
   [string]$ModelRepoDir = "",
 
+  [string]$ModelRootDir = "",
+
   [string]$HfCacheDir = "",
 
   [switch]$RequireSelfContained,
+
+  [string]$GoldenMacFixture = "",
 
   [string]$OrtRuntimeDllPath,
 
@@ -26,148 +33,6 @@ param(
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
-
-function Resolve-ArtifactPath {
-  param(
-    [string]$PlatformName,
-    [string]$BuildRoot
-  )
-
-  if ($PlatformName -eq "windows") {
-    $candidates = @(
-      (Join-Path $BuildRoot "plugin\Release\ZSoda.aex"),
-      (Join-Path $BuildRoot "plugin\ZSoda.aex")
-    )
-    foreach ($candidate in $candidates) {
-      if (Test-Path -LiteralPath $candidate -PathType Leaf) {
-        return $candidate
-      }
-    }
-    return $null
-  }
-
-  $bundleCandidates = @(
-    (Join-Path $BuildRoot "plugin\Release\ZSoda.plugin"),
-    (Join-Path $BuildRoot "plugin\ZSoda.plugin")
-  )
-  foreach ($candidate in $bundleCandidates) {
-    if (Test-Path -LiteralPath $candidate -PathType Container) {
-      return $candidate
-    }
-  }
-  return $null
-}
-
-function Resolve-OrtRuntimeDllPath {
-  param(
-    [string]$ExplicitPath,
-    [string]$BuildRoot,
-    [string]$ArtifactFullPath
-  )
-
-  if (-not [string]::IsNullOrWhiteSpace($ExplicitPath)) {
-    if (Test-Path -LiteralPath $ExplicitPath -PathType Leaf) {
-      return (Resolve-Path -LiteralPath $ExplicitPath).Path
-    }
-    Write-Warning "OrtRuntimeDllPath does not point to a file: '$ExplicitPath'."
-  }
-
-  $artifactDir = Split-Path -Path $ArtifactFullPath -Parent
-  $candidates = @(
-    (Join-Path $artifactDir "zsoda_ort\onnxruntime.dll"),
-    (Join-Path $artifactDir "onnxruntime.dll"),
-    (Join-Path $BuildRoot "plugin\Release\zsoda_ort\onnxruntime.dll"),
-    (Join-Path $BuildRoot "plugin\Release\onnxruntime.dll"),
-    (Join-Path $BuildRoot "plugin\zsoda_ort\onnxruntime.dll"),
-    (Join-Path $BuildRoot "plugin\onnxruntime.dll")
-  )
-
-  foreach ($candidate in $candidates) {
-    if (Test-Path -LiteralPath $candidate -PathType Leaf) {
-      return (Resolve-Path -LiteralPath $candidate).Path
-    }
-  }
-
-  return $null
-}
-
-function Resolve-OrtProvidersSharedDllPath {
-  param(
-    [string]$BuildRoot,
-    [string]$ArtifactFullPath,
-    [string]$ResolvedOrtRuntimeDll
-  )
-
-  $artifactDir = Split-Path -Path $ArtifactFullPath -Parent
-  $runtimeDir = $null
-  if (-not [string]::IsNullOrWhiteSpace($ResolvedOrtRuntimeDll)) {
-    $runtimeDir = Split-Path -Path $ResolvedOrtRuntimeDll -Parent
-  }
-
-  $candidates = @(
-    (Join-Path $artifactDir "zsoda_ort\\onnxruntime_providers_shared.dll"),
-    (Join-Path $artifactDir "onnxruntime_providers_shared.dll"),
-    (Join-Path $BuildRoot "plugin\\Release\\zsoda_ort\\onnxruntime_providers_shared.dll"),
-    (Join-Path $BuildRoot "plugin\\Release\\onnxruntime_providers_shared.dll"),
-    (Join-Path $BuildRoot "plugin\\zsoda_ort\\onnxruntime_providers_shared.dll"),
-    (Join-Path $BuildRoot "plugin\\onnxruntime_providers_shared.dll")
-  )
-  if (-not [string]::IsNullOrWhiteSpace($runtimeDir)) {
-    $candidates += (Join-Path $runtimeDir "onnxruntime_providers_shared.dll")
-  }
-
-  foreach ($candidate in $candidates | Select-Object -Unique) {
-    if (Test-Path -LiteralPath $candidate -PathType Leaf) {
-      return (Resolve-Path -LiteralPath $candidate).Path
-    }
-  }
-
-  return $null
-}
-
-function Resolve-PythonRuntimeDir {
-  param(
-    [string]$BuildRoot,
-    [string]$ArtifactFullPath
-  )
-
-  $artifactDir = Split-Path -Path $ArtifactFullPath -Parent
-  $candidates = @(
-    (Join-Path $artifactDir "zsoda_py"),
-    (Join-Path $BuildRoot "plugin\\Release\\zsoda_py"),
-    (Join-Path $BuildRoot "plugin\\zsoda_py")
-  )
-
-  foreach ($candidate in $candidates | Select-Object -Unique) {
-    if (Test-Path -LiteralPath $candidate -PathType Container) {
-      return (Resolve-Path -LiteralPath $candidate).Path
-    }
-  }
-
-  return $null
-}
-
-function Resolve-OrtRuntimeDir {
-  param(
-    [string]$BuildRoot,
-    [string]$ArtifactFullPath
-  )
-
-  $artifactDir = Split-Path -Path $ArtifactFullPath -Parent
-  $candidates = @(
-    (Join-Path $artifactDir "zsoda_ort"),
-    (Join-Path $BuildRoot "plugin\Release\zsoda_ort"),
-    (Join-Path $BuildRoot "plugin\zsoda_ort")
-  )
-
-  foreach ($candidate in $candidates | Select-Object -Unique) {
-    if (Test-Path -LiteralPath $candidate -PathType Container) {
-      return (Resolve-Path -LiteralPath $candidate).Path
-    }
-  }
-
-  return $null
-}
 
 function Copy-ReplacedDirectory {
   param(
@@ -189,107 +54,6 @@ function Copy-ReplacedDirectory {
 
   Copy-Item -LiteralPath $SourceDir -Destination $DestinationDir -Force -Recurse
 }
-
-function Copy-DirectoryContents {
-  param(
-    [Parameter(Mandatory = $true)]
-    [string]$SourceDir,
-
-    [Parameter(Mandatory = $true)]
-    [string]$DestinationDir
-  )
-
-  New-Item -ItemType Directory -Path $DestinationDir -Force | Out-Null
-  $entries = Get-ChildItem -LiteralPath $SourceDir -Force
-  foreach ($entry in $entries) {
-    Copy-Item -LiteralPath $entry.FullName -Destination $DestinationDir -Force -Recurse
-  }
-}
-
-function Stage-ModelRepos {
-  param(
-    [Parameter(Mandatory = $true)]
-    [string]$SourceRoot,
-
-    [Parameter(Mandatory = $true)]
-    [string]$DestinationRoot
-  )
-
-  New-Item -ItemType Directory -Path $DestinationRoot -Force | Out-Null
-  $repoDirs = Get-ChildItem -LiteralPath $SourceRoot -Directory -Force
-  if (-not $repoDirs) {
-    throw "Model repo directory does not contain any model subdirectories: $SourceRoot"
-  }
-
-  foreach ($repoDir in $repoDirs) {
-    $repoDestination = Join-Path $DestinationRoot $repoDir.Name
-    if (Test-Path -LiteralPath $repoDestination) {
-      Remove-Item -LiteralPath $repoDestination -Recurse -Force
-    }
-    Copy-DirectoryContents -SourceDir $repoDir.FullName -DestinationDir $repoDestination
-  }
-}
-
-function Stage-ModelsMetadata {
-  param(
-    [Parameter(Mandatory = $true)]
-    [string]$DestinationRoot
-  )
-
-  New-Item -ItemType Directory -Path $DestinationRoot -Force | Out-Null
-  foreach ($metadataName in @("models.manifest", "README.md")) {
-    $sourcePath = Join-Path "models" $metadataName
-    if (Test-Path -LiteralPath $sourcePath -PathType Leaf) {
-      Copy-Item -LiteralPath $sourcePath -Destination (Join-Path $DestinationRoot $metadataName) -Force
-    }
-  }
-}
-
-function Assert-SelfContainedPayload {
-  param(
-    [Parameter(Mandatory = $true)]
-    [string]$StageRoot,
-
-    [Parameter(Mandatory = $true)]
-    [ValidateSet("windows", "macos")]
-    [string]$PlatformName
-  )
-
-  $pythonStageDir = Join-Path $StageRoot "zsoda_py"
-  $serviceScript = Join-Path $pythonStageDir "distill_any_depth_remote_service.py"
-  if (-not (Test-Path -LiteralPath $serviceScript -PathType Leaf)) {
-    throw "Self-contained packaging requires bundled service script: $serviceScript"
-  }
-
-  $pythonCandidates = if ($PlatformName -eq "windows") {
-    @(
-      (Join-Path $pythonStageDir "python.exe"),
-      (Join-Path $pythonStageDir "python\python.exe"),
-      (Join-Path $pythonStageDir "runtime\python.exe")
-    )
-  } else {
-    @(
-      (Join-Path $pythonStageDir "bin/python3"),
-      (Join-Path $pythonStageDir "python/bin/python3"),
-      (Join-Path $pythonStageDir "runtime/bin/python3")
-    )
-  }
-
-  if (-not ($pythonCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1)) {
-    throw "Self-contained packaging requires a bundled Python runtime under zsoda_py/."
-  }
-
-  $modelsHfDir = Join-Path $StageRoot "models\hf"
-  if (-not (Test-Path -LiteralPath $modelsHfDir -PathType Container)) {
-    throw "Self-contained packaging requires bundled local model repos under models/hf/."
-  }
-
-  $repoDirs = Get-ChildItem -LiteralPath $modelsHfDir -Directory -Force
-  if (-not $repoDirs) {
-    throw "Self-contained packaging requires at least one local model repo under models/hf/."
-  }
-}
-
 function Resolve-PayloadPythonCommand {
   foreach ($candidate in @("py", "python", "python3")) {
     $command = Get-Command $candidate -ErrorAction SilentlyContinue
@@ -300,88 +64,143 @@ function Resolve-PayloadPythonCommand {
   return $null
 }
 
-$artifactPath = Resolve-ArtifactPath -PlatformName $Platform -BuildRoot $BuildDir
-if (-not $artifactPath) {
-  throw "Artifact not found for platform '$Platform' under build dir '$BuildDir'."
+function Invoke-PythonScript {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$PythonCommand,
+
+    [Parameter(Mandatory = $true)]
+    [string[]]$Arguments,
+
+    [Parameter(Mandatory = $true)]
+    [string]$FailureMessage
+  )
+
+  $pythonLeaf = (Split-Path -Leaf $PythonCommand).ToLowerInvariant()
+  if ($pythonLeaf -eq "py.exe" -or $pythonLeaf -eq "py") {
+    & $PythonCommand -3 @Arguments
+  } else {
+    & $PythonCommand @Arguments
+  }
+  if ($LASTEXITCODE -ne 0) {
+    throw "$FailureMessage (exit code: $LASTEXITCODE)"
+  }
 }
 
-if ([string]::IsNullOrWhiteSpace($ModelRepoDir)) {
-  $defaultModelRepoDir = "release-assets\models"
-  if (Test-Path -LiteralPath $defaultModelRepoDir -PathType Container) {
-    $ModelRepoDir = (Resolve-Path -LiteralPath $defaultModelRepoDir).Path
-  }
+$payloadPython = Resolve-PayloadPythonCommand
+if (-not $payloadPython) {
+  throw "Python is required to prepare package staging layout."
 }
-if ([string]::IsNullOrWhiteSpace($HfCacheDir)) {
-  $defaultHfCacheDir = "release-assets\hf-cache"
-  if (Test-Path -LiteralPath $defaultHfCacheDir -PathType Container) {
-    $HfCacheDir = (Resolve-Path -LiteralPath $defaultHfCacheDir).Path
-  }
-}
-if ([string]::IsNullOrWhiteSpace($PythonRuntimeDir)) {
-  $defaultPythonRuntimeDir = if ($Platform -eq "windows") {
-    "release-assets\python-win"
-  } else {
-    "release-assets\python-macos"
-  }
-  if (Test-Path -LiteralPath $defaultPythonRuntimeDir -PathType Container) {
-    $PythonRuntimeDir = (Resolve-Path -LiteralPath $defaultPythonRuntimeDir).Path
-  }
+
+$stagePrepTool = Join-Path "tools" "prepare_package_stage.py"
+if (-not (Test-Path -LiteralPath $stagePrepTool -PathType Leaf)) {
+  throw "Package stage preparation script not found: $stagePrepTool"
 }
 
 New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
-$artifactName = Split-Path -Path $artifactPath -Leaf
-$destination = Join-Path $OutputDir $artifactName
+$stagePlanPath = Join-Path $OutputDir ".package-stage.json"
+$stagePrepArgs = @(
+  $stagePrepTool,
+  "--platform",
+  $Platform,
+  "--package-mode",
+  $PackageMode,
+  "--build-dir",
+  $BuildDir,
+  "--output-dir",
+  $OutputDir,
+  "--plan-out",
+  $stagePlanPath,
+  "--quiet"
+)
+if ($IncludeManifest) {
+  $stagePrepArgs += "--include-manifest"
+}
+if (-not [string]::IsNullOrWhiteSpace($PythonRuntimeDir)) {
+  $stagePrepArgs += @("--python-runtime-dir", $PythonRuntimeDir)
+}
+if (-not [string]::IsNullOrWhiteSpace($ModelRepoDir)) {
+  $stagePrepArgs += @("--model-repo-dir", $ModelRepoDir)
+}
+if (-not [string]::IsNullOrWhiteSpace($ModelRootDir)) {
+  $stagePrepArgs += @("--model-root-dir", $ModelRootDir)
+}
+if (-not [string]::IsNullOrWhiteSpace($HfCacheDir)) {
+  $stagePrepArgs += @("--hf-cache-dir", $HfCacheDir)
+}
+if (-not [string]::IsNullOrWhiteSpace($OrtRuntimeDllPath)) {
+  if (-not (Test-Path -LiteralPath $OrtRuntimeDllPath -PathType Leaf)) {
+    throw "OrtRuntimeDllPath does not point to a file: '$OrtRuntimeDllPath'."
+  }
+  $stagePrepArgs += @("--ort-runtime-dir", (Split-Path -Path (Resolve-Path -LiteralPath $OrtRuntimeDllPath).Path -Parent))
+}
+if ($RequireSelfContained) {
+  $stagePrepArgs += "--require-self-contained"
+}
 
+Invoke-PythonScript -PythonCommand $payloadPython -Arguments $stagePrepArgs -FailureMessage "Package stage preparation failed"
+
+$stagePlan = Get-Content -LiteralPath $stagePlanPath -Raw | ConvertFrom-Json
+$artifactPath = $stagePlan.artifact_source
+$artifactName = $stagePlan.artifact_name
+$payloadStageDir = $stagePlan.payload_stage_dir
+$packageRootDirName = [string]$stagePlan.package_root_dir_name
+$packageOutputRoot = if ([string]::IsNullOrWhiteSpace($packageRootDirName)) {
+  $OutputDir
+} else {
+  Join-Path $OutputDir $packageRootDirName
+}
+New-Item -ItemType Directory -Path $packageOutputRoot -Force | Out-Null
+
+if ($RequireSelfContained -and $PackageMode -ne "sidecar-ort" -and
+    $stagePlan.staged_root_paths.PSObject.Properties["zsoda_py"] -and
+    $stagePlan.staged_root_paths.PSObject.Properties["models"]) {
+  $runtimeValidationTool = Join-Path "tools" "validate_self_contained_runtime.py"
+  if (-not (Test-Path -LiteralPath $runtimeValidationTool -PathType Leaf)) {
+    throw "Self-contained runtime validation script not found: $runtimeValidationTool"
+  }
+  $runtimeValidationArgs = @(
+    $runtimeValidationTool,
+    "--stage-root",
+    $payloadStageDir,
+    "--platform",
+    $Platform,
+    "--model-id",
+    "distill-any-depth-base",
+    "--validate-device",
+    "cpu"
+  )
+  Invoke-PythonScript -PythonCommand $payloadPython -Arguments $runtimeValidationArgs -FailureMessage "Bundled runtime validation failed"
+}
+
+foreach ($warning in @($stagePlan.warnings)) {
+  if (-not [string]::IsNullOrWhiteSpace([string]$warning)) {
+    Write-Host "warning: $warning"
+  }
+}
+
+if ($RequireOrtRuntimeDll -and (-not $stagePlan.staged_root_paths.PSObject.Properties["zsoda_ort"])) {
+  throw "zsoda_ort runtime directory was not resolved for package output."
+}
+
+$destination = Join-Path $packageOutputRoot $artifactName
 if (Test-Path -LiteralPath $destination) {
   Remove-Item -LiteralPath $destination -Force -Recurse
 }
-
 Copy-Item -LiteralPath $artifactPath -Destination $destination -Force -Recurse
 
-$packageResourceRoot = $OutputDir
+$packageResourceRoot = if ([string]::IsNullOrWhiteSpace($stagePlan.package_resource_subdir)) {
+  $packageOutputRoot
+} else {
+  Join-Path $destination $stagePlan.package_resource_subdir
+}
 if ($Platform -eq "macos") {
-  $packageResourceRoot = Join-Path $destination "Contents/Resources"
   New-Item -ItemType Directory -Path $packageResourceRoot -Force | Out-Null
 }
-
-$payloadStageDir = Join-Path $OutputDir ".payload-stage"
-if (Test-Path -LiteralPath $payloadStageDir) {
-  Remove-Item -LiteralPath $payloadStageDir -Recurse -Force
-}
-New-Item -ItemType Directory -Path $payloadStageDir -Force | Out-Null
 
 $modelsCopiedPath = $null
 $embeddedPayloadRoots = New-Object System.Collections.Generic.List[string]
 $embeddedPayloadStatus = $null
-if ($IncludeManifest) {
-  $modelsSourceDir = "models"
-  if (Test-Path -LiteralPath $modelsSourceDir -PathType Container) {
-    $modelsStageDir = Join-Path $payloadStageDir "models"
-    if (Test-Path -LiteralPath $modelsStageDir) {
-      Remove-Item -LiteralPath $modelsStageDir -Recurse -Force
-    }
-    Stage-ModelsMetadata -DestinationRoot $modelsStageDir
-    $modelsCopiedPath = $modelsStageDir
-  }
-}
-
-if (-not [string]::IsNullOrWhiteSpace($ModelRepoDir)) {
-  if (-not (Test-Path -LiteralPath $ModelRepoDir -PathType Container)) {
-    throw "Model repo directory was not found: $ModelRepoDir"
-  }
-  $modelsStageDir = Join-Path $payloadStageDir "models"
-  Stage-ModelRepos -SourceRoot $ModelRepoDir -DestinationRoot (Join-Path $modelsStageDir "hf")
-  $modelsCopiedPath = $modelsStageDir
-}
-
-if (-not [string]::IsNullOrWhiteSpace($HfCacheDir)) {
-  if (-not (Test-Path -LiteralPath $HfCacheDir -PathType Container)) {
-    throw "HF cache directory was not found: $HfCacheDir"
-  }
-  $modelsStageDir = Join-Path $payloadStageDir "models"
-  Copy-ReplacedDirectory -SourceDir $HfCacheDir -DestinationDir (Join-Path $modelsStageDir "hf-cache")
-  $modelsCopiedPath = $modelsStageDir
-}
 
 $ortRuntimeCopiedPath = $null
 $ortRuntimeDllCopiedPath = $null
@@ -389,63 +208,42 @@ $ortProvidersCopiedPath = $null
 $pythonRuntimeCopiedPath = $null
 $archivePath = $null
 $archiveShaPath = $null
-$resolvedOrtRuntimeDir = Resolve-OrtRuntimeDir -BuildRoot $BuildDir -ArtifactFullPath $artifactPath
-if ($resolvedOrtRuntimeDir) {
-  $ortStageDir = Join-Path $payloadStageDir "zsoda_ort"
-  Copy-ReplacedDirectory -SourceDir $resolvedOrtRuntimeDir -DestinationDir $ortStageDir
-  $ortRuntimeCopiedPath = $ortStageDir
-} elseif ($Platform -eq "windows") {
-  $warn = "zsoda_ort runtime directory was not resolved for package output. This is expected for the default DAD-only remote build; local ORT runtime files are optional."
-  if ($RequireOrtRuntimeDll) {
-    throw $warn
-  }
-  Write-Host $warn
-}
-
-$resolvedPythonRuntimeDir = Resolve-PythonRuntimeDir -BuildRoot $BuildDir -ArtifactFullPath $artifactPath
-if ($resolvedPythonRuntimeDir) {
-  $pythonStageDir = Join-Path $payloadStageDir "zsoda_py"
-  Copy-ReplacedDirectory -SourceDir $resolvedPythonRuntimeDir -DestinationDir $pythonStageDir
-  $pythonRuntimeCopiedPath = $pythonStageDir
+$archiveEntries = New-Object System.Collections.Generic.List[string]
+$artifactHashLabel = if ([string]::IsNullOrWhiteSpace($packageRootDirName)) {
+  $artifactName
 } else {
-  $serviceScript = Join-Path "tools" "distill_any_depth_remote_service.py"
-  if (Test-Path -LiteralPath $serviceScript -PathType Leaf) {
-    $pythonStageDir = Join-Path $payloadStageDir "zsoda_py"
-    New-Item -ItemType Directory -Path $pythonStageDir -Force | Out-Null
-    Copy-Item -LiteralPath $serviceScript -Destination (Join-Path $pythonStageDir "distill_any_depth_remote_service.py") -Force
-    $pythonRuntimeCopiedPath = $pythonStageDir
-  } elseif ($Platform -eq "windows") {
-    Write-Warning "zsoda_py runtime directory was not resolved for package output."
-  }
+  ($packageRootDirName + "\" + $artifactName).Replace('\', '/')
 }
-
-if (-not [string]::IsNullOrWhiteSpace($PythonRuntimeDir)) {
-  if (-not (Test-Path -LiteralPath $PythonRuntimeDir -PathType Container)) {
-    throw "Python runtime directory was not found: $PythonRuntimeDir"
-  }
-  $pythonStageDir = Join-Path $payloadStageDir "zsoda_py"
-  New-Item -ItemType Directory -Path $pythonStageDir -Force | Out-Null
-  Copy-ReplacedDirectory -SourceDir $PythonRuntimeDir -DestinationDir (Join-Path $pythonStageDir "python")
-  $pythonRuntimeCopiedPath = $pythonStageDir
+if ([string]::IsNullOrWhiteSpace($packageRootDirName)) {
+  [void]$archiveEntries.Add($artifactName)
+} else {
+  [void]$archiveEntries.Add($packageRootDirName)
 }
-
-if ($RequireSelfContained) {
-  Assert-SelfContainedPayload -StageRoot $payloadStageDir -PlatformName $Platform
-}
-
-foreach ($stagedRoot in @("models", "zsoda_ort", "zsoda_py")) {
-  $stagedPath = Join-Path $payloadStageDir $stagedRoot
-  if (-not (Test-Path -LiteralPath $stagedPath -PathType Container)) {
+foreach ($stagedRoot in @($stagePlan.staged_roots)) {
+  $stagedPath = [string]$stagePlan.staged_root_paths.PSObject.Properties[$stagedRoot].Value
+  if ([string]::IsNullOrWhiteSpace($stagedPath) -or -not (Test-Path -LiteralPath $stagedPath -PathType Container)) {
     continue
   }
 
-  if ($Platform -eq "windows") {
+  if ($Platform -eq "windows" -and $PackageMode -eq "embedded-windows") {
     [void]$embeddedPayloadRoots.Add($stagedPath)
+    switch ($stagedRoot) {
+      "models" { $modelsCopiedPath = $stagedPath }
+      "zsoda_ort" { $ortRuntimeCopiedPath = $stagedPath }
+      "zsoda_py" { $pythonRuntimeCopiedPath = $stagedPath }
+    }
     continue
   }
 
-  $resourceDestination = Join-Path $packageResourceRoot $stagedRoot
+  $resourceDestination = if ($Platform -eq "windows") {
+    Join-Path $packageOutputRoot $stagedRoot
+  } else {
+    Join-Path $packageResourceRoot $stagedRoot
+  }
   Copy-ReplacedDirectory -SourceDir $stagedPath -DestinationDir $resourceDestination
+  if ($Platform -eq "windows" -and [string]::IsNullOrWhiteSpace($packageRootDirName)) {
+    [void]$archiveEntries.Add($stagedRoot)
+  }
   switch ($stagedRoot) {
     "models" {
       $modelsCopiedPath = $resourceDestination
@@ -467,7 +265,7 @@ foreach ($stagedRoot in @("models", "zsoda_ort", "zsoda_py")) {
   }
 }
 
-if ($Platform -eq "windows" -and $embeddedPayloadRoots.Count -gt 0) {
+if ($Platform -eq "windows" -and $PackageMode -eq "embedded-windows" -and $embeddedPayloadRoots.Count -gt 0) {
   $payloadPython = Resolve-PayloadPythonCommand
   if (-not $payloadPython) {
     throw "Python is required to build embedded Windows payloads."
@@ -482,13 +280,31 @@ if ($Platform -eq "windows" -and $embeddedPayloadRoots.Count -gt 0) {
     $payloadArgs += @("--root", $payloadRoot)
   }
 
-  if ((Split-Path -Leaf $payloadPython).ToLowerInvariant() -eq "py.exe" -or
-      (Split-Path -Leaf $payloadPython).ToLowerInvariant() -eq "py") {
-    & $payloadPython -3 @payloadArgs
-  } else {
-    & $payloadPython @payloadArgs
-  }
+  Invoke-PythonScript -PythonCommand $payloadPython -Arguments $payloadArgs -FailureMessage "Embedded payload build failed"
   $embeddedPayloadStatus = "embedded $($embeddedPayloadRoots.Count) root(s) into $destination"
+
+  $payloadValidationTool = Join-Path "tools" "check_release_readiness.py"
+  if (-not (Test-Path -LiteralPath $payloadValidationTool -PathType Leaf)) {
+    throw "Payload validation script not found: $payloadValidationTool"
+  }
+
+  $payloadValidationArgs = @(
+    $payloadValidationTool,
+    "--inspect-windows-artifact",
+    $destination,
+    "--require-self-contained"
+  )
+  if (-not [string]::IsNullOrWhiteSpace($GoldenMacFixture)) {
+    if (-not (Test-Path -LiteralPath $GoldenMacFixture)) {
+      throw "Golden macOS fixture was not found: $GoldenMacFixture"
+    }
+    $payloadValidationArgs += @(
+      "--compare-windows-artifact-to-macos-fixture",
+      $GoldenMacFixture
+    )
+  }
+  Invoke-PythonScript -PythonCommand $payloadPython -Arguments $payloadValidationArgs -FailureMessage "Embedded payload validation failed"
+  $embeddedPayloadStatus = "$embeddedPayloadStatus; validation passed"
 }
 
 if ($Platform -eq "macos") {
@@ -499,7 +315,7 @@ if ($Platform -eq "macos") {
 }
 
 if ($Platform -eq "windows") {
-  $archivePath = Join-Path $OutputDir "ZSoda-windows.zip"
+  $archivePath = Join-Path $OutputDir $stagePlan.archive_name
   if (Test-Path -LiteralPath $archivePath) {
     Remove-Item -LiteralPath $archivePath -Force
   }
@@ -511,9 +327,10 @@ if ($Platform -eq "windows") {
 
   if ($tar) {
     $archiveLeaf = Split-Path -Path $archivePath -Leaf
+    $archiveInputPaths = @($archiveEntries)
     Push-Location $OutputDir
     try {
-      & $tar.Source -a -cf $archiveLeaf $artifactName
+      & $tar.Source -a -cf $archiveLeaf @archiveInputPaths
       if ($LASTEXITCODE -ne 0) {
         throw "tar failed to create archive: $archivePath"
       }
@@ -521,10 +338,11 @@ if ($Platform -eq "windows") {
       Pop-Location
     }
   } elseif (Get-Command Compress-Archive -ErrorAction SilentlyContinue) {
-    Compress-Archive -LiteralPath $destination -DestinationPath $archivePath -Force
+    $literalPaths = @($archiveEntries | ForEach-Object { Join-Path $OutputDir $_ })
+    Compress-Archive -LiteralPath $literalPaths -DestinationPath $archivePath -Force
   }
 } elseif (Get-Command Compress-Archive -ErrorAction SilentlyContinue) {
-  $archivePath = Join-Path $OutputDir "ZSoda-macos.zip"
+  $archivePath = Join-Path $OutputDir $stagePlan.archive_name
   if (Test-Path -LiteralPath $archivePath) {
     Remove-Item -LiteralPath $archivePath -Force
   }
@@ -534,14 +352,24 @@ if ($Platform -eq "windows") {
 if (Get-Command Get-FileHash -ErrorAction SilentlyContinue) {
   if ($Platform -eq "windows") {
     $hash = Get-FileHash -Algorithm SHA256 -LiteralPath $destination
-    "$($hash.Hash.ToLowerInvariant())  $artifactName" | Out-File -FilePath (Join-Path $OutputDir "$artifactName.sha256") -Encoding ascii
+    "$($hash.Hash.ToLowerInvariant())  $artifactHashLabel" | Out-File -FilePath (Join-Path $OutputDir "$artifactName.sha256") -Encoding ascii
     if ($ortRuntimeDllCopiedPath) {
       $ortHash = Get-FileHash -Algorithm SHA256 -LiteralPath $ortRuntimeDllCopiedPath
-      "$($ortHash.Hash.ToLowerInvariant())  zsoda_ort/onnxruntime.dll" | Out-File -FilePath (Join-Path $OutputDir "onnxruntime.dll.sha256") -Encoding ascii
+      $ortHashLabel = if ([string]::IsNullOrWhiteSpace($packageRootDirName)) {
+        "zsoda_ort/onnxruntime.dll"
+      } else {
+        ($packageRootDirName + "\zsoda_ort\onnxruntime.dll").Replace('\', '/')
+      }
+      "$($ortHash.Hash.ToLowerInvariant())  $ortHashLabel" | Out-File -FilePath (Join-Path $OutputDir "onnxruntime.dll.sha256") -Encoding ascii
     }
     if ($ortProvidersCopiedPath) {
       $providersHash = Get-FileHash -Algorithm SHA256 -LiteralPath $ortProvidersCopiedPath
-      "$($providersHash.Hash.ToLowerInvariant())  zsoda_ort/onnxruntime_providers_shared.dll" | Out-File -FilePath (Join-Path $OutputDir "onnxruntime_providers_shared.dll.sha256") -Encoding ascii
+      $providersHashLabel = if ([string]::IsNullOrWhiteSpace($packageRootDirName)) {
+        "zsoda_ort/onnxruntime_providers_shared.dll"
+      } else {
+        ($packageRootDirName + "\zsoda_ort\onnxruntime_providers_shared.dll").Replace('\', '/')
+      }
+      "$($providersHash.Hash.ToLowerInvariant())  $providersHashLabel" | Out-File -FilePath (Join-Path $OutputDir "onnxruntime_providers_shared.dll.sha256") -Encoding ascii
     }
   } else {
     $tempTar = Join-Path $env:TEMP "zsoda_plugin_bundle.tar"
@@ -566,14 +394,14 @@ Write-Host "  platform: $Platform"
 Write-Host "  source:   $artifactPath"
 Write-Host "  output:   $destination"
 if ($modelsCopiedPath) {
-  if ($Platform -eq "windows") {
+  if ($Platform -eq "windows" -and $PackageMode -eq "embedded-windows") {
     Write-Host "  models:   embedded"
   } else {
     Write-Host "  models:   $modelsCopiedPath"
   }
 }
 if ($ortRuntimeCopiedPath) {
-  if ($Platform -eq "windows") {
+  if ($Platform -eq "windows" -and $PackageMode -eq "embedded-windows") {
     Write-Host "  ort dir:  embedded"
   } else {
     Write-Host "  ort dir:  $ortRuntimeCopiedPath"
@@ -587,7 +415,7 @@ if ($ortProvidersCopiedPath) {
   Write-Host "  ort providers:  (not packaged)"
 }
 if ($pythonRuntimeCopiedPath) {
-  if ($Platform -eq "windows") {
+  if ($Platform -eq "windows" -and $PackageMode -eq "embedded-windows") {
     Write-Host "  python runtime: embedded"
   } else {
     Write-Host "  python runtime: $pythonRuntimeCopiedPath"
@@ -607,4 +435,7 @@ if ($archiveShaPath -and (Test-Path -LiteralPath $archiveShaPath -PathType Leaf)
 
 if ($payloadStageDir -and (Test-Path -LiteralPath $payloadStageDir)) {
   Remove-Item -LiteralPath $payloadStageDir -Recurse -Force
+}
+if (Test-Path -LiteralPath $stagePlanPath -PathType Leaf) {
+  Remove-Item -LiteralPath $stagePlanPath -Force
 }

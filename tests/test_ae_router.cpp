@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <cstdio>
 #include <memory>
 #include <optional>
 #include <string>
@@ -75,6 +76,15 @@ int RuntimeParamSlot(zsoda::ae::AeParamId id) {
   return zsoda::ae::RuntimeParamTableIndex(id);
 }
 
+void TraceTest(const char* name) {
+  const char* enabled = std::getenv("ZSODA_TEST_TRACE");
+  if (enabled == nullptr || enabled[0] == '\0') {
+    return;
+  }
+  std::fprintf(stderr, "ZSODA_TEST_TRACE %s\n", name != nullptr ? name : "<null>");
+  std::fflush(stderr);
+}
+
 void TestStubCommandAndDispatchMapping() {
   assert(zsoda::ae::MapStubCommandId(0) == zsoda::ae::AeCommand::kAbout);
   assert(zsoda::ae::MapStubCommandId(1) == zsoda::ae::AeCommand::kGlobalSetup);
@@ -136,9 +146,12 @@ void TestAeGlobalOutFlagsDoNotAdvertiseFloatColorAwareWithoutSmartFx() {
 }
 
 void TestParamSetupAndModelMenu() {
+  TraceTest("TestParamSetupAndModelMenu/create_engine");
   auto engine = std::make_shared<zsoda::inference::ManagedInferenceEngine>("models");
   std::string error;
+  TraceTest("TestParamSetupAndModelMenu/initialize");
   assert(engine->Initialize("distill-any-depth-base", &error));
+  TraceTest("TestParamSetupAndModelMenu/create_pipeline");
   auto pipeline = std::make_shared<zsoda::core::RenderPipeline>(engine);
   zsoda::ae::AeCommandRouter router(pipeline, engine);
 
@@ -148,9 +161,12 @@ void TestParamSetupAndModelMenu() {
   setup_context.command = zsoda::ae::AeCommand::kGlobalSetup;
   setup_context.host = &host;
   setup_context.error = &error;
+  TraceTest("TestParamSetupAndModelMenu/global_setup");
   assert(router.Handle(setup_context));
+  TraceTest("TestParamSetupAndModelMenu/model_menu_nonempty");
   assert(!router.ModelMenu().empty());
 
+  TraceTest("TestParamSetupAndModelMenu/copy_params");
   auto params = router.CurrentParams();
   params.model_id = router.ModelMenu().front();
   params.output = zsoda::ae::AeOutputSelection::kDepthSlice;
@@ -163,7 +179,9 @@ void TestParamSetupAndModelMenu() {
   update_context.command = zsoda::ae::AeCommand::kUpdateParams;
   update_context.params_update = &params;
   update_context.error = &error;
+  TraceTest("TestParamSetupAndModelMenu/update_params");
   assert(router.Handle(update_context));
+  TraceTest("TestParamSetupAndModelMenu/verify");
   assert(router.CurrentParams().model_id == router.ModelMenu().front());
   assert(router.CurrentParams().output == zsoda::ae::AeOutputSelection::kDepthSlice);
   assert(router.CurrentParams().color_map == zsoda::ae::AeDepthColorMapSelection::kTurbo);
@@ -552,21 +570,36 @@ void TestRouterPayloadValidation() {
 }  // namespace
 
 void RunAeRouterTests() {
+  TraceTest("TestStubCommandAndDispatchMapping");
   TestStubCommandAndDispatchMapping();
+  TraceTest("TestSafeFrameHashSeed");
   TestSafeFrameHashSeed();
+  TraceTest("TestPixelFormatHelpers");
   TestPixelFormatHelpers();
+  TraceTest("TestAeGlobalOutFlagsDoNotAdvertiseFloatColorAwareWithoutSmartFx");
   TestAeGlobalOutFlagsDoNotAdvertiseFloatColorAwareWithoutSmartFx();
+  TraceTest("TestParamSetupAndModelMenu");
   TestParamSetupAndModelMenu();
+  TraceTest("TestRuntimeParamSlotMapping");
   TestRuntimeParamSlotMapping();
+  TraceTest("TestRenderUsesCurrentAndOverrideParams");
   TestRenderUsesCurrentAndOverrideParams();
+  TraceTest("TestRenderBridgeFrameHashCacheBehavior");
   TestRenderBridgeFrameHashCacheBehavior();
 #if defined(ZSODA_WITH_AE_SDK) && ZSODA_WITH_AE_SDK
+  TraceTest("TestSdkRenderDispatchReadsCoreParams");
   TestSdkRenderDispatchReadsCoreParams();
+  TraceTest("TestSdkUserChangedParamDispatchRequestsRerenderWithoutMutatingChangeFlags");
   TestSdkUserChangedParamDispatchRequestsRerenderWithoutMutatingChangeFlags();
+  TraceTest("TestSdkRenderDispatchSkipsOverrideWhenParamsUnavailable");
   TestSdkRenderDispatchSkipsOverrideWhenParamsUnavailable();
+  TraceTest("TestSdkSequenceResetupKeepsSequenceDataDisabled");
   TestSdkSequenceResetupKeepsSequenceDataDisabled();
+  TraceTest("TestSdkFrameLifecycleKeepsFrameDataDisabled");
   TestSdkFrameLifecycleKeepsFrameDataDisabled();
 #endif
+  TraceTest("TestExecuteHostBufferRenderBridge");
   TestExecuteHostBufferRenderBridge();
+  TraceTest("TestRouterPayloadValidation");
   TestRouterPayloadValidation();
 }

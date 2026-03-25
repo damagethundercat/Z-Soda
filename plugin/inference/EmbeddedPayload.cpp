@@ -2,10 +2,12 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -17,10 +19,13 @@ namespace {
 constexpr std::string_view kPayloadHeaderMagic = "ZSODA_PAYLOAD_V1";
 constexpr std::string_view kPayloadFooterMagic = "ZSODA_FOOTER_V1";
 constexpr const char* kPayloadReadyMarker = ".zsoda_payload_ready";
+constexpr const char* kPayloadCacheRootEnv = "ZSODA_PAYLOAD_CACHE_ROOT";
+constexpr std::size_t kPayloadMagicFieldSize = 16U;
+constexpr std::size_t kPayloadDigestSize = 32U;
 
 struct EmbeddedPayloadFooter {
   std::uint64_t payload_size = 0;
-  std::array<std::uint8_t, 32> payload_sha256 = {};
+  std::array<std::uint8_t, kPayloadDigestSize> payload_sha256 = {};
 };
 
 bool ReadExact(std::ifstream* stream, char* buffer, std::size_t size) {
@@ -70,11 +75,74 @@ std::string HexEncode(const std::array<std::uint8_t, 32>& bytes) {
   return encoded;
 }
 
-std::filesystem::path ResolvePayloadCacheRoot() {
+void AppendPayloadTrace(const char* stage, std::string_view detail = {}) {
+#if defined(_WIN32)
+  std::error_code ec;
+  const auto temp_root = std::filesystem::temp_directory_path(ec);
+  if (ec) {
+    return;
+  }
+
+  std::ofstream stream(temp_root / "ZSoda_AE_Runtime.log", std::ios::binary | std::ios::app);
+  if (!stream.is_open()) {
+    return;
+  }
+
+  const auto now = std::chrono::system_clock::now();
+  const std::time_t now_time = std::chrono::system_clock::to_time_t(now);
+  std::tm local_tm = {};
+  if (localtime_s(&local_tm, &now_time) != 0) {
+    return;
+  }
+
+  const auto millis =
+      std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
+  stream << std::put_time(&local_tm, "%Y-%m-%d %H:%M:%S") << '.'
+         << std::setw(3) << std::setfill('0') << millis.count()
+         << " | PayloadTrace | stage="
+         << (stage != nullptr ? stage : "<null>")
+         << ", detail="
+         << (!detail.empty() ? detail : "<none>")
+         << "\r\n";
+#else
+  (void)stage;
+  (void)detail;
+#endif
+}
+
+std::filesystem::path ResolveLegacyPayloadCacheRoot() {
 #if defined(_WIN32)
   const char* local_appdata = std::getenv("LOCALAPPDATA");
   if (local_appdata != nullptr && local_appdata[0] != '\0') {
     return std::filesystem::path(local_appdata) / "ZSoda" / "PayloadCache";
+  }
+#endif
+  return {};
+}
+
+std::filesystem::path ResolveSecondaryWindowsPayloadCacheRoot() {
+#if defined(_WIN32)
+  const char* user_profile = std::getenv("USERPROFILE");
+  if (user_profile != nullptr && user_profile[0] != '\0') {
+    return std::filesystem::path(user_profile) / "ZS";
+  }
+#endif
+  return {};
+}
+
+std::filesystem::path ResolvePayloadCacheRoot() {
+  const char* override_root = std::getenv(kPayloadCacheRootEnv);
+  if (override_root != nullptr && override_root[0] != '\0') {
+    return std::filesystem::path(override_root);
+  }
+
+#if defined(_WIN32)
+  const char* local_appdata = std::getenv("LOCALAPPDATA");
+  if (local_appdata != nullptr && local_appdata[0] != '\0') {
+    // Keep the Windows payload cache root intentionally short. After Effects does not
+    // advertise long-path awareness, and the bundled Python runtime contains deep
+    // package trees that can otherwise push extraction paths past MAX_PATH.
+    return std::filesystem::path(local_appdata) / "ZS";
   }
 #elif defined(__APPLE__)
   const char* home = std::getenv("HOME");
@@ -113,6 +181,23 @@ bool PathEscapesRoot(const std::filesystem::path& relative_path) {
   return false;
 }
 
+template <std::size_t N>
+bool MatchesPaddedMagic(const std::array<char, N>& field, std::string_view expected) {
+  if (expected.size() > N) {
+    return false;
+  }
+  const std::string_view prefix(field.data(), expected.size());
+  if (prefix != expected) {
+    return false;
+  }
+  for (std::size_t index = expected.size(); index < N; ++index) {
+    if (field[index] != '\0') {
+      return false;
+    }
+  }
+  return true;
+}
+
 bool ReadPayloadFooter(const std::filesystem::path& module_path,
                        EmbeddedPayloadFooter* footer,
                        std::uint64_t* payload_offset,
@@ -135,20 +220,20 @@ bool ReadPayloadFooter(const std::filesystem::path& module_path,
   stream.seekg(0, std::ios::end);
   const std::streamoff file_size = stream.tellg();
   constexpr std::streamoff footer_size =
-      static_cast<std::streamoff>(kPayloadFooterMagic.size() + sizeof(std::uint64_t) + 32U);
+      static_cast<std::streamoff>(kPayloadMagicFieldSize + sizeof(std::uint64_t) + kPayloadDigestSize);
   if (file_size < footer_size) {
     return false;
   }
 
   stream.seekg(file_size - footer_size, std::ios::beg);
-  std::array<char, 16> footer_magic = {};
+  std::array<char, kPayloadMagicFieldSize> footer_magic = {};
   if (!ReadExact(&stream, footer_magic.data(), footer_magic.size())) {
     if (error != nullptr) {
       *error = "failed to read embedded payload footer";
     }
     return false;
   }
-  if (std::string_view(footer_magic.data(), footer_magic.size()) != kPayloadFooterMagic) {
+  if (!MatchesPaddedMagic(footer_magic, kPayloadFooterMagic)) {
     return false;
   }
   if (!ReadU64LE(&stream, &footer->payload_size)) {
@@ -193,14 +278,14 @@ bool ExtractPayloadEntries(const std::filesystem::path& module_path,
   }
 
   stream.seekg(static_cast<std::streamoff>(payload_offset), std::ios::beg);
-  std::array<char, 16> header_magic = {};
+  std::array<char, kPayloadMagicFieldSize> header_magic = {};
   if (!ReadExact(&stream, header_magic.data(), header_magic.size())) {
     if (error != nullptr) {
       *error = "failed to read embedded payload header";
     }
     return false;
   }
-  if (std::string_view(header_magic.data(), header_magic.size()) != kPayloadHeaderMagic) {
+  if (!MatchesPaddedMagic(header_magic, kPayloadHeaderMagic)) {
     if (error != nullptr) {
       *error = "embedded payload header magic mismatch";
     }
@@ -351,17 +436,42 @@ EmbeddedPayloadInfo EnsureEmbeddedPayloadAvailable(const std::string& module_pat
     if (!footer_error.empty() && error != nullptr) {
       *error = footer_error;
     }
+    if (!footer_error.empty()) {
+      AppendPayloadTrace("footer_read_failed", footer_error);
+    }
     return info;
   }
 
   info.has_payload = true;
   info.payload_id = HexEncode(footer.payload_sha256);
   const std::filesystem::path extraction_root = ResolvePayloadCacheRoot() / info.payload_id;
+  const std::filesystem::path secondary_cache_root = ResolveSecondaryWindowsPayloadCacheRoot();
+  const std::filesystem::path secondary_root =
+      secondary_cache_root.empty() ? std::filesystem::path{} : (secondary_cache_root / info.payload_id);
   info.asset_root = extraction_root.string();
+  AppendPayloadTrace("payload_detected", info.asset_root);
 
   std::error_code ec;
   if (std::filesystem::is_regular_file(extraction_root / kPayloadReadyMarker, ec) && !ec) {
     info.extracted = true;
+    AppendPayloadTrace("payload_ready_reused", info.asset_root);
+    return info;
+  }
+
+  if (!secondary_root.empty() && secondary_root != extraction_root &&
+      std::filesystem::is_regular_file(secondary_root / kPayloadReadyMarker, ec) && !ec) {
+    info.extracted = true;
+    info.asset_root = secondary_root.string();
+    AppendPayloadTrace("payload_ready_reused_secondary", info.asset_root);
+    return info;
+  }
+
+  const std::filesystem::path legacy_root = ResolveLegacyPayloadCacheRoot() / info.payload_id;
+  if (!legacy_root.empty() && legacy_root != extraction_root &&
+      std::filesystem::is_regular_file(legacy_root / kPayloadReadyMarker, ec) && !ec) {
+    info.extracted = true;
+    info.asset_root = legacy_root.string();
+    AppendPayloadTrace("payload_ready_reused_legacy", info.asset_root);
     return info;
   }
 
@@ -371,8 +481,34 @@ EmbeddedPayloadInfo EnsureEmbeddedPayloadAvailable(const std::string& module_pat
                              footer.payload_size,
                              extraction_root,
                              &extract_error)) {
-    if (error != nullptr) {
+    if (!secondary_root.empty() && secondary_root != extraction_root) {
+      AppendPayloadTrace("payload_extract_retry_secondary", secondary_root.string());
+      std::string secondary_error;
+      if (ExtractPayloadEntries(std::filesystem::path(module_path),
+                                payload_offset,
+                                footer.payload_size,
+                                secondary_root,
+                                &secondary_error)) {
+        info.asset_root = secondary_root.string();
+        info.extracted = true;
+        AppendPayloadTrace("payload_extract_ok_secondary", info.asset_root);
+        return info;
+      }
+      if (error != nullptr) {
+        *error = extract_error;
+        if (!secondary_error.empty()) {
+          error->append(" | secondary_root=");
+          error->append(secondary_error);
+        }
+      }
+      if (!secondary_error.empty()) {
+        AppendPayloadTrace("payload_extract_secondary_failed", secondary_error);
+      }
+    } else if (error != nullptr) {
       *error = extract_error;
+    }
+    if (!extract_error.empty()) {
+      AppendPayloadTrace("payload_extract_failed", extract_error);
     }
     info.asset_root.clear();
     info.extracted = false;
@@ -380,6 +516,7 @@ EmbeddedPayloadInfo EnsureEmbeddedPayloadAvailable(const std::string& module_pat
   }
 
   info.extracted = true;
+  AppendPayloadTrace("payload_extract_ok", info.asset_root);
   return info;
 }
 

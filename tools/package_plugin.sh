@@ -12,6 +12,9 @@ Examples:
   bash tools/package_plugin.sh --platform macos --build-dir build-mac --output-dir dist \
     --include-manifest --python-runtime-dir release-assets/python-macos \
     --model-repo-dir release-assets/models
+  bash tools/package_plugin.sh --platform windows --build-dir build-win --output-dir dist \
+    --ort-runtime-dir build-win/plugin/Release/zsoda_ort \
+    --require-self-contained --golden-macos-fixture /path/to/ZSoda.plugin.zip
 EOF
 }
 
@@ -19,9 +22,12 @@ platform=""
 build_dir=""
 output_dir=""
 include_manifest="0"
+package_mode="embedded-windows"
 ort_dir=""
 python_dir=""
 package_resource_root=""
+package_root_dir_name=""
+package_output_root=""
 ort_output_dir=""
 python_output_dir=""
 models_output_dir=""
@@ -29,100 +35,23 @@ archive_path=""
 archive_sha_path=""
 payload_stage_dir=""
 embedded_payload_status=""
+artifact_hash_input=""
+artifact_hash_label=""
 python_runtime_dir=""
 model_repo_dir=""
+model_root_dir=""
 hf_cache_dir=""
 require_self_contained="0"
+golden_macos_fixture=""
+ort_runtime_dir=""
 declare -a embedded_payload_roots=()
+declare -a archive_entries=()
 
 copy_dir_contents() {
   local source_dir="$1"
   local destination_dir="$2"
   mkdir -p "${destination_dir}"
   cp -R "${source_dir}/." "${destination_dir}/"
-}
-
-stage_models_metadata() {
-  local destination_dir="$1"
-  mkdir -p "${destination_dir}"
-  local metadata_name=""
-  for metadata_name in models.manifest README.md; do
-    if [[ -f "models/${metadata_name}" ]]; then
-      cp "models/${metadata_name}" "${destination_dir}/${metadata_name}"
-    fi
-  done
-}
-
-stage_model_repos() {
-  local source_root="$1"
-  local destination_root="$2"
-  if [[ ! -d "${source_root}" ]]; then
-    return 0
-  fi
-  mkdir -p "${destination_root}"
-  local found_repo="0"
-  local entry=""
-  for entry in "${source_root}"/*; do
-    if [[ ! -d "${entry}" ]]; then
-      continue
-    fi
-    found_repo="1"
-    local model_id
-    model_id="$(basename "${entry}")"
-    rm -rf "${destination_root}/${model_id}"
-    copy_dir_contents "${entry}" "${destination_root}/${model_id}"
-  done
-  if [[ "${found_repo}" != "1" ]]; then
-    echo "Model repo directory does not contain any model subdirectories: ${source_root}" >&2
-    exit 1
-  fi
-}
-
-assert_self_contained_payload() {
-  local stage_root="$1"
-  local platform_name="$2"
-  local stage_python_dir="${stage_root}/zsoda_py"
-  local stage_models_hf_dir="${stage_root}/models/hf"
-  local service_script="${stage_python_dir}/distill_any_depth_remote_service.py"
-  local python_ok="0"
-
-  if [[ ! -f "${service_script}" ]]; then
-    echo "Self-contained packaging requires bundled service script: ${service_script}" >&2
-    exit 1
-  fi
-
-  if [[ "${platform_name}" == "windows" ]]; then
-    if [[ -f "${stage_python_dir}/python.exe" || -f "${stage_python_dir}/python/python.exe" || -f "${stage_python_dir}/runtime/python.exe" ]]; then
-      python_ok="1"
-    fi
-  else
-    if [[ -x "${stage_python_dir}/bin/python3" || -x "${stage_python_dir}/python/bin/python3" || -x "${stage_python_dir}/runtime/bin/python3" ]]; then
-      python_ok="1"
-    fi
-  fi
-
-  if [[ "${python_ok}" != "1" ]]; then
-    echo "Self-contained packaging requires a bundled Python runtime under zsoda_py/." >&2
-    exit 1
-  fi
-
-  if [[ ! -d "${stage_models_hf_dir}" ]]; then
-    echo "Self-contained packaging requires bundled local model repos under models/hf/." >&2
-    exit 1
-  fi
-
-  local model_repo_found="0"
-  local entry=""
-  for entry in "${stage_models_hf_dir}"/*; do
-    if [[ -d "${entry}" ]]; then
-      model_repo_found="1"
-      break
-    fi
-  done
-  if [[ "${model_repo_found}" != "1" ]]; then
-    echo "Self-contained packaging requires at least one local model repo under models/hf/." >&2
-    exit 1
-  fi
 }
 
 resolve_payload_python() {
@@ -135,6 +64,55 @@ resolve_payload_python() {
     return 0
   fi
   return 1
+}
+
+read_stage_plan_scalar() {
+  local python_command="$1"
+  local plan_path="$2"
+  local field_name="$3"
+  "${python_command}" - "${plan_path}" "${field_name}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+plan = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+value = plan.get(sys.argv[2], "")
+if value is None:
+    value = ""
+print(value)
+PY
+}
+
+emit_stage_plan_warnings() {
+  local python_command="$1"
+  local plan_path="$2"
+  "${python_command}" - "${plan_path}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+plan = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+for warning in plan.get("warnings", []):
+    if warning:
+        print(warning)
+PY
+}
+
+emit_stage_plan_roots() {
+  local python_command="$1"
+  local plan_path="$2"
+  "${python_command}" - "${plan_path}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+plan = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+paths = plan.get("staged_root_paths", {})
+for root_name in plan.get("staged_roots", []):
+    staged_path = paths.get(root_name, "")
+    if staged_path:
+        print(f"{root_name}\t{staged_path}")
+PY
 }
 
 while [[ $# -gt 0 ]]; do
@@ -155,12 +133,20 @@ while [[ $# -gt 0 ]]; do
       include_manifest="1"
       shift
       ;;
+    --package-mode)
+      package_mode="${2:-}"
+      shift 2
+      ;;
     --python-runtime-dir)
       python_runtime_dir="${2:-}"
       shift 2
       ;;
     --model-repo-dir)
       model_repo_dir="${2:-}"
+      shift 2
+      ;;
+    --model-root-dir)
+      model_root_dir="${2:-}"
       shift 2
       ;;
     --hf-cache-dir)
@@ -170,6 +156,14 @@ while [[ $# -gt 0 ]]; do
     --require-self-contained)
       require_self_contained="1"
       shift
+      ;;
+    --golden-macos-fixture)
+      golden_macos_fixture="${2:-}"
+      shift 2
+      ;;
+    --ort-runtime-dir)
+      ort_runtime_dir="${2:-}"
+      shift 2
       ;;
     -h|--help)
       print_usage
@@ -189,179 +183,143 @@ if [[ -z "${platform}" || -z "${build_dir}" || -z "${output_dir}" ]]; then
   exit 1
 fi
 
-if [[ -z "${model_repo_dir}" && -d "release-assets/models" ]]; then
-  model_repo_dir="release-assets/models"
+payload_python="$(resolve_payload_python)" || {
+  echo "Python is required to prepare package staging layout." >&2
+  exit 1
+}
+
+mkdir -p "${output_dir}"
+stage_plan_path="${output_dir}/.package-stage.json"
+stage_args=(
+  "${payload_python}" "tools/prepare_package_stage.py"
+  "--platform" "${platform}"
+  "--package-mode" "${package_mode}"
+  "--build-dir" "${build_dir}"
+  "--output-dir" "${output_dir}"
+  "--plan-out" "${stage_plan_path}"
+  "--quiet"
+)
+if [[ "${include_manifest}" == "1" ]]; then
+  stage_args+=("--include-manifest")
 fi
-if [[ -z "${hf_cache_dir}" && -d "release-assets/hf-cache" ]]; then
-  hf_cache_dir="release-assets/hf-cache"
+if [[ -n "${python_runtime_dir}" ]]; then
+  stage_args+=("--python-runtime-dir" "${python_runtime_dir}")
 fi
-if [[ -z "${python_runtime_dir}" ]]; then
-  case "${platform}" in
-    windows)
-      if [[ -d "release-assets/python-win" ]]; then
-        python_runtime_dir="release-assets/python-win"
-      fi
-      ;;
-    macos)
-      if [[ -d "release-assets/python-macos" ]]; then
-        python_runtime_dir="release-assets/python-macos"
-      fi
-      ;;
-  esac
+if [[ -n "${model_repo_dir}" ]]; then
+  stage_args+=("--model-repo-dir" "${model_repo_dir}")
+fi
+if [[ -n "${model_root_dir}" ]]; then
+  stage_args+=("--model-root-dir" "${model_root_dir}")
+fi
+if [[ -n "${hf_cache_dir}" ]]; then
+  stage_args+=("--hf-cache-dir" "${hf_cache_dir}")
+fi
+if [[ -n "${ort_runtime_dir}" ]]; then
+  stage_args+=("--ort-runtime-dir" "${ort_runtime_dir}")
+fi
+if [[ "${require_self_contained}" == "1" ]]; then
+  stage_args+=("--require-self-contained")
+fi
+"${stage_args[@]}"
+
+artifact_source="$(read_stage_plan_scalar "${payload_python}" "${stage_plan_path}" "artifact_source")"
+artifact_name="$(read_stage_plan_scalar "${payload_python}" "${stage_plan_path}" "artifact_name")"
+payload_stage_dir="$(read_stage_plan_scalar "${payload_python}" "${stage_plan_path}" "payload_stage_dir")"
+package_resource_subdir="$(read_stage_plan_scalar "${payload_python}" "${stage_plan_path}" "package_resource_subdir")"
+package_root_dir_name="$(read_stage_plan_scalar "${payload_python}" "${stage_plan_path}" "package_root_dir_name")"
+archive_name="$(read_stage_plan_scalar "${payload_python}" "${stage_plan_path}" "archive_name")"
+if [[ -z "${package_root_dir_name}" ]]; then
+  package_output_root="${output_dir}"
+  artifact_hash_input="${artifact_name}"
+  artifact_hash_label="${artifact_name}"
+  archive_entries=("${artifact_name}")
+else
+  package_output_root="${output_dir}/${package_root_dir_name}"
+  mkdir -p "${package_output_root}"
+  artifact_hash_input="${package_root_dir_name}/${artifact_name}"
+  artifact_hash_label="${artifact_hash_input}"
+  archive_entries=("${package_root_dir_name}")
 fi
 
-artifact_source=""
-artifact_name=""
+if [[ "${require_self_contained}" == "1" && "${package_mode}" != "sidecar-ort" ]]; then
+  if [[ -d "${payload_stage_dir}/zsoda_py" && -d "${payload_stage_dir}/models" ]]; then
+    "${payload_python}" "tools/validate_self_contained_runtime.py" \
+      --stage-root "${payload_stage_dir}" \
+      --platform "${platform}" \
+      --model-id "distill-any-depth-base" \
+      --validate-device "cpu"
+  fi
+fi
 
-case "${platform}" in
-  windows)
-    artifact_name="ZSoda.aex"
-    for candidate in \
-      "${build_dir}/plugin/Release/${artifact_name}" \
-      "${build_dir}/plugin/${artifact_name}"; do
-      if [[ -f "${candidate}" ]]; then
-        artifact_source="${candidate}"
-        break
-      fi
-    done
-    ;;
-  macos)
-    artifact_name="ZSoda.plugin"
-    for candidate in \
-      "${build_dir}/plugin/Release/${artifact_name}" \
-      "${build_dir}/plugin/${artifact_name}"; do
-      if [[ -d "${candidate}" ]]; then
-        artifact_source="${candidate}"
-        break
-      fi
-    done
-    ;;
-  *)
-    echo "Unsupported platform: ${platform}. Use windows or macos." >&2
-    exit 1
-    ;;
-esac
+while IFS= read -r warning; do
+  if [[ -n "${warning}" ]]; then
+    echo "warning: ${warning}"
+  fi
+done < <(emit_stage_plan_warnings "${payload_python}" "${stage_plan_path}")
 
-if [[ -z "${artifact_source}" ]]; then
-  echo "Artifact not found for platform '${platform}' under build dir '${build_dir}'." >&2
+if [[ -z "${artifact_source}" || -z "${artifact_name}" ]]; then
+  echo "Package stage preparation did not resolve an artifact." >&2
   exit 1
 fi
 
-mkdir -p "${output_dir}"
-destination="${output_dir}/${artifact_name}"
+destination="${package_output_root}/${artifact_name}"
 rm -rf "${destination}"
-payload_stage_dir="${output_dir}/.payload-stage"
-rm -rf "${payload_stage_dir}"
-mkdir -p "${payload_stage_dir}"
-
 if [[ "${platform}" == "windows" ]]; then
   cp "${artifact_source}" "${destination}"
 else
   cp -R "${artifact_source}" "${destination}"
 fi
 
-if [[ "${platform}" == "windows" ]]; then
-  package_resource_root="${output_dir}"
+if [[ -z "${package_resource_subdir}" ]]; then
+  package_resource_root="${package_output_root}"
 else
-  package_resource_root="${destination}/Contents/Resources"
+  package_resource_root="${destination}/${package_resource_subdir}"
   mkdir -p "${package_resource_root}"
 fi
 
-if [[ "${include_manifest}" == "1" && -d "models" ]]; then
-  models_output_dir="${payload_stage_dir}/models"
-  rm -rf "${models_output_dir}"
-  stage_models_metadata "${models_output_dir}"
-fi
-
-if [[ -n "${model_repo_dir}" ]]; then
-  if [[ ! -d "${model_repo_dir}" ]]; then
-    echo "Model repo directory was not found: ${model_repo_dir}" >&2
-    exit 1
+while IFS=$'\t' read -r staged_root staged_path; do
+  if [[ -z "${staged_root}" || -z "${staged_path}" ]]; then
+    continue
   fi
-  models_output_dir="${payload_stage_dir}/models"
-  stage_model_repos "${model_repo_dir}" "${models_output_dir}/hf"
-fi
-
-if [[ -n "${hf_cache_dir}" ]]; then
-  if [[ ! -d "${hf_cache_dir}" ]]; then
-    echo "HF cache directory was not found: ${hf_cache_dir}" >&2
-    exit 1
-  fi
-  models_output_dir="${payload_stage_dir}/models"
-  rm -rf "${models_output_dir}/hf-cache"
-  copy_dir_contents "${hf_cache_dir}" "${models_output_dir}/hf-cache"
-fi
-
-for candidate in \
-  "${build_dir}/plugin/Release/zsoda_ort" \
-  "${build_dir}/plugin/zsoda_ort"; do
-  if [[ -d "${candidate}" ]]; then
-    ort_dir="${candidate}"
-    break
-  fi
-done
-if [[ -n "${ort_dir}" ]]; then
-  ort_output_dir="${payload_stage_dir}/zsoda_ort"
-  rm -rf "${ort_output_dir}"
-  copy_dir_contents "${ort_dir}" "${ort_output_dir}"
-fi
-
-for candidate in \
-  "${build_dir}/plugin/Release/zsoda_py" \
-  "${build_dir}/plugin/zsoda_py"; do
-  if [[ -d "${candidate}" ]]; then
-    python_dir="${candidate}"
-    break
-  fi
-done
-if [[ -n "${python_dir}" ]]; then
-  python_output_dir="${payload_stage_dir}/zsoda_py"
-  rm -rf "${python_output_dir}"
-  copy_dir_contents "${python_dir}" "${python_output_dir}"
-elif [[ -f "tools/distill_any_depth_remote_service.py" ]]; then
-  python_output_dir="${payload_stage_dir}/zsoda_py"
-  mkdir -p "${python_output_dir}"
-  cp "tools/distill_any_depth_remote_service.py" "${python_output_dir}/distill_any_depth_remote_service.py"
-fi
-
-if [[ -n "${python_runtime_dir}" ]]; then
-  if [[ ! -d "${python_runtime_dir}" ]]; then
-    echo "Python runtime directory was not found: ${python_runtime_dir}" >&2
-    exit 1
-  fi
-  python_output_dir="${payload_stage_dir}/zsoda_py"
-  mkdir -p "${python_output_dir}"
-  rm -rf "${python_output_dir}/python"
-  copy_dir_contents "${python_runtime_dir}" "${python_output_dir}/python"
-fi
-
-if [[ "${require_self_contained}" == "1" ]]; then
-  assert_self_contained_payload "${payload_stage_dir}" "${platform}"
-fi
-
-for staged_root in models zsoda_ort zsoda_py; do
-  if [[ -d "${payload_stage_dir}/${staged_root}" ]]; then
+  if [[ "${platform}" == "windows" && "${package_mode}" == "embedded-windows" ]]; then
+    embedded_payload_roots+=("${staged_path}")
+    case "${staged_root}" in
+      models)
+        models_output_dir="${staged_path}"
+        ;;
+      zsoda_ort)
+        ort_output_dir="${staged_path}"
+        ;;
+      zsoda_py)
+        python_output_dir="${staged_path}"
+        ;;
+    esac
+  else
     if [[ "${platform}" == "windows" ]]; then
-      embedded_payload_roots+=("${payload_stage_dir}/${staged_root}")
+      resource_destination="${package_output_root}/${staged_root}"
+      if [[ -z "${package_root_dir_name}" ]]; then
+        archive_entries+=("${staged_root}")
+      fi
     else
-      rm -rf "${package_resource_root}/${staged_root}"
-      copy_dir_contents "${payload_stage_dir}/${staged_root}" "${package_resource_root}/${staged_root}"
-      case "${staged_root}" in
-        models)
-          models_output_dir="${package_resource_root}/${staged_root}"
-          ;;
-        zsoda_ort)
-          ort_output_dir="${package_resource_root}/${staged_root}"
-          ;;
-        zsoda_py)
-          python_output_dir="${package_resource_root}/${staged_root}"
-          ;;
-      esac
+      resource_destination="${package_resource_root}/${staged_root}"
     fi
+    rm -rf "${resource_destination}"
+    copy_dir_contents "${staged_path}" "${resource_destination}"
+    case "${staged_root}" in
+      models)
+        models_output_dir="${resource_destination}"
+        ;;
+      zsoda_ort)
+        ort_output_dir="${resource_destination}"
+        ;;
+      zsoda_py)
+        python_output_dir="${resource_destination}"
+        ;;
+    esac
   fi
-done
+done < <(emit_stage_plan_roots "${payload_python}" "${stage_plan_path}")
 
-if [[ "${platform}" == "windows" && "${#embedded_payload_roots[@]}" -gt 0 ]]; then
+if [[ "${platform}" == "windows" && "${package_mode}" == "embedded-windows" && "${#embedded_payload_roots[@]}" -gt 0 ]]; then
   payload_python="$(resolve_payload_python)" || {
     echo "Python is required to build embedded Windows payloads." >&2
     exit 1
@@ -372,6 +330,17 @@ if [[ "${platform}" == "windows" && "${#embedded_payload_roots[@]}" -gt 0 ]]; th
   done
   "${payload_args[@]}"
   embedded_payload_status="embedded ${#embedded_payload_roots[@]} root(s) into ${destination}"
+
+  validation_args=("${payload_python}" "tools/check_release_readiness.py" "--inspect-windows-artifact" "${destination}" "--require-self-contained")
+  if [[ -n "${golden_macos_fixture}" ]]; then
+    if [[ ! -e "${golden_macos_fixture}" ]]; then
+      echo "Golden macOS fixture was not found: ${golden_macos_fixture}" >&2
+      exit 1
+    fi
+    validation_args+=("--compare-windows-artifact-to-macos-fixture" "${golden_macos_fixture}")
+  fi
+  "${validation_args[@]}"
+  embedded_payload_status="${embedded_payload_status}; validation passed"
 fi
 
 if [[ "${platform}" == "macos" ]] && command -v codesign >/dev/null 2>&1; then
@@ -379,7 +348,7 @@ if [[ "${platform}" == "macos" ]] && command -v codesign >/dev/null 2>&1; then
 fi
 
 if [[ "${platform}" == "macos" ]]; then
-  archive_path="${output_dir}/ZSoda-macos.zip"
+  archive_path="${output_dir}/${archive_name}"
   rm -f "${archive_path}"
   if command -v ditto >/dev/null 2>&1; then
     (
@@ -395,13 +364,13 @@ if [[ "${platform}" == "macos" ]]; then
     archive_path=""
   fi
 else
-  archive_path="${output_dir}/ZSoda-windows.zip"
+  archive_path="${output_dir}/${archive_name}"
   rm -f "${archive_path}"
   if command -v zip >/dev/null 2>&1; then
     (
       cd "${output_dir}"
       archive_name="$(basename "${archive_path}")"
-      COPYFILE_DISABLE=1 zip -qry "${archive_name}" "${artifact_name}"
+      COPYFILE_DISABLE=1 zip -qry "${archive_name}" "${archive_entries[@]}"
     )
   else
     archive_path=""
@@ -412,7 +381,7 @@ if command -v sha256sum >/dev/null 2>&1; then
   (
     cd "${output_dir}"
     if [[ "${platform}" == "windows" ]]; then
-      sha256sum "${artifact_name}" > "${artifact_name}.sha256"
+      sha256sum "${artifact_hash_input}" | sed "s#  ${artifact_hash_input}\$#  ${artifact_hash_label}#" > "${artifact_name}.sha256"
     else
       tar -cf - "${artifact_name}" | sha256sum > "${artifact_name}.sha256"
     fi
@@ -421,7 +390,7 @@ elif command -v shasum >/dev/null 2>&1; then
   (
     cd "${output_dir}"
     if [[ "${platform}" == "windows" ]]; then
-      shasum -a 256 "${artifact_name}" > "${artifact_name}.sha256"
+      shasum -a 256 "${artifact_hash_input}" | sed "s#  ${artifact_hash_input}\$#  ${artifact_hash_label}#" > "${artifact_name}.sha256"
     else
       tar -cf - "${artifact_name}" | shasum -a 256 > "${artifact_name}.sha256"
     fi
@@ -450,21 +419,21 @@ echo "  platform: ${platform}"
 echo "  source:   ${artifact_source}"
 echo "  output:   ${destination}"
 if [[ -n "${models_output_dir}" ]]; then
-  if [[ "${platform}" == "windows" ]]; then
+  if [[ "${platform}" == "windows" && "${package_mode}" == "embedded-windows" ]]; then
     echo "  models:   embedded"
   else
     echo "  models:   ${models_output_dir}"
   fi
 fi
 if [[ -n "${ort_output_dir}" ]]; then
-  if [[ "${platform}" == "windows" ]]; then
+  if [[ "${platform}" == "windows" && "${package_mode}" == "embedded-windows" ]]; then
     echo "  ort dir:  embedded"
   else
     echo "  ort dir:  ${ort_output_dir}"
   fi
 fi
 if [[ -n "${python_output_dir}" ]]; then
-  if [[ "${platform}" == "windows" ]]; then
+  if [[ "${platform}" == "windows" && "${package_mode}" == "embedded-windows" ]]; then
     echo "  python:   embedded"
   else
     echo "  python:   ${python_output_dir}"
@@ -482,4 +451,7 @@ fi
 
 if [[ -n "${payload_stage_dir}" ]]; then
   rm -rf "${payload_stage_dir}"
+fi
+if [[ -n "${stage_plan_path}" ]]; then
+  rm -f "${stage_plan_path}"
 fi

@@ -22,6 +22,7 @@
 #include <utility>
 #include <vector>
 
+#include "inference/PythonServiceAutostart.h"
 #include "inference/RuntimePathResolver.h"
 
 #if defined(_WIN32)
@@ -61,6 +62,7 @@ constexpr char kHeaderResponseElapsedMs[] = "X-ZSoda-Elapsed-Ms";
 constexpr char kHeaderResponseModelId[] = "X-ZSoda-Resolved-Model-Id";
 
 std::atomic<std::uint64_t> g_temp_file_counter{0U};
+std::atomic<int> g_cached_autostart_port{0};
 
 using SteadyClock = std::chrono::steady_clock;
 
@@ -190,29 +192,6 @@ std::string BuildBackendName(RuntimeBackend backend) {
   return name;
 }
 
-std::string ResolvePreloadModelId(const RuntimeOptions& options,
-                                  const std::filesystem::path& script_path) {
-  std::string model_id = ReadEnvOrEmpty("ZSODA_LOCKED_MODEL_ID");
-  if (model_id.empty()) {
-    // Legacy alias kept for backwards compatibility with older local setups.
-    model_id = ReadEnvOrEmpty("ZSODA_HQ_MODEL_ID");
-  }
-  if (model_id.empty() &&
-      script_path.filename().string().find("distill_any_depth_remote_service.py") !=
-          std::string::npos) {
-    model_id = "distill-any-depth-base";
-  }
-  return model_id;
-}
-
-bool IsExistingFile(const std::filesystem::path& path) {
-  if (path.empty()) {
-    return false;
-  }
-  std::error_code ec;
-  return std::filesystem::is_regular_file(path, ec) && !ec;
-}
-
 std::string NormalizeLoopbackHost(std::string host) {
   if (host.empty()) {
     return kDefaultLocalRemoteHost;
@@ -230,34 +209,6 @@ std::string BuildLocalStatusEndpoint(std::string_view host, int port) {
   std::ostringstream endpoint;
   endpoint << "http://" << host << ":" << port << "/status";
   return endpoint.str();
-}
-
-std::filesystem::path ResolveRemoteServiceScriptPath(const RuntimeOptions& options) {
-  if (!options.remote_service_script_path.empty()) {
-    const std::filesystem::path explicit_path(options.remote_service_script_path);
-    if (IsExistingFile(explicit_path)) {
-      return explicit_path;
-    }
-  }
-
-  if (!options.plugin_directory.empty()) {
-    const std::filesystem::path plugin_dir(options.plugin_directory);
-    for (const auto& root : BuildRuntimeAssetSearchRoots(
-             plugin_dir, std::filesystem::path(options.runtime_asset_root))) {
-      const std::array<std::filesystem::path, 3> candidates = {
-          root / "zsoda_py" / "distill_any_depth_remote_service.py",
-          root / "tools" / "distill_any_depth_remote_service.py",
-          root / "distill_any_depth_remote_service.py",
-      };
-      for (const auto& candidate : candidates) {
-        if (IsExistingFile(candidate)) {
-          return candidate;
-        }
-      }
-    }
-  }
-
-  return {};
 }
 
 bool ValidateRequest(const InferenceRequest& request,
@@ -619,86 +570,6 @@ std::string QuoteShellArgument(std::string_view argument) {
   }
   quoted.push_back('"');
   return quoted;
-}
-
-std::filesystem::path DefaultRemoteServiceLogPath() {
-  std::error_code temp_error;
-  const std::filesystem::path temp_root = std::filesystem::temp_directory_path(temp_error);
-  if (!temp_error) {
-    return temp_root / "ZSoda_RemoteService.log";
-  }
-  return std::filesystem::path("ZSoda_RemoteService.log");
-}
-
-std::string BuildPythonRuntimeProbeScript() {
-  return "import torch, PIL, transformers; "
-         "from transformers import AutoImageProcessor, AutoModelForDepthEstimation; "
-         "print('MPS=1' if getattr(getattr(torch,'backends',None),'mps',None) is not None and "
-         "torch.backends.mps.is_available() else ('CUDA=1' if torch.cuda.is_available() else 'CPU=1'))";
-}
-
-std::string CollapseWhitespace(std::string_view text) {
-  std::string collapsed;
-  collapsed.reserve(text.size());
-  bool last_was_space = false;
-  for (const char ch : text) {
-    if (std::isspace(static_cast<unsigned char>(ch)) != 0) {
-      if (!last_was_space) {
-        collapsed.push_back(' ');
-        last_was_space = true;
-      }
-      continue;
-    }
-    collapsed.push_back(ch);
-    last_was_space = false;
-  }
-  return collapsed;
-}
-
-std::string SummarizePythonProbeOutput(std::string_view output) {
-  std::string summary = CollapseWhitespace(output);
-  while (!summary.empty() && std::isspace(static_cast<unsigned char>(summary.front())) != 0) {
-    summary.erase(summary.begin());
-  }
-  while (!summary.empty() && std::isspace(static_cast<unsigned char>(summary.back())) != 0) {
-    summary.pop_back();
-  }
-  constexpr std::size_t kMaxSummaryLength = 320U;
-  if (summary.size() > kMaxSummaryLength) {
-    summary.resize(kMaxSummaryLength);
-    summary.append("...");
-  }
-  return summary;
-}
-
-std::string ReadLogTail(const std::filesystem::path& path, std::size_t max_bytes = 2048U) {
-  if (path.empty()) {
-    return {};
-  }
-  std::error_code ec;
-  const auto size = std::filesystem::file_size(path, ec);
-  if (ec) {
-    return {};
-  }
-
-  std::ifstream stream(path, std::ios::binary);
-  if (!stream.is_open()) {
-    return {};
-  }
-
-  const std::streamoff bytes_to_read =
-      static_cast<std::streamoff>(std::min<std::uintmax_t>(size, max_bytes));
-  if (bytes_to_read > 0) {
-    stream.seekg(-bytes_to_read, std::ios::end);
-  }
-  std::string content(static_cast<std::size_t>(bytes_to_read), '\0');
-  if (bytes_to_read > 0) {
-    stream.read(content.data(), bytes_to_read);
-    content.resize(static_cast<std::size_t>(stream.gcount()));
-  } else {
-    content.clear();
-  }
-  return content;
 }
 
 #if defined(_WIN32)
@@ -1572,400 +1443,6 @@ bool GetEndpointText(std::string_view endpoint,
   return true;
 }
 
-#if defined(_WIN32)
-enum class PythonTorchCapability {
-  kUnavailable,
-  kTorchCpu,
-  kTorchCuda,
-};
-
-std::optional<std::filesystem::path> ResolveExecutableOnPath(const wchar_t* executable) {
-  if (executable == nullptr || executable[0] == L'\0') {
-    return std::nullopt;
-  }
-  const DWORD required =
-      ::SearchPathW(nullptr, executable, nullptr, 0, nullptr, nullptr);
-  if (required == 0U) {
-    return std::nullopt;
-  }
-  std::wstring buffer(required, L'\0');
-  const DWORD written =
-      ::SearchPathW(nullptr, executable, nullptr, required, buffer.data(), nullptr);
-  if (written == 0U) {
-    return std::nullopt;
-  }
-  buffer.resize(written);
-  return std::filesystem::path(buffer);
-}
-
-void PushUniquePythonCandidate(const std::filesystem::path& path,
-                               std::vector<std::filesystem::path>* candidates) {
-  if (candidates == nullptr || path.empty()) {
-    return;
-  }
-  std::error_code exists_error;
-  if (!std::filesystem::exists(path, exists_error) || exists_error) {
-    return;
-  }
-  const auto normalized = path.lexically_normal();
-  for (const auto& existing : *candidates) {
-    if (existing.lexically_normal() == normalized) {
-      return;
-    }
-  }
-  candidates->push_back(normalized);
-}
-
-std::vector<std::filesystem::path> GatherPythonAutostartCandidates(const RuntimeOptions& options) {
-  std::vector<std::filesystem::path> candidates;
-  if (!options.plugin_directory.empty()) {
-    const std::filesystem::path plugin_dir(options.plugin_directory);
-    for (const auto& root : BuildRuntimeAssetSearchRoots(
-             plugin_dir, std::filesystem::path(options.runtime_asset_root))) {
-      PushUniquePythonCandidate(root / "zsoda_py" / "python.exe", &candidates);
-      PushUniquePythonCandidate(root / "zsoda_py" / "python" / "python.exe", &candidates);
-      PushUniquePythonCandidate(root / "zsoda_py" / "runtime" / "python.exe", &candidates);
-    }
-  }
-
-  if (const auto path_python = ResolveExecutableOnPath(L"python.exe")) {
-    PushUniquePythonCandidate(*path_python, &candidates);
-  }
-  if (const auto path_python3 = ResolveExecutableOnPath(L"python3.exe")) {
-    PushUniquePythonCandidate(*path_python3, &candidates);
-  }
-
-  const std::filesystem::path local_appdata = ReadEnvOrEmpty("LOCALAPPDATA");
-  const auto collect_python_children = [&](const std::filesystem::path& root,
-                                           const auto& directory_name_filter) {
-    std::error_code iter_error;
-    const auto options = std::filesystem::directory_options::skip_permission_denied;
-    std::filesystem::directory_iterator iter(root, options, iter_error);
-    std::filesystem::directory_iterator end;
-    while (!iter_error && iter != end) {
-      const auto entry_path = iter->path();
-      std::error_code status_error;
-      const bool is_directory = iter->is_directory(status_error);
-      if (!status_error && is_directory) {
-        const std::wstring directory_name = entry_path.filename().wstring();
-        if (directory_name_filter(directory_name)) {
-          PushUniquePythonCandidate(entry_path / "python.exe", &candidates);
-        }
-      }
-
-      iter.increment(iter_error);
-    }
-  };
-
-  if (!local_appdata.empty()) {
-    const std::filesystem::path windows_apps = local_appdata / "Microsoft" / "WindowsApps";
-    collect_python_children(windows_apps, [](const std::wstring& directory_name) {
-      return directory_name.find(L"PythonSoftwareFoundation.Python.") != std::wstring::npos;
-    });
-
-    const std::filesystem::path programs_python = local_appdata / "Programs" / "Python";
-    collect_python_children(programs_python,
-                            [](const std::wstring& /*directory_name*/) { return true; });
-  }
-
-  const std::filesystem::path system_drive = "C:\\";
-  collect_python_children(system_drive, [](const std::wstring& directory_name) {
-    return directory_name.rfind(L"Python", 0) == 0;
-  });
-
-  return candidates;
-}
-
-PythonTorchCapability ProbePythonTorchCapability(const std::filesystem::path& python_path,
-                                                 std::string* probe_output) {
-  if (probe_output != nullptr) {
-    probe_output->clear();
-  }
-  if (python_path.empty()) {
-    return PythonTorchCapability::kUnavailable;
-  }
-
-  std::error_code temp_error;
-  const std::filesystem::path temp_root = std::filesystem::temp_directory_path(temp_error);
-  if (temp_error) {
-    return PythonTorchCapability::kUnavailable;
-  }
-  const auto tick_count = static_cast<unsigned long long>(::GetTickCount64());
-  const auto process_id = static_cast<unsigned long long>(::GetCurrentProcessId());
-  const std::filesystem::path probe_log =
-      temp_root / ("ZSoda_PythonProbe_" + std::to_string(process_id) + "_" + std::to_string(tick_count) + ".log");
-
-  SECURITY_ATTRIBUTES security_attributes = {};
-  security_attributes.nLength = sizeof(security_attributes);
-  security_attributes.bInheritHandle = TRUE;
-  HANDLE output_handle =
-      ::CreateFileW(probe_log.wstring().c_str(),
-                    GENERIC_WRITE | GENERIC_READ,
-                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                    &security_attributes,
-                    CREATE_ALWAYS,
-                    FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE,
-                    nullptr);
-  if (output_handle == INVALID_HANDLE_VALUE) {
-    return PythonTorchCapability::kUnavailable;
-  }
-
-  const std::wstring python_wide = python_path.wstring();
-  std::wstring probe_script;
-  if (!Utf8ToWide(BuildPythonRuntimeProbeScript(), &probe_script, nullptr)) {
-    ::CloseHandle(output_handle);
-    return PythonTorchCapability::kUnavailable;
-  }
-
-  std::wstring command_line = L"\"";
-  command_line.append(python_wide);
-  command_line.append(L"\" -c \"");
-  command_line.append(probe_script);
-  command_line.append(L"\"");
-
-  STARTUPINFOW startup_info = {};
-  startup_info.cb = sizeof(startup_info);
-  startup_info.dwFlags = STARTF_USESTDHANDLES;
-  startup_info.hStdInput = ::GetStdHandle(STD_INPUT_HANDLE);
-  startup_info.hStdOutput = output_handle;
-  startup_info.hStdError = output_handle;
-
-  PROCESS_INFORMATION process_info = {};
-  std::wstring mutable_command_line = command_line;
-  const BOOL create_ok = ::CreateProcessW(nullptr,
-                                          mutable_command_line.data(),
-                                          nullptr,
-                                          nullptr,
-                                          TRUE,
-                                          CREATE_NO_WINDOW,
-                                          nullptr,
-                                          python_path.parent_path().wstring().c_str(),
-                                          &startup_info,
-                                          &process_info);
-  if (!create_ok) {
-    ::CloseHandle(output_handle);
-    return PythonTorchCapability::kUnavailable;
-  }
-
-  const DWORD wait_result = ::WaitForSingleObject(process_info.hProcess, 15000);
-  if (wait_result == WAIT_TIMEOUT) {
-    ::TerminateProcess(process_info.hProcess, 1);
-    ::WaitForSingleObject(process_info.hProcess, 2000);
-  }
-  DWORD exit_code = 1;
-  ::GetExitCodeProcess(process_info.hProcess, &exit_code);
-  ::CloseHandle(process_info.hThread);
-  ::CloseHandle(process_info.hProcess);
-
-  ::SetFilePointer(output_handle, 0, nullptr, FILE_BEGIN);
-  std::string captured;
-  std::array<char, 256> buffer{};
-  DWORD bytes_read = 0;
-  while (::ReadFile(output_handle, buffer.data(), static_cast<DWORD>(buffer.size()), &bytes_read, nullptr) &&
-         bytes_read > 0) {
-    captured.append(buffer.data(), static_cast<std::size_t>(bytes_read));
-  }
-  ::CloseHandle(output_handle);
-  if (probe_output != nullptr) {
-    *probe_output = captured;
-  }
-
-  if (exit_code != 0) {
-    return PythonTorchCapability::kUnavailable;
-  }
-  if (captured.find("CUDA=1") != std::string::npos) {
-    return PythonTorchCapability::kTorchCuda;
-  }
-  if (captured.find("CPU=1") != std::string::npos) {
-    return PythonTorchCapability::kTorchCpu;
-  }
-  return PythonTorchCapability::kUnavailable;
-}
-
-std::string ResolvePythonCommandForAutostart(const RuntimeOptions& options) {
-  if (!options.remote_service_python.empty()) {
-    return options.remote_service_python;
-  }
-
-  try {
-    const auto candidates = GatherPythonAutostartCandidates(options);
-    std::filesystem::path cpu_fallback;
-    for (const auto& candidate : candidates) {
-      std::string probe_output;
-      const auto capability = ProbePythonTorchCapability(candidate, &probe_output);
-      if (capability == PythonTorchCapability::kTorchCuda) {
-        return candidate.string();
-      }
-      if (capability == PythonTorchCapability::kTorchCpu && cpu_fallback.empty()) {
-        cpu_fallback = candidate;
-      }
-    }
-
-    if (!cpu_fallback.empty()) {
-      return cpu_fallback.string();
-    }
-  } catch (...) {
-    // Autodiscovery must never break AE loader setup. Fall back to PATH python.
-  }
-  return "python";
-}
-#endif
-
-bool StartDetachedPythonService(const RuntimeOptions& options,
-                                std::string_view status_endpoint,
-                                std::string* error) {
-  const std::filesystem::path script_path = ResolveRemoteServiceScriptPath(options);
-  if (script_path.empty()) {
-    if (error != nullptr) {
-      *error = "remote service script was not found";
-    }
-    return false;
-  }
-
-  std::wstring python_wide;
-  const std::string python_command = ResolvePythonCommandForAutostart(options);
-  std::string python_probe_output;
-  const auto python_capability =
-      ProbePythonTorchCapability(std::filesystem::path(python_command), &python_probe_output);
-  if (python_capability == PythonTorchCapability::kUnavailable) {
-    if (error != nullptr) {
-      *error = "remote inference python runtime is unavailable or missing required packages (python=" +
-               python_command + ")" +
-               (python_probe_output.empty()
-                    ? std::string()
-                    : ": " + SummarizePythonProbeOutput(python_probe_output));
-    }
-    return false;
-  }
-  {
-    const std::string trace_detail =
-        std::string("python=") + python_command + ", script=" + script_path.string();
-    AppendRemoteTrace("service_autostart_python", trace_detail.c_str());
-  }
-  if (!Utf8ToWide(python_command, &python_wide, error)) {
-    return false;
-  }
-
-  std::wstring script_wide;
-  if (!Utf8ToWide(script_path.string(), &script_wide, error)) {
-    return false;
-  }
-
-  std::wstring host_wide;
-  if (!Utf8ToWide(NormalizeLoopbackHost(options.remote_service_host), &host_wide, error)) {
-    return false;
-  }
-
-  std::wstring preload_model_wide;
-  const std::string preload_model_id = ResolvePreloadModelId(options, script_path);
-  if (!preload_model_id.empty() && !Utf8ToWide(preload_model_id, &preload_model_wide, error)) {
-    return false;
-  }
-
-  std::filesystem::path log_path = options.remote_service_log_path.empty()
-                                       ? DefaultRemoteServiceLogPath()
-                                       : std::filesystem::path(options.remote_service_log_path);
-  std::wstring log_path_wide;
-  if (!Utf8ToWide(log_path.string(), &log_path_wide, error)) {
-    return false;
-  }
-
-  std::wstring command_line;
-  command_line.reserve(512);
-  command_line.push_back(L'"');
-  command_line.append(python_wide);
-  command_line.append(L"\" \"");
-  command_line.append(script_wide);
-  command_line.append(L"\" --host \"");
-  command_line.append(host_wide);
-  command_line.append(L"\" --port ");
-  command_line.append(std::to_wstring(options.remote_service_port > 0 ? options.remote_service_port
-                                                                      : kDefaultLocalRemotePort));
-  if (!preload_model_wide.empty()) {
-    command_line.append(L" --preload-model-id \"");
-    command_line.append(preload_model_wide);
-    command_line.push_back(L'"');
-  }
-
-  const std::filesystem::path working_directory = script_path.parent_path();
-  std::wstring working_directory_wide;
-  if (!Utf8ToWide(working_directory.string(), &working_directory_wide, error)) {
-    return false;
-  }
-
-  SECURITY_ATTRIBUTES security_attributes = {};
-  security_attributes.nLength = sizeof(security_attributes);
-  security_attributes.bInheritHandle = TRUE;
-  HANDLE log_handle = ::CreateFileW(log_path_wide.c_str(),
-                                    FILE_APPEND_DATA,
-                                    FILE_SHARE_READ | FILE_SHARE_WRITE,
-                                    &security_attributes,
-                                    OPEN_ALWAYS,
-                                    FILE_ATTRIBUTE_NORMAL,
-                                    nullptr);
-  if (log_handle == INVALID_HANDLE_VALUE) {
-    if (error != nullptr) {
-      *error = "CreateFileW failed for service log (" + std::to_string(::GetLastError()) + ")";
-    }
-    return false;
-  }
-
-  ::SetFilePointer(log_handle, 0, nullptr, FILE_END);
-  STARTUPINFOW startup_info = {};
-  startup_info.cb = sizeof(startup_info);
-  startup_info.dwFlags = STARTF_USESTDHANDLES;
-  startup_info.hStdInput = ::GetStdHandle(STD_INPUT_HANDLE);
-  startup_info.hStdOutput = log_handle;
-  startup_info.hStdError = log_handle;
-
-  PROCESS_INFORMATION process_info = {};
-  std::wstring mutable_command_line = command_line;
-  const BOOL create_ok = ::CreateProcessW(nullptr,
-                                          mutable_command_line.data(),
-                                          nullptr,
-                                          nullptr,
-                                          TRUE,
-                                          CREATE_NO_WINDOW | DETACHED_PROCESS,
-                                          nullptr,
-                                          working_directory_wide.c_str(),
-                                          &startup_info,
-                                          &process_info);
-  ::CloseHandle(log_handle);
-  if (!create_ok) {
-    if (error != nullptr) {
-      *error = "CreateProcessW failed for remote inference service (" +
-               std::to_string(::GetLastError()) + ")";
-    }
-    return false;
-  }
-
-  ::CloseHandle(process_info.hThread);
-  ::CloseHandle(process_info.hProcess);
-
-  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
-  std::string status_payload;
-  std::string status_error;
-  while (std::chrono::steady_clock::now() < deadline) {
-    if (GetEndpointText(status_endpoint, 2000, &status_payload, &status_error)) {
-      if (error != nullptr) {
-        error->clear();
-      }
-      return true;
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(250));
-  }
-
-  if (error != nullptr) {
-    *error = "remote inference service did not become healthy at " + std::string(status_endpoint) +
-             " (python=" + python_command + ", log=" + log_path.string() + ")" +
-             (status_error.empty() ? std::string() : ": " + status_error);
-    const std::string log_tail = SummarizePythonProbeOutput(ReadLogTail(log_path));
-    if (!log_tail.empty()) {
-      *error += " | service_log=" + log_tail;
-    }
-  }
-  return false;
-}
 #endif
 
 #if !defined(_WIN32)
@@ -2590,302 +2067,6 @@ bool GetEndpointText(std::string_view endpoint,
   return true;
 }
 
-enum class PythonTorchCapability {
-  kUnavailable,
-  kTorchCpu,
-  kTorchCuda,
-  kTorchMps,
-};
-
-void PushUniquePythonCandidate(const std::filesystem::path& path,
-                               std::vector<std::filesystem::path>* candidates) {
-  if (candidates == nullptr || path.empty()) {
-    return;
-  }
-  std::error_code status_error;
-  if (!std::filesystem::is_regular_file(path, status_error) || status_error) {
-    return;
-  }
-  if (::access(path.c_str(), X_OK) != 0) {
-    return;
-  }
-  const auto normalized = path.lexically_normal();
-  for (const auto& existing : *candidates) {
-    if (existing.lexically_normal() == normalized) {
-      return;
-    }
-  }
-  candidates->push_back(normalized);
-}
-
-std::optional<std::filesystem::path> ResolveExecutableOnPath(const char* executable) {
-  if (executable == nullptr || executable[0] == '\0') {
-    return std::nullopt;
-  }
-
-  const std::string executable_name(executable);
-  const std::string path_env = ReadEnvOrEmpty("PATH");
-  std::size_t start = 0U;
-  while (start <= path_env.size()) {
-    const std::size_t delimiter = path_env.find(':', start);
-    const std::string_view entry =
-        delimiter == std::string::npos
-            ? std::string_view(path_env).substr(start)
-            : std::string_view(path_env).substr(start, delimiter - start);
-    if (!entry.empty()) {
-      const std::filesystem::path candidate =
-          std::filesystem::path(std::string(entry)) / executable_name;
-      if (::access(candidate.c_str(), X_OK) == 0) {
-        return candidate;
-      }
-    }
-    if (delimiter == std::string::npos) {
-      break;
-    }
-    start = delimiter + 1U;
-  }
-  return std::nullopt;
-}
-
-std::vector<std::filesystem::path> GatherPythonAutostartCandidates(const RuntimeOptions& options) {
-  std::vector<std::filesystem::path> candidates;
-  if (!options.plugin_directory.empty()) {
-    const std::filesystem::path plugin_dir(options.plugin_directory);
-    for (const auto& root : BuildRuntimeAssetSearchRoots(
-             plugin_dir, std::filesystem::path(options.runtime_asset_root))) {
-      PushUniquePythonCandidate(root / "zsoda_py" / "bin" / "python3", &candidates);
-      PushUniquePythonCandidate(root / "zsoda_py" / "bin" / "python", &candidates);
-      PushUniquePythonCandidate(root / "zsoda_py" / "python" / "bin" / "python3", &candidates);
-      PushUniquePythonCandidate(root / "zsoda_py" / "python" / "bin" / "python", &candidates);
-    }
-  }
-
-  if (const auto python3 = ResolveExecutableOnPath("python3")) {
-    PushUniquePythonCandidate(*python3, &candidates);
-  }
-  if (const auto python = ResolveExecutableOnPath("python")) {
-    PushUniquePythonCandidate(*python, &candidates);
-  }
-
-  const std::array<std::filesystem::path, 4> known_candidates = {
-      "/opt/homebrew/bin/python3",
-      "/usr/local/bin/python3",
-      "/usr/bin/python3",
-      "/Library/Frameworks/Python.framework/Versions/Current/bin/python3",
-  };
-  for (const auto& candidate : known_candidates) {
-    PushUniquePythonCandidate(candidate, &candidates);
-  }
-  return candidates;
-}
-
-PythonTorchCapability ProbePythonTorchCapability(const std::filesystem::path& python_path,
-                                                 std::string* probe_output) {
-  if (probe_output != nullptr) {
-    probe_output->clear();
-  }
-  if (python_path.empty()) {
-    return PythonTorchCapability::kUnavailable;
-  }
-
-  const std::string command = QuoteShellArgument(python_path.string()) + " -c " +
-                              QuoteShellArgument(BuildPythonRuntimeProbeScript()) + " 2>&1";
-  FILE* pipe = ::popen(command.c_str(), "r");
-  if (pipe == nullptr) {
-    return PythonTorchCapability::kUnavailable;
-  }
-
-  std::string captured;
-  std::array<char, 256> buffer{};
-  while (std::fgets(buffer.data(), static_cast<int>(buffer.size()), pipe) != nullptr) {
-    captured.append(buffer.data());
-  }
-  const int close_result = ::pclose(pipe);
-  if (probe_output != nullptr) {
-    *probe_output = captured;
-  }
-  if (close_result != 0) {
-    return PythonTorchCapability::kUnavailable;
-  }
-  if (captured.find("MPS=1") != std::string::npos) {
-    return PythonTorchCapability::kTorchMps;
-  }
-  if (captured.find("CUDA=1") != std::string::npos) {
-    return PythonTorchCapability::kTorchCuda;
-  }
-  if (captured.find("CPU=1") != std::string::npos) {
-    return PythonTorchCapability::kTorchCpu;
-  }
-  return PythonTorchCapability::kUnavailable;
-}
-
-std::string ResolvePythonCommandForAutostart(const RuntimeOptions& options) {
-  if (!options.remote_service_python.empty()) {
-    return options.remote_service_python;
-  }
-
-  try {
-    const auto candidates = GatherPythonAutostartCandidates(options);
-    std::filesystem::path mps_fallback;
-    std::filesystem::path cuda_fallback;
-    std::filesystem::path cpu_fallback;
-    for (const auto& candidate : candidates) {
-      std::string probe_output;
-      const auto capability = ProbePythonTorchCapability(candidate, &probe_output);
-      if (capability == PythonTorchCapability::kTorchMps) {
-        return candidate.string();
-      }
-      if (capability == PythonTorchCapability::kTorchCuda && cuda_fallback.empty()) {
-        cuda_fallback = candidate;
-      }
-      if (capability == PythonTorchCapability::kTorchCpu && cpu_fallback.empty()) {
-        cpu_fallback = candidate;
-      }
-      if (capability != PythonTorchCapability::kUnavailable && mps_fallback.empty()) {
-        mps_fallback = candidate;
-      }
-    }
-
-    if (!cuda_fallback.empty()) {
-      return cuda_fallback.string();
-    }
-    if (!cpu_fallback.empty()) {
-      return cpu_fallback.string();
-    }
-    if (!mps_fallback.empty()) {
-      return mps_fallback.string();
-    }
-  } catch (...) {
-    // Autodiscovery must never break AE loader setup. Fall back to PATH python.
-  }
-  return "python3";
-}
-
-bool StartDetachedPythonService(const RuntimeOptions& options,
-                                std::string_view status_endpoint,
-                                std::string* error) {
-  const std::filesystem::path script_path = ResolveRemoteServiceScriptPath(options);
-  if (script_path.empty()) {
-    if (error != nullptr) {
-      *error = "remote service script was not found";
-    }
-    return false;
-  }
-
-  const std::string python_command = ResolvePythonCommandForAutostart(options);
-  std::string python_probe_output;
-  const auto python_capability =
-      ProbePythonTorchCapability(std::filesystem::path(python_command), &python_probe_output);
-  if (python_capability == PythonTorchCapability::kUnavailable) {
-    if (error != nullptr) {
-      *error = "remote inference python runtime is unavailable or missing required packages (python=" +
-               python_command + ")" +
-               (python_probe_output.empty()
-                    ? std::string()
-                    : ": " + SummarizePythonProbeOutput(python_probe_output));
-    }
-    return false;
-  }
-  const std::string host = NormalizeLoopbackHost(options.remote_service_host);
-  const int port =
-      options.remote_service_port > 0 ? options.remote_service_port : kDefaultLocalRemotePort;
-  const std::string preload_model_id = ResolvePreloadModelId(options, script_path);
-  const std::filesystem::path log_path = options.remote_service_log_path.empty()
-                                             ? DefaultRemoteServiceLogPath()
-                                             : std::filesystem::path(options.remote_service_log_path);
-  {
-    const std::string trace_detail =
-        std::string("python=") + python_command + ", script=" + script_path.string();
-    AppendRemoteTrace("service_autostart_python", trace_detail.c_str());
-  }
-
-  const auto log_parent = log_path.parent_path();
-  if (!log_parent.empty()) {
-    std::error_code create_error;
-    std::filesystem::create_directories(log_parent, create_error);
-  }
-
-  const pid_t pid = ::fork();
-  if (pid < 0) {
-    if (error != nullptr) {
-      *error = "fork failed for remote inference service";
-    }
-    return false;
-  }
-
-  if (pid == 0) {
-    const std::filesystem::path working_directory = script_path.parent_path();
-    if (!working_directory.empty()) {
-      (void)::chdir(working_directory.c_str());
-    }
-
-    (void)::setsid();
-
-    const int stdin_handle = ::open("/dev/null", O_RDONLY);
-    if (stdin_handle >= 0) {
-      (void)::dup2(stdin_handle, STDIN_FILENO);
-      if (stdin_handle > STDERR_FILENO) {
-        (void)::close(stdin_handle);
-      }
-    }
-
-    const int log_handle = ::open(log_path.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0644);
-    if (log_handle >= 0) {
-      (void)::dup2(log_handle, STDOUT_FILENO);
-      (void)::dup2(log_handle, STDERR_FILENO);
-      if (log_handle > STDERR_FILENO) {
-        (void)::close(log_handle);
-      }
-    }
-
-    std::vector<std::string> args_storage;
-    args_storage.reserve(preload_model_id.empty() ? 6U : 8U);
-    args_storage.push_back(python_command);
-    args_storage.push_back(script_path.string());
-    args_storage.push_back("--host");
-    args_storage.push_back(host);
-    args_storage.push_back("--port");
-    args_storage.push_back(std::to_string(port));
-    if (!preload_model_id.empty()) {
-      args_storage.push_back("--preload-model-id");
-      args_storage.push_back(preload_model_id);
-    }
-
-    std::vector<char*> argv;
-    argv.reserve(args_storage.size() + 1U);
-    for (auto& value : args_storage) {
-      argv.push_back(value.data());
-    }
-    argv.push_back(nullptr);
-    ::execvp(python_command.c_str(), argv.data());
-    std::fprintf(stderr, "execvp failed for remote inference service\n");
-    _exit(127);
-  }
-
-  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
-  std::string status_payload;
-  std::string status_error;
-  while (std::chrono::steady_clock::now() < deadline) {
-    if (GetEndpointText(status_endpoint, 2000, &status_payload, &status_error)) {
-      if (error != nullptr) {
-        error->clear();
-      }
-      return true;
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(250));
-  }
-
-  if (error != nullptr) {
-    *error = "remote inference service did not become healthy at " + std::string(status_endpoint) +
-             " (python=" + python_command + ", log=" + log_path.string() + ")" +
-             (status_error.empty() ? std::string() : ": " + status_error);
-    const std::string log_tail = SummarizePythonProbeOutput(ReadLogTail(log_path));
-    if (!log_tail.empty()) {
-      *error += " | service_log=" + log_tail;
-    }
-  }
-  return false;
-}
 #endif
 
 bool ReplaceToken(std::string* text, std::string_view token, std::string_view replacement) {
@@ -3602,6 +2783,8 @@ const char* RemoteInferenceBackend::Name() const {
 }
 
 bool RemoteInferenceBackend::ResolveEndpointConfigurationLocked(std::string* error) {
+  resolved_service_host_.clear();
+  resolved_service_port_ = 0;
   resolved_remote_endpoint_.clear();
   resolved_status_endpoint_.clear();
   service_autostart_enabled_ = false;
@@ -3616,11 +2799,17 @@ bool RemoteInferenceBackend::ResolveEndpointConfigurationLocked(std::string* err
 
   service_autostart_enabled_ = options_.remote_service_autostart;
   if (service_autostart_enabled_) {
-    const std::string host = NormalizeLoopbackHost(options_.remote_service_host);
-    const int port =
-        options_.remote_service_port > 0 ? options_.remote_service_port : kDefaultLocalRemotePort;
-    resolved_remote_endpoint_ = BuildLocalInferenceEndpoint(host, port);
-    resolved_status_endpoint_ = BuildLocalStatusEndpoint(host, port);
+    resolved_service_host_ = NormalizeLoopbackHost(options_.remote_service_host);
+    if (options_.remote_service_port_explicit) {
+      resolved_service_port_ =
+          options_.remote_service_port > 0 ? options_.remote_service_port : kDefaultLocalRemotePort;
+    } else {
+      resolved_service_port_ = g_cached_autostart_port.load(std::memory_order_relaxed);
+    }
+    if (resolved_service_port_ > 0) {
+      resolved_remote_endpoint_ = BuildLocalInferenceEndpoint(resolved_service_host_, resolved_service_port_);
+      resolved_status_endpoint_ = BuildLocalStatusEndpoint(resolved_service_host_, resolved_service_port_);
+    }
     if (error != nullptr) {
       error->clear();
     }
@@ -3634,24 +2823,61 @@ bool RemoteInferenceBackend::ResolveEndpointConfigurationLocked(std::string* err
 }
 
 bool RemoteInferenceBackend::EnsureAutoStartedServiceReadyLocked(std::string* error) {
-  if (!service_autostart_enabled_ || resolved_remote_endpoint_.empty() ||
-      resolved_status_endpoint_.empty()) {
+  if (!service_autostart_enabled_) {
     if (error != nullptr) {
       error->clear();
     }
     return true;
   }
 
-  std::string status_payload;
-  std::string status_error;
-  if (GetEndpointText(resolved_status_endpoint_, 2000, &status_payload, &status_error)) {
-    if (error != nullptr) {
-      error->clear();
+  if (!resolved_status_endpoint_.empty()) {
+    std::string status_payload;
+    std::string status_error;
+    if (GetEndpointText(resolved_status_endpoint_, 2000, &status_payload, &status_error)) {
+      if (error != nullptr) {
+        error->clear();
+      }
+      return true;
     }
-    return true;
+    if (!options_.remote_service_port_explicit) {
+      resolved_service_port_ = 0;
+      resolved_remote_endpoint_.clear();
+      resolved_status_endpoint_.clear();
+      g_cached_autostart_port.store(0, std::memory_order_relaxed);
+    }
   }
 
-  return StartDetachedPythonService(options_, resolved_status_endpoint_, error);
+  const std::string host =
+      resolved_service_host_.empty() ? NormalizeLoopbackHost(options_.remote_service_host)
+                                     : resolved_service_host_;
+  PythonServiceLaunchResult launch_result;
+  if (!StartDetachedPythonService(options_,
+                                  host,
+                                  resolved_service_port_,
+                                  &GetEndpointText,
+                                  &AppendRemoteTrace,
+                                  &launch_result,
+                                  error)) {
+    if (!options_.remote_service_port_explicit) {
+      g_cached_autostart_port.store(0, std::memory_order_relaxed);
+      resolved_service_port_ = 0;
+      resolved_remote_endpoint_.clear();
+      resolved_status_endpoint_.clear();
+    }
+    return false;
+  }
+
+  resolved_service_host_ = host;
+  resolved_service_port_ = launch_result.actual_port;
+  resolved_remote_endpoint_ = BuildLocalInferenceEndpoint(resolved_service_host_, resolved_service_port_);
+  resolved_status_endpoint_ = BuildLocalStatusEndpoint(resolved_service_host_, resolved_service_port_);
+  if (!options_.remote_service_port_explicit) {
+    g_cached_autostart_port.store(resolved_service_port_, std::memory_order_relaxed);
+  }
+  if (error != nullptr) {
+    error->clear();
+  }
+  return true;
 }
 
 bool RemoteInferenceBackend::Initialize(std::string* error) {
