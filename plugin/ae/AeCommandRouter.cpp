@@ -2,58 +2,13 @@
 #include "ae/AeDiagnostics.h"
 
 #include <algorithm>
-#include <cstdio>
 #include <string>
-
-#if defined(_WIN32)
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#endif
 
 namespace zsoda::ae {
 namespace {
 
 void AppendRouterTrace(const char* stage, const char* detail = nullptr) {
-#if defined(_WIN32)
-  if (!AeDiagnosticsEnabled()) {
-    return;
-  }
-
-  char temp_path[MAX_PATH] = {};
-  const DWORD written = ::GetTempPathA(MAX_PATH, temp_path);
-  if (written == 0 || written >= MAX_PATH) {
-    return;
-  }
-
-  char log_path[MAX_PATH] = {};
-  std::snprintf(log_path, sizeof(log_path), "%s%s", temp_path, "ZSoda_AE_Runtime.log");
-  FILE* file = std::fopen(log_path, "ab");
-  if (file == nullptr) {
-    return;
-  }
-
-  SYSTEMTIME now = {};
-  ::GetLocalTime(&now);
-  const unsigned long tid = static_cast<unsigned long>(::GetCurrentThreadId());
-  std::fprintf(file,
-               "%04u-%02u-%02u %02u:%02u:%02u.%03u | RouterTrace | tid=%lu, stage=%s, detail=%s\r\n",
-               static_cast<unsigned>(now.wYear),
-               static_cast<unsigned>(now.wMonth),
-               static_cast<unsigned>(now.wDay),
-               static_cast<unsigned>(now.wHour),
-               static_cast<unsigned>(now.wMinute),
-               static_cast<unsigned>(now.wSecond),
-               static_cast<unsigned>(now.wMilliseconds),
-               tid,
-               stage != nullptr ? stage : "<null>",
-               (detail != nullptr && detail[0] != '\0') ? detail : "<none>");
-  std::fclose(file);
-#else
-  (void)stage;
-  (void)detail;
-#endif
+  AppendDiagnosticsTrace("RouterTrace", stage, detail);
 }
 
 }  // namespace

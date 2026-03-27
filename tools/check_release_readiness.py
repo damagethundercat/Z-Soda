@@ -12,8 +12,11 @@ import zipfile
 from pathlib import Path
 
 from package_layout import (
+    MACOS_SIDECAR_REQUIRED_RUNTIME_FILES,
     SELF_CONTAINED_ROOTS,
+    WINDOWS_SIDECAR_PACKAGE_ROOT,
     WINDOWS_BUNDLED_PYTHON_CANDIDATES,
+    WINDOWS_SIDECAR_REQUIRED_RUNTIME_FILES,
 )
 
 PAYLOAD_HEADER_MAGIC = b"ZSODA_PAYLOAD_V1"
@@ -486,6 +489,85 @@ def inspect_windows_embedded_artifact(
     return issues
 
 
+def _load_zip_entries(zip_path: Path) -> tuple[set[str], list[str]]:
+    if not zip_path.is_file():
+        return set(), [f"zip not found: {zip_path}"]
+
+    try:
+        with zipfile.ZipFile(zip_path) as archive:
+            entries = {
+                info.filename.replace("\\", "/").strip("/")
+                for info in archive.infolist()
+                if not info.is_dir()
+            }
+    except Exception as exc:  # noqa: BLE001
+        return set(), [f"failed to read zip: {exc}"]
+
+    return entries, []
+
+
+def inspect_windows_sidecar_zip(zip_path: Path) -> list[str]:
+    entries, issues = _load_zip_entries(zip_path)
+    if issues:
+        return issues
+
+    root = WINDOWS_SIDECAR_PACKAGE_ROOT
+    required_entries = {
+        f"{root}/ZSoda.aex",
+        f"{root}/models/models.manifest",
+        *(f"{root}/zsoda_ort/{name}" for name in WINDOWS_SIDECAR_REQUIRED_RUNTIME_FILES),
+    }
+    missing_entries = sorted(path for path in required_entries if path not in entries)
+    if missing_entries:
+        issues.append("missing Windows sidecar entries: " + ", ".join(missing_entries))
+
+    onnx_entries = sorted(path for path in entries if path.startswith(f"{root}/models/") and path.endswith(".onnx"))
+    if not onnx_entries:
+        issues.append(f"missing ONNX payload under {root}/models/")
+
+    legacy_flat_entries = sorted(
+        path
+        for path in entries
+        if path in {"ZSoda.aex", "models/models.manifest"}
+        or path.startswith("models/")
+        or path.startswith("zsoda_ort/")
+    )
+    if legacy_flat_entries:
+        issues.append(
+            "found legacy flat Windows zip entries outside Z-Soda/: "
+            + ", ".join(legacy_flat_entries[:10])
+            + (" ..." if len(legacy_flat_entries) > 10 else "")
+        )
+
+    return issues
+
+
+def inspect_macos_sidecar_zip(zip_path: Path) -> list[str]:
+    entries, issues = _load_zip_entries(zip_path)
+    if issues:
+        return issues
+
+    bundle_root = "ZSoda.plugin/Contents"
+    required_entries = {
+        f"{bundle_root}/MacOS/ZSoda",
+        f"{bundle_root}/Resources/models/models.manifest",
+        *(f"{bundle_root}/Resources/zsoda_ort/{name}" for name in MACOS_SIDECAR_REQUIRED_RUNTIME_FILES),
+    }
+    missing_entries = sorted(path for path in required_entries if path not in entries)
+    if missing_entries:
+        issues.append("missing macOS sidecar entries: " + ", ".join(missing_entries))
+
+    onnx_entries = sorted(
+        path
+        for path in entries
+        if path.startswith(f"{bundle_root}/Resources/models/") and path.endswith(".onnx")
+    )
+    if not onnx_entries:
+        issues.append(f"missing ONNX payload under {bundle_root}/Resources/models/")
+
+    return issues
+
+
 def main() -> int:
     args = parse_args()
 
@@ -545,39 +627,31 @@ def main() -> int:
 
     build_win = Path(args.build_win)
     build_mac = Path(args.build_mac)
-    release_assets = Path(args.release_assets)
     dist_win = Path(args.dist_win)
     dist_mac = Path(args.dist_mac)
 
     checks: list[tuple[str, bool, str]] = []
 
-    manifest_path = release_assets / "asset-manifest.json"
-    checks.append(("release-assets manifest", manifest_path.is_file(), str(manifest_path)))
-    checks.append(
-        ("macOS Python runtime", (release_assets / "python-macos").is_dir(), str(release_assets / "python-macos"))
-    )
-    checks.append(
-        ("Windows Python runtime", (release_assets / "python-win").is_dir(), str(release_assets / "python-win"))
-    )
-    checks.append(("local model repos", (release_assets / "models").is_dir(), str(release_assets / "models")))
-
+    repo_model_manifest = Path("models") / "models.manifest"
     build_win_aex = build_win / "plugin" / "Release" / "ZSoda.aex"
     build_mac_bundle = build_mac / "plugin" / "Release" / "ZSoda.plugin"
-    checks.append(("built Windows plugin", build_win_aex.is_file(), str(build_win_aex)))
-    checks.append(("built macOS plugin", build_mac_bundle.is_dir(), str(build_mac_bundle)))
-
     dist_win_zip = dist_win / "ZSoda-windows.zip"
     dist_mac_zip = dist_mac / "ZSoda-macos.zip"
+
+    windows_sidecar_issues = inspect_windows_sidecar_zip(dist_win_zip) if dist_win_zip.is_file() else [
+        f"zip not found: {dist_win_zip}"
+    ]
+    macos_sidecar_issues = inspect_macos_sidecar_zip(dist_mac_zip) if dist_mac_zip.is_file() else [
+        f"zip not found: {dist_mac_zip}"
+    ]
+
+    checks.append(("repo model manifest", repo_model_manifest.is_file(), str(repo_model_manifest)))
+    checks.append(("built Windows plugin", build_win_aex.is_file(), str(build_win_aex)))
+    checks.append(("built macOS plugin", build_mac_bundle.is_dir(), str(build_mac_bundle)))
     checks.append(("packaged Windows zip", dist_win_zip.is_file(), str(dist_win_zip)))
     checks.append(("packaged macOS zip", dist_mac_zip.is_file(), str(dist_mac_zip)))
-    embedded_windows_artifact = dist_win / "ZSoda.aex"
-    checks.append(
-        (
-            "embedded Windows artifact",
-            embedded_windows_artifact.is_file(),
-            str(embedded_windows_artifact),
-        )
-    )
+    checks.append(("Windows sidecar zip layout", not windows_sidecar_issues, str(dist_win_zip)))
+    checks.append(("macOS sidecar zip layout", not macos_sidecar_issues, str(dist_mac_zip)))
 
     ok_count = sum(1 for _, ok, _ in checks if ok)
     total_count = len(checks)
@@ -588,30 +662,20 @@ def main() -> int:
         print(status_line(label, ok, detail))
 
     blockers: list[str] = []
-    if not manifest_path.is_file():
-        blockers.append("prepare release-assets with tools/prepare_release_assets.py")
-    if not (release_assets / "python-macos").is_dir():
-        blockers.append("stage portable macOS Python runtime into release-assets/python-macos")
-    if not (release_assets / "python-win").is_dir():
-        blockers.append("stage portable Windows Python runtime into release-assets/python-win")
-    if not (release_assets / "models").is_dir():
-        blockers.append("stage local HF model repos into release-assets/models")
+    if not repo_model_manifest.is_file():
+        blockers.append("restore repo model metadata under models/models.manifest")
     if not build_win_aex.is_file():
-        blockers.append("produce a Windows Release build (build-win/plugin/Release/ZSoda.aex)")
+        blockers.append(f"produce a Windows Release build ({build_win_aex})")
     if not build_mac_bundle.is_dir():
-        blockers.append("produce a macOS Release build (build-mac/plugin/Release/ZSoda.plugin)")
+        blockers.append(f"produce a macOS Release build ({build_mac_bundle})")
     if not dist_win_zip.is_file():
-        blockers.append("run Windows self-contained packaging")
+        blockers.append(f"package the Windows sidecar zip ({dist_win_zip})")
     if not dist_mac_zip.is_file():
-        blockers.append("run macOS self-contained packaging")
-    if embedded_windows_artifact.is_file():
-        embedded_issues = inspect_windows_embedded_artifact(
-            embedded_windows_artifact,
-            expected_model_id="distill-any-depth-base",
-            require_self_contained=True,
-        )
-        if embedded_issues:
-            blockers.append("fix embedded Windows payload contract in dist/ZSoda.aex")
+        blockers.append(f"package the macOS sidecar zip ({dist_mac_zip})")
+    if dist_win_zip.is_file() and windows_sidecar_issues:
+        blockers.append("fix Windows sidecar zip layout under Z-Soda/")
+    if dist_mac_zip.is_file() and macos_sidecar_issues:
+        blockers.append("fix macOS sidecar bundle layout under ZSoda.plugin/Contents")
 
     if blockers:
         print("\nremaining blockers:")
@@ -620,40 +684,27 @@ def main() -> int:
     else:
         print("\nremaining blockers:")
         print("- none in repository packaging state")
-        print("- final external steps still remain: AE smoke on both OSes, mac notarization, GitHub Releases upload")
+        print("- final external steps still remain: release commit/tag, mac notarization if needed, GitHub Releases upload")
 
-    if embedded_windows_artifact.is_file():
-        embedded_issues = inspect_windows_embedded_artifact(
-            embedded_windows_artifact,
-            expected_model_id="distill-any-depth-base",
-            require_self_contained=True,
-        )
-        print("\nembedded Windows artifact summary:")
-        if embedded_issues:
-            print("- status: FAILED")
-            for issue in embedded_issues:
-                print(f"- {issue}")
-        else:
-            print("- status: OK")
-            print(f"- artifact: {embedded_windows_artifact}")
-            print("- expected model repo root: models/hf/distill-any-depth-base")
-            print("- expected runtime root: zsoda_py")
+    print("\nWindows sidecar zip summary:")
+    if windows_sidecar_issues:
+        print("- status: FAILED")
+        for issue in windows_sidecar_issues:
+            print(f"- {issue}")
+    else:
+        print("- status: OK")
+        print(f"- zip: {dist_win_zip}")
+        print(f"- required root: {WINDOWS_SIDECAR_PACKAGE_ROOT}/")
 
-    if manifest_path.is_file():
-        try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except Exception as exc:  # noqa: BLE001
-            print(f"\nmanifest parse: failed ({exc})")
-        else:
-            print("\nasset manifest summary:")
-            for key in ("python-macos", "python-win", "models", "hf-cache"):
-                if key in manifest:
-                    print(f"- {key}: present")
-            for key in ("python-macos", "python-win"):
-                manifest_entry = manifest.get(key)
-                if isinstance(manifest_entry, dict):
-                    for line in describe_runtime_probe(key, manifest_entry):
-                        print(line)
+    print("\nmacOS sidecar zip summary:")
+    if macos_sidecar_issues:
+        print("- status: FAILED")
+        for issue in macos_sidecar_issues:
+            print(f"- {issue}")
+    else:
+        print("- status: OK")
+        print(f"- zip: {dist_mac_zip}")
+        print("- required root: ZSoda.plugin/Contents")
 
     return 0
 

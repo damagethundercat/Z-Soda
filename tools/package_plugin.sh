@@ -22,7 +22,7 @@ platform=""
 build_dir=""
 output_dir=""
 include_manifest="0"
-package_mode="embedded-windows"
+package_mode=""
 ort_dir=""
 python_dir=""
 package_resource_root=""
@@ -181,6 +181,14 @@ if [[ -z "${platform}" || -z "${build_dir}" || -z "${output_dir}" ]]; then
   echo "Missing required arguments." >&2
   print_usage
   exit 1
+fi
+
+if [[ -z "${package_mode}" ]]; then
+  if [[ "${platform}" == "macos" ]]; then
+    package_mode="sidecar-ort"
+  else
+    package_mode="embedded-windows"
+  fi
 fi
 
 payload_python="$(resolve_payload_python)" || {
@@ -383,7 +391,7 @@ if command -v sha256sum >/dev/null 2>&1; then
     if [[ "${platform}" == "windows" ]]; then
       sha256sum "${artifact_hash_input}" | sed "s#  ${artifact_hash_input}\$#  ${artifact_hash_label}#" > "${artifact_name}.sha256"
     else
-      tar -cf - "${artifact_name}" | sha256sum > "${artifact_name}.sha256"
+      tar -cf - "${artifact_name}" | sha256sum | sed "s#  -\$#  ${artifact_name}#" > "${artifact_name}.sha256"
     fi
   )
 elif command -v shasum >/dev/null 2>&1; then
@@ -392,7 +400,7 @@ elif command -v shasum >/dev/null 2>&1; then
     if [[ "${platform}" == "windows" ]]; then
       shasum -a 256 "${artifact_hash_input}" | sed "s#  ${artifact_hash_input}\$#  ${artifact_hash_label}#" > "${artifact_name}.sha256"
     else
-      tar -cf - "${artifact_name}" | shasum -a 256 > "${artifact_name}.sha256"
+      tar -cf - "${artifact_name}" | shasum -a 256 | sed "s#  -\$#  ${artifact_name}#" > "${artifact_name}.sha256"
     fi
   )
 fi

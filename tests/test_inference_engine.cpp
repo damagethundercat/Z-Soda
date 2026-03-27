@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cassert>
 #include <chrono>
@@ -8,6 +9,7 @@
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -19,6 +21,7 @@
 #include "inference/ManagedInferenceEngine.h"
 #include "inference/ModelCatalog.h"
 #include "inference/RemoteInferenceBackend.h"
+#include "inference/RuntimePathResolver.h"
 #if defined(ZSODA_WITH_ONNX_RUNTIME)
 #include "inference/OnnxRuntimeBackend.h"
 #endif
@@ -59,6 +62,17 @@ void WriteTextFile(const std::filesystem::path& path, const std::string& content
   std::ofstream stream(path);
   assert(stream.is_open());
   stream << content;
+}
+
+template <std::size_t Size>
+void WriteBinaryFile(const std::filesystem::path& path,
+                     const std::array<std::uint8_t, Size>& bytes) {
+  std::filesystem::create_directories(path.parent_path());
+  std::ofstream stream(path, std::ios::binary);
+  assert(stream.is_open());
+  stream.write(reinterpret_cast<const char*>(bytes.data()),
+               static_cast<std::streamsize>(bytes.size()));
+  assert(stream.good());
 }
 
 bool HasModel(const std::vector<std::string>& model_ids, const std::string& expected) {
@@ -199,7 +213,82 @@ zsoda::core::FrameBuffer MakeSource() {
   return frame;
 }
 
+std::optional<std::filesystem::path> FindRepoRoot() {
+  std::error_code ec;
+  auto current = std::filesystem::current_path(ec);
+  if (ec) {
+    return std::nullopt;
+  }
+
+  for (;;) {
+    if (std::filesystem::is_regular_file(current / "plugin" / "CMakeLists.txt", ec) &&
+        !ec &&
+        std::filesystem::is_directory(current / "tests", ec) &&
+        !ec) {
+      return current;
+    }
+    const auto parent = current.parent_path();
+    if (parent.empty() || parent == current) {
+      break;
+    }
+    current = parent;
+  }
+  return std::nullopt;
+}
+
 #if defined(ZSODA_WITH_ONNX_RUNTIME)
+constexpr std::array<std::uint8_t, 132> kMinimalFloatIdentityOnnx = {
+    0x08, 0x08, 0x12, 0x0a, 0x7a, 0x73, 0x6f, 0x64, 0x61, 0x2d, 0x74, 0x65, 0x73, 0x74,
+    0x3a, 0x6e, 0x0a, 0x19, 0x0a, 0x05, 0x69, 0x6e, 0x70, 0x75, 0x74, 0x12, 0x06, 0x6f,
+    0x75, 0x74, 0x70, 0x75, 0x74, 0x22, 0x08, 0x49, 0x64, 0x65, 0x6e, 0x74, 0x69, 0x74,
+    0x79, 0x12, 0x0e, 0x7a, 0x73, 0x6f, 0x64, 0x61, 0x5f, 0x69, 0x64, 0x65, 0x6e, 0x74,
+    0x69, 0x74, 0x79, 0x5a, 0x1f, 0x0a, 0x05, 0x69, 0x6e, 0x70, 0x75, 0x74, 0x12, 0x16,
+    0x0a, 0x14, 0x08, 0x01, 0x12, 0x10, 0x0a, 0x02, 0x08, 0x01, 0x0a, 0x02, 0x08, 0x03,
+    0x0a, 0x02, 0x08, 0x02, 0x0a, 0x02, 0x08, 0x02, 0x62, 0x20, 0x0a, 0x06, 0x6f, 0x75,
+    0x74, 0x70, 0x75, 0x74, 0x12, 0x16, 0x0a, 0x14, 0x08, 0x01, 0x12, 0x10, 0x0a, 0x02,
+    0x08, 0x01, 0x0a, 0x02, 0x08, 0x03, 0x0a, 0x02, 0x08, 0x02, 0x0a, 0x02, 0x08, 0x02,
+    0x42, 0x04, 0x0a, 0x00, 0x10, 0x11,
+};
+
+std::optional<std::filesystem::path> FindTestOrtRuntimeLibrary() {
+  const char* configured = std::getenv("ZSODA_ONNXRUNTIME_LIBRARY");
+  if (configured != nullptr && configured[0] != '\0') {
+    const std::filesystem::path configured_path(configured);
+    std::error_code ec;
+    if (std::filesystem::is_regular_file(configured_path, ec) && !ec) {
+      return configured_path;
+    }
+  }
+
+  const auto repo_root = FindRepoRoot();
+  if (!repo_root.has_value()) {
+    return std::nullopt;
+  }
+
+  const std::vector<std::filesystem::path> search_roots = {
+      *repo_root / ".cache" / "ort-sdk",
+      *repo_root / "dist-mac-ort",
+      *repo_root / "build-mac-ort",
+  };
+  const std::string library_name = zsoda::inference::DefaultOnnxRuntimeLibraryFileName();
+  for (const auto& search_root : search_roots) {
+    std::error_code ec;
+    if (!std::filesystem::exists(search_root, ec) || ec) {
+      continue;
+    }
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(search_root, ec)) {
+      if (ec) {
+        break;
+      }
+      if (entry.is_regular_file(ec) && !ec && entry.path().filename() == library_name) {
+        return entry.path();
+      }
+    }
+  }
+
+  return std::nullopt;
+}
+
 zsoda::core::FrameBuffer MakeRgbCenteredSquareSource(int width, int height, int square_size) {
   zsoda::core::FrameDesc desc;
   desc.width = width;
@@ -838,13 +927,19 @@ void TestOnnxPreprocessStretchModeDistortsAspectRatio() {
 
 void TestDistillAnyDepthProfileDefaults() {
   const auto profile = zsoda::inference::ResolvePipelineProfile("distill-any-depth-base");
-  assert(profile.input_width == 384);
-  assert(profile.input_height == 384);
+  assert(profile.input_width == 518);
+  assert(profile.input_height == 518);
   assert(profile.input_frame_count == 1);
+  assert(std::abs(profile.normalize_mean[0] - 0.485F) < 1e-6F);
+  assert(std::abs(profile.normalize_mean[1] - 0.456F) < 1e-6F);
+  assert(std::abs(profile.normalize_mean[2] - 0.406F) < 1e-6F);
+  assert(std::abs(profile.normalize_std[0] - 0.229F) < 1e-6F);
+  assert(std::abs(profile.normalize_std[1] - 0.224F) < 1e-6F);
+  assert(std::abs(profile.normalize_std[2] - 0.225F) < 1e-6F);
   assert(!profile.invert_depth);
   assert(!profile.prefer_latest_output_map);
-  assert(!profile.use_upper_bound_dynamic_aspect);
-  assert(profile.patch_multiple == 1);
+  assert(profile.use_upper_bound_dynamic_aspect);
+  assert(profile.patch_multiple == 14);
   assert(!profile.use_middle_reference_strategy);
 }
 
@@ -912,6 +1007,37 @@ void TestOnnxBackendValidationScaffold() {
   assert(Contains(error, valid_model.string()));
 #endif
 }
+
+void TestOnnxSelectModelAcceptsMinimalFloatIdentityGraph() {
+  const auto ort_runtime = FindTestOrtRuntimeLibrary();
+  if (!ort_runtime.has_value()) {
+    return;
+  }
+
+  TempDir temp_dir;
+  const auto model_path = temp_dir.path() / "float_identity.onnx";
+  WriteBinaryFile(model_path, kMinimalFloatIdentityOnnx);
+
+  ScopedEnvironmentOverride set_ort_runtime("ZSODA_ONNXRUNTIME_LIBRARY", ort_runtime->string());
+  ScopedEnvironmentOverride disable_preloaded("ZSODA_ORT_PREFER_PRELOADED", "0");
+
+  zsoda::inference::RuntimeOptions options;
+  options.preferred_backend = zsoda::inference::RuntimeBackend::kCpu;
+
+  std::string error;
+  auto backend = zsoda::inference::CreateOnnxRuntimeBackend(options, &error);
+  if (backend == nullptr) {
+    assert(!error.empty());
+    assert(HasOrtBootstrapDiagnostic(error));
+    return;
+  }
+  assert(error.empty());
+  assert(backend->ActiveBackend() == zsoda::inference::RuntimeBackend::kCpu);
+
+  error.clear();
+  assert(backend->SelectModel("regression-float-identity", model_path.string(), &error));
+  assert(error.empty());
+}
 #endif
 
 void TestModelAutoDownloaderValidation() {
@@ -961,6 +1087,7 @@ void RunInferenceEngineTests() {
   TestOnnxPreprocessStretchModeDistortsAspectRatio();
   TestDistillAnyDepthProfileDefaults();
   TestOnnxBackendValidationScaffold();
+  TestOnnxSelectModelAcceptsMinimalFloatIdentityGraph();
 #endif
   TestModelAutoDownloaderValidation();
 }

@@ -8,12 +8,18 @@ from pathlib import Path
 DEFAULT_MODEL_ID = "distill-any-depth-base"
 DEFAULT_MODEL_DISPLAY_NAME = "DistillAnyDepth Base"
 DEFAULT_MODEL_RELATIVE_PATH = Path("distill-any-depth") / "distill_any_depth_base.onnx"
-DEFAULT_RUNTIME_FILES = (
+WINDOWS_REQUIRED_RUNTIME_FILES = (
     "onnxruntime.dll",
     "onnxruntime_providers_shared.dll",
 )
-OPTIONAL_RUNTIME_FILES = (
+WINDOWS_OPTIONAL_RUNTIME_FILES = (
     "DirectML.dll",
+)
+MACOS_REQUIRED_RUNTIME_FILES = (
+    "libonnxruntime.dylib",
+)
+MACOS_RUNTIME_GLOBS = (
+    "libonnxruntime*.dylib*",
 )
 
 
@@ -40,9 +46,9 @@ def write_models_manifest(
     destination.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def prepare_runtime(runtime_dir: Path, destination_dir: Path) -> list[Path]:
+def prepare_windows_runtime(runtime_dir: Path, destination_dir: Path) -> list[Path]:
     copied: list[Path] = []
-    for filename in DEFAULT_RUNTIME_FILES:
+    for filename in WINDOWS_REQUIRED_RUNTIME_FILES:
         source = runtime_dir / filename
         if not source.is_file():
             raise FileNotFoundError(f"Required ORT runtime file was not found: {source}")
@@ -50,7 +56,7 @@ def prepare_runtime(runtime_dir: Path, destination_dir: Path) -> list[Path]:
         copy_file(source, destination)
         copied.append(destination)
 
-    for filename in OPTIONAL_RUNTIME_FILES:
+    for filename in WINDOWS_OPTIONAL_RUNTIME_FILES:
         source = runtime_dir / filename
         if source.is_file():
             destination = destination_dir / filename
@@ -59,10 +65,36 @@ def prepare_runtime(runtime_dir: Path, destination_dir: Path) -> list[Path]:
     return copied
 
 
+def prepare_macos_runtime(runtime_dir: Path, destination_dir: Path) -> list[Path]:
+    missing = [runtime_dir / filename for filename in MACOS_REQUIRED_RUNTIME_FILES if not (runtime_dir / filename).is_file()]
+    if missing:
+        raise FileNotFoundError(
+            "Required macOS ORT runtime file was not found: " + ", ".join(str(path) for path in missing)
+        )
+
+    copied: list[Path] = []
+    seen_names: set[str] = set()
+    for pattern in MACOS_RUNTIME_GLOBS:
+        for source in sorted(runtime_dir.glob(pattern)):
+            if not source.is_file() or source.name in seen_names:
+                continue
+            destination = destination_dir / source.name
+            copy_file(source, destination)
+            copied.append(destination)
+            seen_names.add(source.name)
+
+    if not copied:
+        raise FileNotFoundError(
+            f"macOS ORT runtime directory does not contain any libonnxruntime*.dylib files: {runtime_dir}"
+        )
+    return copied
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Prepare a slim Windows native ORT sidecar release asset directory."
+        description="Prepare a native ORT sidecar release asset directory."
     )
+    parser.add_argument("--platform", choices=("windows", "macos"), default="windows")
     parser.add_argument("--onnx-model-path", required=True)
     parser.add_argument("--ort-runtime-dir", required=True)
     parser.add_argument("--output-dir", required=True)
@@ -115,9 +147,13 @@ def main() -> int:
     if readme_template.is_file():
         copy_file(readme_template, models_root / "README.md")
 
-    copied_runtime_files = prepare_runtime(runtime_source, runtime_root)
+    if args.platform == "macos":
+        copied_runtime_files = prepare_macos_runtime(runtime_source, runtime_root)
+    else:
+        copied_runtime_files = prepare_windows_runtime(runtime_source, runtime_root)
 
     print("Prepared ORT sidecar assets:")
+    print(f"  platform: {args.platform}")
     print(f"  output: {output_root}")
     print(f"  model:  {model_destination} ({model_destination.stat().st_size} bytes)")
     print(f"  manifest: {manifest_destination}")

@@ -1,5 +1,7 @@
 #include "core/RenderPipeline.h"
 
+#include "ae/AeDiagnostics.h"
+
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -116,60 +118,10 @@ const char* SafeCStr(const char* value, const char* fallback = "<null>") {
 }
 
 void AppendPipelineTrace(const char* stage, const char* detail = nullptr) {
-#if defined(_WIN32)
-  static const bool enabled = []() -> bool {
-    const char* raw = std::getenv("ZSODA_PIPELINE_TRACE");
-    if (raw == nullptr) {
-      return false;
-    }
-    std::string normalized;
-    while (*raw != '\0') {
-      const char ch = *raw++;
-      if (ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n') {
-        continue;
-      }
-      normalized.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
-    }
-    return normalized == "1" || normalized == "true" || normalized == "on" ||
-           normalized == "yes";
-  }();
-  if (!enabled) {
+  if (!zsoda::ae::AeDiagnosticsEnabled() && !ParseBoolEnvOrDefault("ZSODA_PIPELINE_TRACE", false)) {
     return;
   }
-
-  char temp_path[MAX_PATH] = {};
-  const DWORD written = ::GetTempPathA(MAX_PATH, temp_path);
-  if (written == 0 || written >= MAX_PATH) {
-    return;
-  }
-
-  char log_path[MAX_PATH] = {};
-  std::snprintf(log_path, sizeof(log_path), "%s%s", temp_path, "ZSoda_AE_Runtime.log");
-  FILE* file = std::fopen(log_path, "ab");
-  if (file == nullptr) {
-    return;
-  }
-
-  SYSTEMTIME now = {};
-  ::GetLocalTime(&now);
-  const unsigned long tid = static_cast<unsigned long>(::GetCurrentThreadId());
-  std::fprintf(file,
-               "%04u-%02u-%02u %02u:%02u:%02u.%03u | PipelineTrace | tid=%lu, stage=%s, detail=%s\r\n",
-               static_cast<unsigned>(now.wYear),
-               static_cast<unsigned>(now.wMonth),
-               static_cast<unsigned>(now.wDay),
-               static_cast<unsigned>(now.wHour),
-               static_cast<unsigned>(now.wMinute),
-               static_cast<unsigned>(now.wSecond),
-               static_cast<unsigned>(now.wMilliseconds),
-               tid,
-               stage != nullptr ? stage : "<null>",
-               (detail != nullptr && detail[0] != '\0') ? detail : "<none>");
-  std::fclose(file);
-#else
-  (void)stage;
-  (void)detail;
-#endif
+  zsoda::ae::AppendDiagnosticsTrace("PipelineTrace", stage, detail);
 }
 
 FrameBuffer CropGray(const FrameBuffer& source, const TileRect& tile) {

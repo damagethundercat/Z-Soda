@@ -132,15 +132,39 @@ bash tools/package_plugin.sh --platform windows --package-mode sidecar-ort --bui
 
 ## Recommended macOS Build
 
-The current macOS direction is also ORT-first, but it must be completed on a
-real macOS machine. Use [MAC_AGENT_HANDOFF.md](MAC_AGENT_HANDOFF.md) as the
-handoff contract.
+The current macOS direction is ORT-first. The build/package wrapper now expects
+a native ONNX model root plus a bundled ORT runtime sidecar, not a Python-first
+payload. Use [MAC_AGENT_HANDOFF.md](MAC_AGENT_HANDOFF.md) as the handoff
+contract.
+
+Export the locked model first:
+
+```bash
+python3 -m pip install onnx
+release-assets/python-macos/bin/python3 tools/export_depth_model_onnx.py \
+  --model-dir .cache/model-repos/distill-any-depth-base \
+  --output-path .cache/ort-export-probe/distill_any_depth_base.onnx \
+  --overwrite
+```
+
+Prepare a macOS sidecar asset root:
+
+```bash
+python3 tools/prepare_ort_sidecar_release.py \
+  --platform macos \
+  --onnx-model-path .cache/ort-export-probe/distill_any_depth_base.onnx \
+  --ort-runtime-dir "/path/to/onnxruntime-osx-arm64-1.23.2/lib" \
+  --output-dir artifacts/macos-ort-assets \
+  --overwrite
+```
 
 Starting point:
 
 ```bash
 bash tools/build_plugin_macos.sh \
   --ae-sdk-root "/path/to/AdobeAfterEffectsSDK" \
+  --ort-sdk-root "/path/to/onnxruntime-osx-arm64-1.23.2" \
+  --sidecar-assets-dir "artifacts/macos-ort-assets" \
   --build-dir build-mac \
   --output-dir dist-mac
 ```
@@ -148,6 +172,7 @@ bash tools/build_plugin_macos.sh \
 Expected bundle shape:
 
 - `ZSoda.plugin/Contents/MacOS/ZSoda`
+- `ZSoda.plugin/Contents/Resources/models/models.manifest`
 - `ZSoda.plugin/Contents/Resources/models/...`
 - `ZSoda.plugin/Contents/Resources/zsoda_ort/...`
 
@@ -158,7 +183,10 @@ Expected bundle shape:
 - Python remote service remains available only for explicit debug/fallback work.
 - Legacy embedded self-contained payloads are no longer the primary shipping path.
 - `Z-Soda/ZSoda.aex`, `Z-Soda/models/`, and `Z-Soda/zsoda_ort/` must stay adjacent.
-- `%TEMP%\ZSoda_AE_Runtime.log` is the primary failure-focused runtime log.
+- Runtime trace log defaults:
+  - Windows: `%TEMP%\ZSoda_AE_Runtime.log`
+  - macOS: `~/Library/Logs/ZSoda/ZSoda_AE_Runtime.log`
+  - override on either OS: `ZSODA_AE_LOG_PATH=/custom/path/ZSoda_AE_Runtime.log`
 - Optional verbose host/router tracing can be enabled with `ZSODA_AE_TRACE=1`.
 
 ## Smoke Checklist
@@ -179,7 +207,8 @@ Expected bundle shape:
 - Loader problem:
   - inspect `build-win\plugin\Release\ZSoda.loader_check.txt`
 - Runtime problem:
-  - inspect `%TEMP%\ZSoda_AE_Runtime.log`
+  - inspect `%TEMP%\ZSoda_AE_Runtime.log` on Windows
+  - inspect `~/Library/Logs/ZSoda/ZSoda_AE_Runtime.log` on macOS
 - Sidecar runtime problem:
   - verify `MediaCore\Z-Soda\zsoda_ort\onnxruntime.dll`
   - verify `MediaCore\Z-Soda\models\distill-any-depth\distill_any_depth_base.onnx`

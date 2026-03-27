@@ -18,6 +18,8 @@
 #include <utility>
 #include <vector>
 
+#include "ae/AeDiagnostics.h"
+
 #if defined(_WIN32)
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -343,40 +345,7 @@ const char* SafeCStr(const char* value, const char* fallback = "<null>") {
 }
 
 void AppendOrtTrace(const char* stage, const char* detail = nullptr) {
-#if defined(_WIN32)
-  char temp_path[MAX_PATH] = {};
-  const DWORD written = ::GetTempPathA(MAX_PATH, temp_path);
-  if (written == 0 || written >= MAX_PATH) {
-    return;
-  }
-
-  char log_path[MAX_PATH] = {};
-  std::snprintf(log_path, sizeof(log_path), "%s%s", temp_path, "ZSoda_AE_Runtime.log");
-  FILE* file = std::fopen(log_path, "ab");
-  if (file == nullptr) {
-    return;
-  }
-
-  SYSTEMTIME now = {};
-  ::GetLocalTime(&now);
-  const unsigned long tid = static_cast<unsigned long>(::GetCurrentThreadId());
-  std::fprintf(file,
-               "%04u-%02u-%02u %02u:%02u:%02u.%03u | OrtTrace | tid=%lu, stage=%s, detail=%s\r\n",
-               static_cast<unsigned>(now.wYear),
-               static_cast<unsigned>(now.wMonth),
-               static_cast<unsigned>(now.wDay),
-               static_cast<unsigned>(now.wHour),
-               static_cast<unsigned>(now.wMinute),
-               static_cast<unsigned>(now.wSecond),
-               static_cast<unsigned>(now.wMilliseconds),
-               tid,
-               stage != nullptr ? stage : "<null>",
-               (detail != nullptr && detail[0] != '\0') ? detail : "<none>");
-  std::fclose(file);
-#else
-  (void)stage;
-  (void)detail;
-#endif
+  zsoda::ae::AppendDiagnosticsTrace("OrtTrace", stage, detail);
 }
 
 std::string BuildBackendName(RuntimeBackend active_backend,
@@ -1707,7 +1676,10 @@ bool ResolveSessionIo(const Ort::Session& session,
     AppendOrtTrace("resolve_io_output_select", detail_text.c_str());
   }
 
-  const auto input_info = session.GetInputTypeInfo(0U).GetTensorTypeAndShapeInfo();
+  // Keep Ort::TypeInfo alive while querying TensorTypeAndShapeInfo. Chaining
+  // through a temporary produces a dangling wrapper and bogus element types.
+  const auto input_type_info = session.GetInputTypeInfo(0U);
+  const auto input_info = input_type_info.GetTensorTypeAndShapeInfo();
   if (input_info.GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
     if (error != nullptr) {
       *error = "onnx runtime session input must be float tensor";
@@ -1782,8 +1754,8 @@ bool ResolveSessionIo(const Ort::Session& session,
     return false;
   }
 
-  const auto output_info =
-      session.GetOutputTypeInfo(selected_output_index).GetTensorTypeAndShapeInfo();
+  const auto output_type_info = session.GetOutputTypeInfo(selected_output_index);
+  const auto output_info = output_type_info.GetTensorTypeAndShapeInfo();
   if (output_info.GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
     if (error != nullptr) {
       *error = "onnx runtime session output must be float tensor";
@@ -2274,6 +2246,7 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
         provider_note_.append(provider_apply_detail);
       }
       provider_note_base_ = provider_note_;
+      AppendOrtTrace("provider_select", provider_note_base_.c_str());
     } catch (const Ort::Exception& ex) {
       initialized_ = false;
       if (error != nullptr) {
@@ -2289,6 +2262,7 @@ class OnnxRuntimeBackendScaffold final : public IOnnxRuntimeBackend {
 #endif
 
     initialized_ = true;
+    AppendOrtTrace("initialize_ok", Name());
     if (error != nullptr) {
       error->clear();
     }

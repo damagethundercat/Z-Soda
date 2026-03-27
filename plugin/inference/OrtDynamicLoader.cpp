@@ -5,11 +5,16 @@
 #include <cctype>
 #include <cstdint>
 #include <cwctype>
+#include <filesystem>
 #include <sstream>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
+
+#if !defined(_WIN32)
+#include <dlfcn.h>
+#endif
 
 #if defined(_WIN32)
 #ifndef NOMINMAX
@@ -865,6 +870,214 @@ bool TryLoadOrtModuleWithFallback(const std::wstring& load_path_wide,
 }
 #endif
 
+#if !defined(_WIN32)
+bool IsExistingFile(const std::filesystem::path& path) {
+  if (path.empty()) {
+    return false;
+  }
+  std::error_code ec;
+  return std::filesystem::is_regular_file(path, ec) && !ec;
+}
+
+std::string ConsumeDlError() {
+  const char* raw = ::dlerror();
+  if (raw == nullptr || raw[0] == '\0') {
+    return "unknown dlerror";
+  }
+  return raw;
+}
+
+bool ResolveLoadPath(const std::string& library_path,
+                     std::string* load_path_utf8,
+                     std::string* error) {
+  if (load_path_utf8 == nullptr) {
+    if (error != nullptr) {
+      *error = "internal error: load path output pointer is null";
+    }
+    return false;
+  }
+
+  load_path_utf8->clear();
+  if (library_path.empty()) {
+    if (error != nullptr) {
+      *error = "onnxruntime library path is not configured";
+    }
+    return false;
+  }
+
+  const std::filesystem::path requested_path(library_path);
+  std::error_code ec;
+  const std::filesystem::path absolute_path = std::filesystem::absolute(requested_path, ec);
+  const std::filesystem::path resolved_path = ec ? requested_path : absolute_path;
+  if (!IsExistingFile(resolved_path)) {
+    if (error != nullptr) {
+      *error = "resolved ORT library path does not exist: " + resolved_path.string();
+    }
+    return false;
+  }
+
+  *load_path_utf8 = resolved_path.lexically_normal().string();
+  if (error != nullptr) {
+    error->clear();
+  }
+  return true;
+}
+
+bool QueryLoadedModulePath(void* module, std::string* loaded_path, std::string* error) {
+  if (module == nullptr || loaded_path == nullptr) {
+    if (error != nullptr) {
+      *error = "internal error: module/path pointer is null";
+    }
+    return false;
+  }
+
+  loaded_path->clear();
+  ::dlerror();
+  void* symbol = ::dlsym(module, "OrtGetApiBase");
+  const std::string symbol_error = ConsumeDlError();
+  if (symbol == nullptr) {
+    if (error != nullptr) {
+      *error = "dlsym(\"OrtGetApiBase\") failed: " + symbol_error;
+    }
+    return false;
+  }
+
+  Dl_info info = {};
+  if (::dladdr(symbol, &info) == 0 || info.dli_fname == nullptr || info.dli_fname[0] == '\0') {
+    if (error != nullptr) {
+      *error = "dladdr failed to resolve loaded module path";
+    }
+    return false;
+  }
+
+  *loaded_path = info.dli_fname;
+  if (error != nullptr) {
+    error->clear();
+  }
+  return true;
+}
+
+bool BindOrtApiFromModule(void* module,
+                          std::uint32_t requested_api_version,
+                          const OrtApiBase** api_base,
+                          const OrtApi** api,
+                          std::uint32_t* negotiated_api_version,
+                          std::string* runtime_version,
+                          std::string* error) {
+  if (module == nullptr || api_base == nullptr || api == nullptr || negotiated_api_version == nullptr ||
+      runtime_version == nullptr) {
+    if (error != nullptr) {
+      *error = "internal error: invalid ORT binding output pointers";
+    }
+    return false;
+  }
+
+  struct OrtApiBaseCompat {
+    const OrtApi* (ORT_API_CALL* GetApi)(std::uint32_t version);
+    const char* (ORT_API_CALL* GetVersionString)(void);
+  };
+
+  *api_base = nullptr;
+  *api = nullptr;
+  *negotiated_api_version = 0;
+  runtime_version->clear();
+
+  ::dlerror();
+  void* symbol = ::dlsym(module, "OrtGetApiBase");
+  const std::string symbol_error = ConsumeDlError();
+  if (symbol == nullptr) {
+    if (error != nullptr) {
+      *error = "dlsym(\"OrtGetApiBase\") failed: " + symbol_error;
+    }
+    return false;
+  }
+
+  using OrtGetApiBaseFn = const OrtApiBase* (ORT_API_CALL*)(void);
+  const auto get_api_base = reinterpret_cast<OrtGetApiBaseFn>(symbol);
+  const OrtApiBase* resolved_base = get_api_base();
+  if (resolved_base == nullptr) {
+    if (error != nullptr) {
+      *error = "OrtGetApiBase returned null";
+    }
+    return false;
+  }
+
+  const auto* api_base_compat = reinterpret_cast<const OrtApiBaseCompat*>(resolved_base);
+  if (api_base_compat->GetApi == nullptr) {
+    if (error != nullptr) {
+      *error = "OrtApiBase::GetApi is null";
+    }
+    return false;
+  }
+
+  const std::uint32_t max_try =
+      requested_api_version > 0 ? requested_api_version : static_cast<std::uint32_t>(ORT_API_VERSION);
+  const OrtApi* resolved_api = nullptr;
+  std::uint32_t resolved_version = 0;
+  for (std::uint32_t version = max_try; version >= 1; --version) {
+    const OrtApi* candidate = api_base_compat->GetApi(version);
+    if (candidate != nullptr) {
+      resolved_api = candidate;
+      resolved_version = version;
+      break;
+    }
+    if (version == 1) {
+      break;
+    }
+  }
+
+  if (resolved_api == nullptr) {
+    if (error != nullptr) {
+      *error = std::string(
+                   "OrtApiBase::GetApi returned null for every requested version down to 1 "
+                   "(requested=") +
+               std::to_string(max_try) + ")";
+    }
+    return false;
+  }
+
+  if (api_base_compat->GetVersionString != nullptr) {
+    const char* version = api_base_compat->GetVersionString();
+    if (version != nullptr) {
+      *runtime_version = version;
+    }
+  }
+
+  *api_base = resolved_base;
+  *api = resolved_api;
+  *negotiated_api_version = resolved_version;
+  if (error != nullptr) {
+    error->clear();
+  }
+  return true;
+}
+
+bool TryLoadOrtModule(const std::string& load_path_utf8, void** module, std::string* error) {
+  if (module == nullptr) {
+    if (error != nullptr) {
+      *error = "internal error: ORT module output pointer is null";
+    }
+    return false;
+  }
+
+  *module = nullptr;
+  ::dlerror();
+  void* handle = ::dlopen(load_path_utf8.c_str(), RTLD_NOW | RTLD_LOCAL);
+  if (handle == nullptr) {
+    if (error != nullptr) {
+      *error = ConsumeDlError();
+    }
+    return false;
+  }
+
+  *module = handle;
+  if (error != nullptr) {
+    error->clear();
+  }
+  return true;
+}
+#endif
+
 std::string BuildDiagnostics(const std::string& requested_dll_path,
                              const std::string& attempted_load_path,
                              const std::string& loaded_dll_path,
@@ -906,7 +1119,68 @@ bool OrtDynamicLoader::Load(const std::string& dll_path,
   diagnostics_.clear();
 
 #if !defined(_WIN32)
-  return Fail("OrtDynamicLoader is only implemented for Windows in this build", error);
+  (void)prefer_preloaded;
+
+  std::string resolve_error;
+  if (!ResolveLoadPath(dll_path, &attempted_load_path_, &resolve_error)) {
+    return Fail("failed to resolve ORT library path: " + resolve_error, error);
+  }
+
+  void* module = nullptr;
+  std::string load_error;
+  if (!TryLoadOrtModule(attempted_load_path_, &module, &load_error)) {
+    return Fail("dlopen failed: " + load_error, error);
+  }
+
+  const OrtApiBase* api_base = nullptr;
+  const OrtApi* api = nullptr;
+  std::uint32_t negotiated_api_version = 0;
+  std::string bind_error;
+  if (!BindOrtApiFromModule(module,
+                            requested_api_version_,
+                            &api_base,
+                            &api,
+                            &negotiated_api_version,
+                            &runtime_version_string_,
+                            &bind_error)) {
+    ::dlclose(module);
+    return Fail(bind_error, error);
+  }
+
+  if (negotiated_api_version < requested_api_version_) {
+    ::dlclose(module);
+    std::ostringstream oss;
+    oss << "onnx runtime API negotiation downgraded below requested version"
+        << " (requested=" << requested_api_version_
+        << ", negotiated=" << negotiated_api_version
+        << ", runtime_version="
+        << (runtime_version_string_.empty() ? "<unknown>" : runtime_version_string_)
+        << "); refusing to bind this runtime";
+    return Fail(oss.str(), error);
+  }
+
+  std::string loaded_path_error;
+  if (!QueryLoadedModulePath(module, &loaded_dll_path_, &loaded_path_error)) {
+    ::dlclose(module);
+    return Fail("failed to query loaded library path: " + loaded_path_error, error);
+  }
+
+  module_handle_ = module;
+  owns_module_handle_ = true;
+  api_base_ = api_base;
+  api_ = api;
+  negotiated_api_version_ = negotiated_api_version;
+  diagnostics_ = BuildDiagnostics(requested_dll_path_,
+                                  attempted_load_path_,
+                                  loaded_dll_path_,
+                                  runtime_version_string_,
+                                  requested_api_version_,
+                                  negotiated_api_version_,
+                                  std::string());
+  if (error != nullptr) {
+    error->clear();
+  }
+  return true;
 #else
   // Prefer loading our isolated runtime path first. If the host process already
   // loaded onnxruntime.dll and isolated loading fails (common in AE), we fall
@@ -1065,6 +1339,10 @@ void OrtDynamicLoader::Unload() {
 #if defined(_WIN32)
   if (module_handle_ != nullptr && owns_module_handle_) {
     ::FreeLibrary(reinterpret_cast<HMODULE>(module_handle_));
+  }
+#elif !defined(_WIN32)
+  if (module_handle_ != nullptr && owns_module_handle_) {
+    ::dlclose(module_handle_);
   }
 #endif
   ResetState();

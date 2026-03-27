@@ -8,7 +8,15 @@
 - 공개 effect 이름: `Z-Soda`
 - internal match name: `Z-Soda Depth Slice`
 - 고정 모델: `distill-any-depth-base`
-- 기본 런타임: local Python remote service + binary localhost transport
+- 기본 런타임: native ONNX Runtime sidecar (`models/*.onnx` + `zsoda_ort/`)
+- Windows 설치 기준:
+  - `Z-Soda/ZSoda.aex`
+  - `Z-Soda/models/`
+  - `Z-Soda/zsoda_ort/`
+- macOS 설치 기준:
+  - `ZSoda.plugin/Contents/MacOS/ZSoda`
+  - `ZSoda.plugin/Contents/Resources/models/`
+  - `ZSoda.plugin/Contents/Resources/zsoda_ort/`
 - 공개 UI:
   - `Quality`
   - `Preserve Ratio`
@@ -22,18 +30,61 @@
   `Viridis`, `Inferno`, `Magma`를 제공한다.
 
 ## 2. 현재 작업 상태
-- AE slice slider arrow 입력 크래시는 해결된 상태다.
-- depth render / depth slice render는 현재 기준으로 정상 동작한다.
-- `Depth Map` 전용 컬러맵 옵션(`Gray`, `Turbo`) 추가를 완료했다.
-- Debug 테스트 바이너리(`zsoda_tests.exe`)는 현재 통과한다.
-- Release AEX 빌드(`zsoda_aex`)도 현재 통과한다.
+- Windows ORT sidecar release candidate는 사용자 smoke까지 통과한 기준이다.
+- macOS ORT-first bring-up 기준으로 `ZSODA_WITH_ONNX_RUNTIME=ON`,
+  structural dynamic-load, `.plugin/Contents/Resources/models`,
+  `.plugin/Contents/Resources/zsoda_ort` 경로가 다시 연결됐다.
+- macOS ORT-enabled bundle 빌드와 sidecar 패키징(`dist-mac-ort/ZSoda.plugin`)이 통과했고,
+  AE 재test에서도 검은 화면 이슈 수정 후 smoke가 성공했다.
+- 패키지된 mac bundle의 `libonnxruntime.dylib`로 CPU session open smoke가 통과했다.
+- 같은 bundle runtime에서 `CoreMLExecutionProvider` 열거와 CoreML session run smoke도 통과했다.
+- macOS 최종 후보 산출물은 `dist-mac-ort/ZSoda.plugin`,
+  `dist-mac-ort/ZSoda-macos.zip`으로 다시 고정했다.
+  - bundle sha256: `f2237d99f3d7a4fb4d881ebc519ad69e262dd30fcf798190513cd12ec7f08359`
+  - zip sha256: `3f242b6941d16aa9786dda2b1ee834287702359a0517d24d73bcb1bd2c8fc67f`
+- 최종 zip을 다시 풀어 packaged artifact 기준으로도 runtime smoke를 통과했다.
+  - packaged executable sha256: `4aff6c7f8743d5785d959311f5739b75bc02f74109489e095f339501e77a7be9`
+  - packaged ONNX sha256: `39d10d54bb43441f78cdbc6d4b96676924342c7d8d684b50ccf82aae5a137b1b`
+  - packaged ORT dylib sha256: `d306d2bc768540766c7ed8a1e0ff05d2870c77a934ebeee4a7bafa1b732ef299`
+- `ZSODA_AE_TRACE=1` 기준 런타임 로그는 이제 Windows/macOS 모두에서 같은 helper로 남는다.
+  - Windows: `%TEMP%\\ZSoda_AE_Runtime.log`
+  - macOS: `~/Library/Logs/ZSoda/ZSoda_AE_Runtime.log`
+  - 공통 override: `ZSODA_AE_LOG_PATH`
+- `tools/check_release_readiness.py` 기본 리포트는 이제 legacy self-contained/Python 전제가 아니라
+  현재 ORT sidecar zip 계약을 기준으로 Windows/macOS 상태를 보고한다.
 
 ## 3. 현재 남은 확인 포인트
-1. AE 실기에서 `Color Map` 전환 시 `Depth Map` 표시가 의도대로 보이는지 최종 확인
-2. 필요 시 `Turbo` 외 추가 palette를 넣을지 결정
-3. 문서/스모크 테스트 기준을 새 8-control UI 기준으로 유지
+1. macOS 쪽은 protected `/Applications/.../Plug-ins` 경로에 대한 자동 설치 권한이 없어서,
+   최종 후보 `.plugin`을 그 위치에 복사하는 일은 수동 설치 기준으로 남아 있다.
+2. release commit/tag, mac notarization 필요 시 처리, GitHub Releases 업로드 같은 최종 배포 단계는 아직 남아 있다.
 
 ## 4. 최근 작업 로그
+
+### D243 (2026-03-26)
+- macOS ORT-first bring-up 경로를 현재 handoff 기준으로 다시 묶었다.
+- `plugin/inference/OrtDynamicLoader.cpp`에 POSIX `dlopen`/`dlsym` 경로를 추가해
+  macOS에서도 bundled `libonnxruntime.dylib`를 직접 로드하고 API negotiation을
+  수행할 수 있게 했다.
+- `plugin/inference/EngineFactory.cpp`의 embedded payload fallback을 Windows 전용으로
+  제한해 macOS가 self-contained payload 경로로 되돌아가지 않도록 정리했다.
+- `tools/build_plugin_macos.sh`를 ORT-first wrapper로 바꿔
+  `--ort-sdk-root`/`--sidecar-assets-dir` 또는
+  `--ort-include-dir`/`--ort-runtime-dir`/`--model-root-dir`를 명시적으로 받도록 했다.
+- `tools/package_plugin.sh`, `tools/package_layout.py`,
+  `tools/prepare_ort_sidecar_release.py`, `tools/run_packaging_smoke.py`를 갱신해
+  macOS `sidecar-ort` contract(`models/` + `zsoda_ort/`)를 정식으로 다루도록 맞췄다.
+- `docs/build/README.md`, `docs/build/AE_SMOKE_TEST.md`를 macOS ORT-first 흐름 기준으로 갱신했다.
+- 검증:
+  - `python3 -m py_compile tools/package_layout.py tools/prepare_package_stage.py tools/prepare_ort_sidecar_release.py tools/run_packaging_smoke.py`
+  - `bash -n tools/build_plugin_macos.sh`
+  - `bash -n tools/package_plugin.sh`
+  - `release-assets/python-macos/bin/pip --disable-pip-version-check install --target .cache/export-site onnx`
+  - `PYTHONPATH=.cache/export-site release-assets/python-macos/bin/python3 tools/export_depth_model_onnx.py --model-dir .cache/model-repos/distill-any-depth-base --output-path .cache/ort-export-probe/distill_any_depth_base.onnx --overwrite`
+  - `curl -L https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-osx-arm64-1.23.2.tgz ...`
+  - `python3 tools/prepare_ort_sidecar_release.py --platform macos --onnx-model-path .cache/ort-export-probe/distill_any_depth_base.onnx --ort-runtime-dir .cache/ort-sdk/onnxruntime-osx-arm64-1.23.2/lib --output-dir .cache/macos-ort-assets --overwrite`
+  - `bash tools/build_plugin_macos.sh --ae-sdk-root "/Users/ikidk/Downloads/AfterEffectsSDK_25.6_61_mac/ae25.6_61.64bit.AfterEffectsSDK" --ort-sdk-root ".cache/ort-sdk/onnxruntime-osx-arm64-1.23.2" --sidecar-assets-dir ".cache/macos-ort-assets" --build-dir build-mac-ort --output-dir dist-mac-ort`
+  - bundled CPU smoke: packaged `libonnxruntime.dylib` + packaged `distill_any_depth_base.onnx` session open 성공
+  - bundled CoreML smoke: `CoreMLExecutionProvider` 열거 + CoreML session run 성공
 
 ### D224 (2026-03-12)
 - 깨진 `PROGRESS.md` 상단 상태판을 버리고 현재 shipping baseline 기준으로 다시 세우는 정리를 시작했다.
@@ -720,3 +771,70 @@
 - macOS handoff 문서도 이 상태를 반영했다.
   - `docs/build/LOCAL_AGENT_HANDOFF.md`: 최신 Windows RC 패키지와 smoke pass 상태 반영
   - `docs/build/MAC_AGENT_HANDOFF.md`: Windows를 검증된 reference lane으로 명시하고, mac agent 시작 지시문 추가
+
+### D270 (2026-03-26)
+- macOS AE 검은 화면 원인을 ORT session IO introspection 버그로 특정했다.
+  - 실제 AE 프로세스에서 `/Applications/Adobe After Effects 2026/Plug-ins/ZSoda.plugin/Contents/MacOS/ZSoda`와 번들 내 `Contents/Resources/zsoda_ort/libonnxruntime.dylib`가 로드된 것을 확인했다.
+  - ORT/CoreML 쪽 temporary model compile 흔적도 살아 있어서, 초기 추정이던 "번들 자산을 못 찾는 문제"는 아니었다.
+  - `RenderPipeline` safe output 경로를 따라가며 별도 진단 하네스를 붙인 결과, 실패 메시지가 일관되게 `onnx runtime session input must be float tensor`로 수렴했다.
+- 근본 원인은 `plugin/inference/OnnxRuntimeBackend.cpp`의 `ResolveSessionIo()`에서 `Ort::TypeInfo` temporary 수명이 끝난 뒤 `TensorTypeAndShapeInfo` wrapper를 계속 참조하던 코드였다.
+  - 기존의 `session.GetInputTypeInfo(...).GetTensorTypeAndShapeInfo()` / `session.GetOutputTypeInfo(...).GetTensorTypeAndShapeInfo()` 체인은 macOS ORT C++ wrapper에서 dangling wrapper를 만들 수 있었다.
+  - 그 결과 input/output element type이 쓰레기 값으로 읽혀서, 정상적인 float ONNX 모델임에도 세션 검증이 실패하고 매 프레임 `safe_output` 검은 화면으로 떨어졌다.
+  - 수정: `Ort::TypeInfo`를 지역 변수로 먼저 보관한 뒤 `GetTensorTypeAndShapeInfo()`를 호출하도록 바꿨다.
+- 수정 후 검증
+  - `cmake --build build-mac-ort --config Release --target zsoda_plugin_bundle`
+  - 진단 하네스 재링크 후 opaque 입력에서 `render_status=inference`, `render_message=direct inference succeeded (distill-any-depth-base)`, `output min=0 max=1 mean~=0.4237` 확인
+  - `bash tools/build_plugin_macos.sh --ae-sdk-root "/Users/ikidk/Downloads/AfterEffectsSDK_25.6_61_mac/ae25.6_61.64bit.AfterEffectsSDK" --ort-sdk-root ".cache/ort-sdk/onnxruntime-osx-arm64-1.23.2" --sidecar-assets-dir ".cache/macos-ort-assets" --build-dir build-mac-ort --output-dir dist-mac-ort`
+- 현재 상태
+  - 수정 반영 산출물: `dist-mac-ort/ZSoda.plugin`, `dist-mac-ort/ZSoda-macos.zip`
+  - 사용자가 AE에 넣어 테스트한 `/Applications/Adobe After Effects 2026/Plug-ins/ZSoda.plugin`은 아직 이전 바이너리이므로, AE 종료 후 새 번들로 교체하고 다시 smoke 해야 한다.
+
+### D271 (2026-03-26)
+- macOS 포함 공용 AE/runtime trace sink를 정리했다.
+  - `plugin/ae/AeDiagnostics.h`를 확장해서 file append helper를 Windows/macOS 공통 경로로 올렸다.
+  - `AeCommandRouter`, `AeHostAdapter`, `AePluginEntry`, `RenderPipeline`, `ManagedInferenceEngine`, `OnnxRuntimeBackend`가 이제 같은 helper를 쓴다.
+  - `ZSODA_AE_TRACE=1` 또는 `ZSODA_AE_DIAGNOSTICS=1`이면 provider selection, render stage, safe-output 이유를 한 로그 파일에서 같이 볼 수 있게 됐다.
+  - macOS 기본 로그 경로는 `~/Library/Logs/ZSoda/ZSoda_AE_Runtime.log`이고, 필요하면 `ZSODA_AE_LOG_PATH`로 덮어쓸 수 있다.
+
+### D272 (2026-03-26)
+- inference 회귀 테스트를 현재 ORT-first 계약 기준으로 보강했다.
+  - `tests/test_inference_engine.cpp`에 최소 float ONNX(identity) fixture를 내장하고, ORT runtime이 실제로 붙는 환경에서는 `CreateOnnxRuntimeBackend(cpu)` + `SelectModel()`이 성공해야 한다는 회귀 테스트를 추가했다.
+  - `ResolvePipelineProfile("distill-any-depth-base")` expectation도 현재 dynamic 518 / ImageNet normalization / patch multiple 14 계약으로 갱신했다.
+- 검증
+  - `cmake --build build-mac-ort --config Release --target zsoda_inference_tests`
+  - `ctest --test-dir build-mac-ort -C Release -R zsoda_inference_tests --output-on-failure`
+
+### D273 (2026-03-26)
+- release-readiness/tooling/docs를 현재 shipping 기준으로 승격했다.
+  - `tools/check_release_readiness.py` 기본 모드를 ORT sidecar zip 레이아웃 검사로 바꿨다.
+    - Windows: `Z-Soda/ZSoda.aex + models/ + zsoda_ort/`
+    - macOS: `ZSoda.plugin/Contents/MacOS + Contents/Resources/models + Contents/Resources/zsoda_ort`
+  - `PLAN.md`, `docs/build/MAC_AGENT_HANDOFF.md`, `docs/build/README.md`, `docs/build/AE_SMOKE_TEST.md`를 macOS smoke pass 이후 기준으로 갱신했다.
+  - 최신 mac packaged artifact도 다시 생성했다: `dist-mac-ort/ZSoda.plugin`, `dist-mac-ort/ZSoda-macos.zip`
+- 검증
+  - `python3 -m py_compile tools/check_release_readiness.py`
+  - `python3 tools/check_release_readiness.py --build-win build-origin-main-ae-ort-dml --build-mac build-mac-ort --dist-win artifacts/15_ort-sidecar-release-candidate --dist-mac dist-mac-ort`
+  - `bash tools/build_plugin_macos.sh --ae-sdk-root "/Users/ikidk/Downloads/AfterEffectsSDK_25.6_61_mac/ae25.6_61.64bit.AfterEffectsSDK" --ort-sdk-root ".cache/ort-sdk/onnxruntime-osx-arm64-1.23.2" --sidecar-assets-dir ".cache/macos-ort-assets" --build-dir build-mac-ort --output-dir dist-mac-ort`
+
+### D274 (2026-03-27)
+- 배포 준비 1단계로 macOS 최종 후보 산출물을 다시 고정했다.
+  - `tools/package_plugin.sh`가 bundle directory sha256 파일에 더 이상 `-` label을 남기지 않고,
+    실제 artifact 이름 `ZSoda.plugin`을 기록하도록 정리했다.
+  - 같은 기준으로 `bash tools/build_plugin_macos.sh --ae-sdk-root "/Users/ikidk/Downloads/AfterEffectsSDK_25.6_61_mac/ae25.6_61.64bit.AfterEffectsSDK" --ort-sdk-root ".cache/ort-sdk/onnxruntime-osx-arm64-1.23.2" --sidecar-assets-dir ".cache/macos-ort-assets" --build-dir build-mac-ort --output-dir dist-mac-ort`
+    를 다시 실행해 최신 `dist-mac-ort/ZSoda.plugin`, `dist-mac-ort/ZSoda-macos.zip`,
+    `.sha256` 파일을 재생성했다.
+  - 고정 해시:
+    - `ZSoda.plugin`: `f2237d99f3d7a4fb4d881ebc519ad69e262dd30fcf798190513cd12ec7f08359`
+    - `ZSoda-macos.zip`: `3f242b6941d16aa9786dda2b1ee834287702359a0517d24d73bcb1bd2c8fc67f`
+- 배포 준비 2단계로 실제 배포 zip 기준 smoke를 다시 확인했다.
+  - `unzip -l dist-mac-ort/ZSoda-macos.zip` 기준으로
+    `ZSoda.plugin/Contents/MacOS/ZSoda`,
+    `Contents/Resources/models/distill-any-depth/distill_any_depth_base.onnx`,
+    `Contents/Resources/zsoda_ort/libonnxruntime.dylib`가 모두 포함된 것을 확인했다.
+  - zip을 임시 경로에 풀어 packaged runtime smoke를 수행했고,
+    CPU 경로와 auto(CoreML) 경로 모두 `render_status=inference`로 통과했다.
+  - packaged trace log에도 `provider_select`, `initialize_ok`, `run_enter`,
+    `postprocess_ok`, `run_exit_ok`, `direct_inference_ok`가 남는 것을 확인했다.
+- 제한 사항
+  - 현재 agent 권한으로는 `/Applications/Adobe After Effects 2026/Plug-ins`에 직접 복사할 수 없어서,
+    정확히 그 보호 경로에 설치한 뒤의 AE UI smoke는 사용자가 수동 설치로 마무리해야 한다.

@@ -205,50 +205,7 @@ bool TryExtractPfCmdParamValues(const AeSdkEntryPayload& payload,
 int GetSdkParamCountHint(const AeSdkEntryPayload& payload);
 
 void AppendSdkTrace(const char* stage, const std::string& detail) {
-#if defined(_WIN32)
-  if (!AeDiagnosticsEnabled()) {
-    return;
-  }
-
-  const char* temp_dir = std::getenv("TEMP");
-  if (temp_dir == nullptr || temp_dir[0] == '\0') {
-    temp_dir = std::getenv("TMP");
-  }
-  if (temp_dir == nullptr || temp_dir[0] == '\0') {
-    return;
-  }
-
-  char log_path[MAX_PATH] = {};
-  std::snprintf(log_path, sizeof(log_path), "%s%sZSoda_AE_Runtime.log",
-                temp_dir,
-                (temp_dir[std::strlen(temp_dir) - 1] == '\\' || temp_dir[std::strlen(temp_dir) - 1] == '/')
-                    ? ""
-                    : "\\");
-  FILE* file = std::fopen(log_path, "ab");
-  if (file == nullptr) {
-    return;
-  }
-
-  SYSTEMTIME now = {};
-  ::GetLocalTime(&now);
-  const unsigned long tid = static_cast<unsigned long>(::GetCurrentThreadId());
-  std::fprintf(file,
-               "%04u-%02u-%02u %02u:%02u:%02u.%03u | SdkTrace | tid=%lu, stage=%s, detail=%s\r\n",
-               static_cast<unsigned>(now.wYear),
-               static_cast<unsigned>(now.wMonth),
-               static_cast<unsigned>(now.wDay),
-               static_cast<unsigned>(now.wHour),
-               static_cast<unsigned>(now.wMinute),
-               static_cast<unsigned>(now.wSecond),
-               static_cast<unsigned>(now.wMilliseconds),
-               tid,
-               stage != nullptr ? stage : "<null>",
-               detail.empty() ? "<none>" : detail.c_str());
-  std::fclose(file);
-#else
-  (void)stage;
-  (void)detail;
-#endif
+  AppendDiagnosticsTrace("SdkTrace", stage, detail.empty() ? nullptr : detail.c_str());
 }
 
 std::optional<zsoda::core::PixelFormat> ParseSdkPixelFormatHint(std::int64_t pixel_format_hint) {

@@ -7,15 +7,23 @@ load, main UI controls, interactive updates, preview stability, and render queue
 
 ## Preconditions
 
-- `Z-Soda/` is installed in MediaCore
-  - `Z-Soda/ZSoda.aex`
-  - `Z-Soda/models/`
-  - `Z-Soda/zsoda_ort/`
+- One platform install shape is present in AE's plugin path
+  - Windows:
+    - `Z-Soda/ZSoda.aex`
+    - `Z-Soda/models/`
+    - `Z-Soda/zsoda_ort/`
+  - macOS:
+    - `ZSoda.plugin/Contents/MacOS/ZSoda`
+    - `ZSoda.plugin/Contents/Resources/models/`
+    - `ZSoda.plugin/Contents/Resources/zsoda_ort/`
 - A test comp is ready
   - 1920x1080
   - 30 fps
   - at least one footage layer with visible depth separation
 - If verbose host/router tracing is needed, launch AE with `ZSODA_AE_TRACE=1`
+  - Windows log path: `%TEMP%\ZSoda_AE_Runtime.log`
+  - macOS log path: `~/Library/Logs/ZSoda/ZSoda_AE_Runtime.log`
+  - override on either OS: `ZSODA_AE_LOG_PATH=/custom/path/ZSoda_AE_Runtime.log`
 
 ## Record Before Testing
 

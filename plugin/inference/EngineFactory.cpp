@@ -168,6 +168,7 @@ std::shared_ptr<IInferenceEngine> CreateDefaultEngine() {
   const bool has_native_sidecar_assets =
       !runtime_paths.onnxruntime_library_path.empty() &&
       HasNativeOnnxModelAssets(runtime_paths, locked_model_id);
+#if defined(_WIN32)
   if (!has_native_sidecar_assets && module_path.has_value() && !module_path->empty()) {
     std::string payload_error;
     const EmbeddedPayloadInfo payload =
@@ -181,6 +182,7 @@ std::shared_ptr<IInferenceEngine> CreateDefaultEngine() {
                    payload_error.c_str());
     }
   }
+#endif
   const std::string model_root = runtime_paths.model_root.empty() ? "models" : runtime_paths.model_root;
 
   RuntimeOptions options;

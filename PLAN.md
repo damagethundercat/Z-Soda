@@ -153,7 +153,11 @@ the shipping path directly.
   - slice parameters alter the matte/output immediately
 - Current Windows status:
   - release-candidate smoke has passed
-  - next platform milestone is macOS ORT bring-up
+- Current macOS status:
+  - ORT-first AE smoke has passed after the session-IO black-screen fix
+  - bundled ORT CPU/CoreML path is active from `ZSoda.plugin/Contents/Resources`
+- Next cross-platform milestone:
+  - keep the new macOS path covered by regression tests, diagnostics, and release-gate tooling
 
 ## Progress Tracking Contract
 

@@ -47,16 +47,17 @@ def write_fake_assets(root: Path) -> dict[str, Path]:
     fake_sidecar_models = fake_sidecar_models_root / "distill-any-depth"
     fake_sidecar_ort = root / "fake-sidecar-assets" / "zsoda_ort"
     fake_mac_build = root / "fake-mac-stage" / "build-mac" / "plugin" / "Release" / "ZSoda.plugin"
-    fake_mac_python = root / "fake-mac-stage" / "python-macos" / "bin"
-    fake_mac_models = root / "fake-mac-stage" / "models" / "distill-any-depth-base"
+    fake_mac_sidecar_models_root = root / "fake-mac-stage" / "models"
+    fake_mac_sidecar_models = fake_mac_sidecar_models_root / "distill-any-depth"
+    fake_mac_sidecar_ort = root / "fake-mac-stage" / "zsoda_ort"
 
     fake_windows_python.mkdir(parents=True, exist_ok=True)
     fake_windows_models.mkdir(parents=True, exist_ok=True)
     fake_sidecar_models.mkdir(parents=True, exist_ok=True)
     fake_sidecar_ort.mkdir(parents=True, exist_ok=True)
     fake_mac_build.mkdir(parents=True, exist_ok=True)
-    fake_mac_python.mkdir(parents=True, exist_ok=True)
-    fake_mac_models.mkdir(parents=True, exist_ok=True)
+    fake_mac_sidecar_models.mkdir(parents=True, exist_ok=True)
+    fake_mac_sidecar_ort.mkdir(parents=True, exist_ok=True)
 
     (fake_windows_python / "python.exe").write_bytes(b"")
     (fake_windows_models / "config.json").write_text('{"kind":"stub-model"}\n', encoding="utf-8")
@@ -74,9 +75,13 @@ def write_fake_assets(root: Path) -> dict[str, Path]:
     )
     (fake_sidecar_ort / "DirectML.dll").write_text("stub-directml\n", encoding="utf-8")
 
-    (fake_mac_python / "python3").write_text("stub\n", encoding="utf-8")
-    (fake_mac_models / "config.json").write_text('{"kind":"stub-model"}\n', encoding="utf-8")
-    (fake_mac_models / "model.safetensors").write_text("stub-weights\n", encoding="utf-8")
+    (fake_mac_sidecar_models_root / "models.manifest").write_text(
+        "# id|display_name|relative_path|download_url|preferred_default\n"
+        "distill-any-depth-base|DistillAnyDepth Base|distill-any-depth/distill_any_depth_base.onnx|https://example.com/distill_any_depth_base.onnx|true\n",
+        encoding="utf-8",
+    )
+    (fake_mac_sidecar_models / "distill_any_depth_base.onnx").write_text("stub-onnx\n", encoding="utf-8")
+    (fake_mac_sidecar_ort / "libonnxruntime.dylib").write_text("stub-ort-dylib\n", encoding="utf-8")
 
     return {
         "windows_python": fake_windows_python,
@@ -84,6 +89,8 @@ def write_fake_assets(root: Path) -> dict[str, Path]:
         "sidecar_model_root": fake_sidecar_models_root,
         "sidecar_ort_root": fake_sidecar_ort,
         "sidecar_ort_dll": fake_sidecar_ort / "onnxruntime.dll",
+        "mac_sidecar_model_root": fake_mac_sidecar_models_root,
+        "mac_sidecar_ort_root": fake_mac_sidecar_ort,
         "mac_stage_root": fake_mac_build.parent.parent.parent.parent,
     }
 
@@ -172,21 +179,23 @@ def main() -> int:
             "tools/prepare_package_stage.py",
             "--platform",
             "macos",
+            "--package-mode",
+            "sidecar-ort",
             "--build-dir",
             str(fake_assets["mac_stage_root"] / "build-mac"),
             "--output-dir",
             str(smoke_root / "mac-stage"),
-            "--python-runtime-dir",
-            str(fake_assets["mac_stage_root"] / "python-macos"),
-            "--model-repo-dir",
-            str(fake_assets["mac_stage_root"] / "models"),
+            "--model-root-dir",
+            str(fake_assets["mac_sidecar_model_root"]),
+            "--ort-runtime-dir",
+            str(fake_assets["mac_sidecar_ort_root"]),
             "--require-self-contained",
             "--quiet",
             "--plan-out",
             str(smoke_root / "mac-stage" / "plan.json"),
         ],
         cwd=root,
-        label="shared stage helper macOS smoke",
+        label="shared stage helper macOS sidecar smoke",
     )
 
     run(

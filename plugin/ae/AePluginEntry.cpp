@@ -44,46 +44,6 @@ const char* SafeCStr(const char* value, const char* fallback = "<null>") {
   return value != nullptr ? value : fallback;
 }
 
-#if defined(_WIN32)
-void AppendDiagnosticsLine(const char* tag, const char* detail) {
-  if (!AeDiagnosticsEnabled()) {
-    return;
-  }
-
-  char temp_path[MAX_PATH] = {};
-  const DWORD written = ::GetTempPathA(MAX_PATH, temp_path);
-  if (written == 0 || written >= MAX_PATH) {
-    return;
-  }
-
-  char log_path[MAX_PATH] = {};
-  std::snprintf(log_path, sizeof(log_path), "%s%s", temp_path, "ZSoda_AE_Runtime.log");
-  FILE* file = std::fopen(log_path, "ab");
-  if (file == nullptr) {
-    return;
-  }
-
-  SYSTEMTIME now = {};
-  ::GetLocalTime(&now);
-  const char* safe_tag = tag != nullptr ? tag : "<null>";
-  const char* safe_detail = detail != nullptr ? detail : "<null>";
-  std::fprintf(file,
-               "%04u-%02u-%02u %02u:%02u:%02u.%03u | %s | %s\r\n",
-               static_cast<unsigned>(now.wYear),
-               static_cast<unsigned>(now.wMonth),
-               static_cast<unsigned>(now.wDay),
-               static_cast<unsigned>(now.wHour),
-               static_cast<unsigned>(now.wMinute),
-               static_cast<unsigned>(now.wSecond),
-               static_cast<unsigned>(now.wMilliseconds),
-               safe_tag,
-               safe_detail);
-  std::fclose(file);
-}
-#else
-void AppendDiagnosticsLine(const char* /*tag*/, const char* /*detail*/) {}
-#endif
-
 #if defined(ZSODA_WITH_AE_SDK) && ZSODA_WITH_AE_SDK
 const char* PfCmdName(PF_Cmd cmd) {
   switch (cmd) {
@@ -662,4 +622,3 @@ extern "C" DllExport PF_Err EffectMain(PF_Cmd cmd,
 #endif
 
 #endif
-

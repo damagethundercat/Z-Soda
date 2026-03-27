@@ -20,6 +20,14 @@ Windows release-candidate status as of the latest handoff:
 - practical outcome: Windows should now be treated as the validated reference lane
   for the shared ORT-first core
 
+macOS status as of the latest handoff:
+
+- package: `dist-mac-ort/ZSoda-macos.zip`
+- install shape: `ZSoda.plugin/Contents/MacOS/ZSoda + Contents/Resources/models + Contents/Resources/zsoda_ort`
+- user smoke status: pass after fixing the `ResolveSessionIo()` temporary-lifetime bug
+- practical outcome: macOS is no longer in basic bring-up; the remaining work is regression hardening,
+  diagnostics visibility, and release-gate cleanup
+
 The macOS work should continue from that same product direction. Do not fork
 the core design back to Python-first or self-contained embedded payloads unless
 there is a hard blocker that is documented with evidence.
@@ -161,12 +169,11 @@ as open product questions.
 - [tools/prepare_ort_sidecar_release.py](../../tools/prepare_ort_sidecar_release.py)
 - [tools/run_packaging_smoke.py](../../tools/run_packaging_smoke.py)
 
-## Suggested First Report Back
+## Suggested Next Report Back
 
-After the first macOS pass, report only these points:
+After the next macOS pass, report only these points:
 
-1. Does the `.plugin` load?
-2. Does ORT CPU work from bundled assets?
-3. Does CoreML provider enumerate and run?
-4. Does `Quality` visibly change output in AE?
-5. What exact packaging/runtime blocker remains, if any?
+1. Does the latest packaged `.plugin` still load after regression-test and logging changes?
+2. Is provider selection visible in `~/Library/Logs/ZSoda/ZSoda_AE_Runtime.log` (or `ZSODA_AE_LOG_PATH`) with `ZSODA_AE_TRACE=1`?
+3. Do the release-readiness checks reflect the current ORT sidecar contract on both platforms?
+4. What exact release blocker remains, if any?

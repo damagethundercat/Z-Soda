@@ -19,6 +19,16 @@ MACOS_BUNDLED_PYTHON_CANDIDATES = (
     "python/bin/python3",
     "runtime/bin/python3",
 )
+WINDOWS_SIDECAR_REQUIRED_RUNTIME_FILES = (
+    "onnxruntime.dll",
+    "onnxruntime_providers_shared.dll",
+)
+MACOS_SIDECAR_REQUIRED_RUNTIME_FILES = (
+    "libonnxruntime.dylib",
+)
+MACOS_SIDECAR_OPTIONAL_RUNTIME_GLOBS = (
+    "libonnxruntime*.dylib",
+)
 
 
 @dataclass
@@ -191,12 +201,14 @@ def assert_self_contained_payload(stage_root: Path, platform: str) -> None:
         )
 
 
-def assert_sidecar_ort_payload(stage_root: Path) -> None:
+def _has_matching_file(root: Path, pattern: str) -> bool:
+    return any(path.is_file() for path in root.glob(pattern))
+
+
+def assert_sidecar_ort_payload(stage_root: Path, platform: str) -> None:
     models_dir = stage_root / "models"
     manifest_path = models_dir / "models.manifest"
     ort_dir = stage_root / "zsoda_ort"
-    ort_dll_path = ort_dir / "onnxruntime.dll"
-    providers_shared_path = ort_dir / "onnxruntime_providers_shared.dll"
 
     if not manifest_path.is_file():
         raise FileNotFoundError(
@@ -209,15 +221,38 @@ def assert_sidecar_ort_payload(stage_root: Path) -> None:
             f"Sidecar ORT packaging requires at least one ONNX model under: {models_dir}"
         )
 
-    if not ort_dll_path.is_file():
-        raise FileNotFoundError(
-            f"Sidecar ORT packaging requires bundled ORT runtime at: {ort_dll_path}"
-        )
-    if not providers_shared_path.is_file():
-        raise FileNotFoundError(
-            "Sidecar ORT packaging requires bundled ORT providers shared DLL at: "
-            f"{providers_shared_path}"
-        )
+    if platform == "windows":
+        missing_runtime_files = [
+            str(ort_dir / filename)
+            for filename in WINDOWS_SIDECAR_REQUIRED_RUNTIME_FILES
+            if not (ort_dir / filename).is_file()
+        ]
+        if missing_runtime_files:
+            raise FileNotFoundError(
+                "Sidecar ORT packaging requires bundled Windows ORT runtime files: "
+                + ", ".join(missing_runtime_files)
+            )
+        return
+
+    if platform == "macos":
+        missing_runtime_files = [
+            str(ort_dir / filename)
+            for filename in MACOS_SIDECAR_REQUIRED_RUNTIME_FILES
+            if not (ort_dir / filename).is_file()
+        ]
+        if missing_runtime_files:
+            raise FileNotFoundError(
+                "Sidecar ORT packaging requires bundled macOS ORT runtime files: "
+                + ", ".join(missing_runtime_files)
+            )
+        if not any(_has_matching_file(ort_dir, pattern) for pattern in MACOS_SIDECAR_OPTIONAL_RUNTIME_GLOBS):
+            raise FileNotFoundError(
+                "Sidecar ORT packaging requires at least one libonnxruntime*.dylib entry under: "
+                f"{ort_dir}"
+            )
+        return
+
+    raise ValueError(f"unsupported platform for sidecar ORT payload: {platform}")
 
 
 def prepare_package_stage(
@@ -327,7 +362,7 @@ def prepare_package_stage(
 
     if require_self_contained:
         if package_mode == PACKAGE_MODE_SIDECAR_ORT:
-            assert_sidecar_ort_payload(payload_stage_dir)
+            assert_sidecar_ort_payload(payload_stage_dir, platform)
         else:
             assert_self_contained_payload(payload_stage_dir, platform)
 
