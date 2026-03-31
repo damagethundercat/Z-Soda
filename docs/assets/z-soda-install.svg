@@ -1,0 +1,28 @@
+<svg width="1200" height="360" viewBox="0 0 1200 360" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="installBg" x1="0" y1="0" x2="1200" y2="360" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F8FAFC"/>
+      <stop offset="1" stop-color="#E2E8F0"/>
+    </linearGradient>
+    <linearGradient id="card" x1="0" y1="0" x2="0" y2="1">
+      <stop stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#F8FAFC"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1200" height="360" rx="24" fill="url(#installBg)"/>
+  <text x="70" y="72" fill="#0F172A" font-size="34" font-family="Segoe UI, Arial, sans-serif" font-weight="700">Install shape</text>
+  <text x="70" y="108" fill="#475569" font-size="18" font-family="Segoe UI, Arial, sans-serif">Both builds ship as local packages. No cloud roundtrip is required.</text>
+
+  <rect x="60" y="140" width="500" height="170" rx="22" fill="url(#card)" stroke="#CBD5E1"/>
+  <text x="92" y="184" fill="#0F172A" font-size="28" font-family="Segoe UI, Arial, sans-serif" font-weight="700">Windows</text>
+  <text x="92" y="218" fill="#334155" font-size="18" font-family="Segoe UI, Arial, sans-serif">Copy one folder into MediaCore</text>
+  <rect x="92" y="238" width="436" height="44" rx="12" fill="#0F172A"/>
+  <text x="112" y="266" fill="#E2E8F0" font-size="18" font-family="Consolas, monospace">MediaCore\Z-Soda\ZSoda.aex + models + zsoda_ort</text>
+
+  <rect x="640" y="140" width="500" height="170" rx="22" fill="url(#card)" stroke="#CBD5E1"/>
+  <text x="672" y="184" fill="#0F172A" font-size="28" font-family="Segoe UI, Arial, sans-serif" font-weight="700">macOS</text>
+  <text x="672" y="218" fill="#334155" font-size="18" font-family="Segoe UI, Arial, sans-serif">Copy one plugin bundle into Plug-ins</text>
+  <rect x="672" y="238" width="436" height="44" rx="12" fill="#0F172A"/>
+  <text x="692" y="266" fill="#E2E8F0" font-size="18" font-family="Consolas, monospace">ZSoda.plugin/Contents/.../models + zsoda_ort</text>
+</svg>

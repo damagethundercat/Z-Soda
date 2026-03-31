@@ -1,78 +1,149 @@
 # Z-Soda
 
-After Effects depth effect plugin focused on one shipping path:
+Local depth maps for After Effects.
 
-- host: Adobe After Effects
-- model: `distill-any-depth-base`
-- runtime: native ONNX Runtime sidecar
-- outputs: `Depth Map` and `Depth Slice`
+![Z-Soda hero](docs/assets/z-soda-hero.svg)
 
-## Current Product Shape
+Z-Soda is an After Effects effect plug-in built around a single production-minded path:
 
-- Windows shipping install shape:
-  - `Z-Soda/ZSoda.aex`
-  - `Z-Soda/models/`
-  - `Z-Soda/zsoda_ort/`
-- AE UI exposes only the shipping controls:
-  - `Quality`
-  - `Preserve Ratio`
-  - `Output`
-  - `Color Map`
-  - `Slice Mode`
-  - `Position (%)`
-  - `Range (%)`
-  - `Soft Border (%)`
-- `Quality` maps to real process-resolution changes.
-- Python remote service remains available only for explicit debug/fallback work.
+- local inference only
+- native ONNX Runtime sidecar packaging
+- one shipping model: `distill-any-depth-base`
+- two outputs: `Depth Map` and `Depth Slice`
+
+## Why This Repo Exists
+
+Z-Soda focuses on a simple install story and a predictable runtime shape.
+The current public build avoids giant embedded binaries and keeps the plug-in
+layout explicit:
+
+- small `.aex` / `.plugin`
+- bundled model folder
+- bundled ORT runtime sidecar
+- safe render fallbacks instead of host crashes
+
+## Supported Platforms
+
+| Platform | Status | Runtime path | Notes |
+| --- | --- | --- | --- |
+| Windows | Beta-tested | ONNX Runtime + DirectML sidecar | Recommended |
+| macOS Apple Silicon | Beta-tested | ONNX Runtime + CoreML/CPU sidecar | Recommended |
+| macOS Intel | Not supported yet | None | Not part of the current shipping target |
+
+Beta validation was done against the current After Effects 2026 cycle.
+
+## Installation
+
+![Install shape](docs/assets/z-soda-install.svg)
+
+### Windows
+
+1. Quit After Effects.
+2. Download the latest Windows package from [Releases](https://github.com/damagethundercat/Z-Soda/releases).
+3. Unzip it.
+4. Copy the `Z-Soda` folder into:
+   `C:\Program Files\Adobe\Common\Plug-ins\7.0\MediaCore\`
+5. Launch After Effects and apply `Z-Soda` to a footage layer.
+
+### macOS
+
+1. Quit After Effects.
+2. Download the latest macOS package from [Releases](https://github.com/damagethundercat/Z-Soda/releases).
+3. Unzip it.
+4. Copy `ZSoda.plugin` into your After Effects `Plug-ins` folder.
+5. Launch After Effects and apply `Z-Soda`.
+
+If macOS blocks a downloaded build, clear the quarantine flag:
+
+```bash
+xattr -dr com.apple.quarantine ZSoda.plugin
+```
+
+## What You Get
+
+### Depth Map
+
+Generates a normalized per-pixel depth result for grading, fog, focus, or 2.5D compositing.
+
+### Depth Slice
+
+Turns a depth range into a matte so you can isolate foreground, background, or a narrow depth band.
+
+## Controls
+
+| Control | What it does |
+| --- | --- |
+| `Quality` | Sets the real inference resolution. Higher values improve detail but take longer. |
+| `Preserve Ratio` | Keeps the source aspect ratio during inference. |
+| `Output` | Switches between `Depth Map` and `Depth Slice`. |
+| `Color Map` | Changes how the depth map is visualized. |
+| `Slice Mode` | Chooses whether the slice targets `Near`, `Far`, or a `Band`. |
+| `Position (%)` | Moves the slice center or threshold along the depth range. |
+| `Range (%)` | Widens or narrows the active slice band. |
+| `Soft Border (%)` | Softens the edge of the slice matte. |
+
+## Package Layout
+
+### Windows
+
+```text
+Z-Soda/
+  ZSoda.aex
+  models/
+    distill-any-depth/
+      distill_any_depth_base.onnx
+  zsoda_ort/
+    onnxruntime.dll
+    onnxruntime_providers_shared.dll
+    DirectML.dll
+```
+
+### macOS
+
+```text
+ZSoda.plugin/
+  Contents/
+    MacOS/
+      ZSoda
+    Resources/
+      models/
+      zsoda_ort/
+```
 
 ## Repository Layout
 
-- [PLAN.md](PLAN.md): execution checklist
-- [PROGRESS.md](PROGRESS.md): live work log in Korean
-- [plugin/ae](plugin/ae): AE entry, params, host bridge
-- [plugin/core](plugin/core): cache, render pipeline, postprocess
-- [plugin/inference](plugin/inference): engine/runtime/backend glue
-- [tools](tools): build/package/runtime helper scripts
-- [tests](tests): unit/integration harnesses
-- [docs/build/README.md](docs/build/README.md): current build/package guide
+- [plugin/ae](plugin/ae): AE entry point, parameter wiring, host bridge
+- [plugin/core](plugin/core): render pipeline, cache, frame transforms
+- [plugin/inference](plugin/inference): ORT backend, model/runtime resolution
+- [tests](tests): unit and integration coverage
+- [tools](tools): build, packaging, and staging helpers
+- [models/models.manifest](models/models.manifest): shipped model manifest
 
-## Runtime Notes
+## Building From Source
 
-- Production model is fixed to `distill-any-depth-base`.
-- The preferred user-facing path is bundled ORT sidecar inference.
-- The plugin should resolve `models/` and `zsoda_ort/` next to `ZSoda.aex`
-  before considering any legacy embedded or remote fallback path.
-- Hard failures must return safe output through the render pipeline and never crash AE.
+You need:
 
-## Build
+- Adobe After Effects SDK
+- CMake
+- a C++ toolchain for your platform
+- ONNX Runtime SDK/runtime files for the target platform
 
-Windows build and package guidance lives in:
+Primary entry points:
 
-- [docs/build/README.md](docs/build/README.md)
-- [docs/build/LOCAL_AGENT_HANDOFF.md](docs/build/LOCAL_AGENT_HANDOFF.md)
+- Windows: `tools/build_aex.ps1`
+- macOS: `tools/build_plugin_macos.sh`
+- Shared packaging helpers:
+  - `tools/prepare_ort_sidecar_release.py`
+  - `tools/package_plugin.ps1`
+  - `tools/package_plugin.sh`
 
-macOS handoff guidance lives in:
+## Current Scope
 
-- [docs/build/MAC_AGENT_HANDOFF.md](docs/build/MAC_AGENT_HANDOFF.md)
+Z-Soda intentionally ships one narrow product path:
 
-## Packaging
+- one primary model family
+- no cloud dependency
+- ORT-first runtime
+- sidecar packaging instead of giant embedded payloads
 
-- Windows shipping package is a zip containing one top-level `Z-Soda/` folder.
-- That folder contains:
-  - `ZSoda.aex`
-  - `models/distill-any-depth/distill_any_depth_base.onnx`
-  - `zsoda_ort/onnxruntime.dll`
-  - provider/runtime DLLs required by the chosen ORT EP
-- Legacy self-contained and thin-bootstrap notes are kept only as historical
-  references under [docs/build](docs/build).
-
-## Models
-
-- Manifest: [models/models.manifest](models/models.manifest)
-- Shipping model family:
-  - `distill-any-depth`
-  - `distill-any-depth-base`
-  - `distill-any-depth-large`
-
-The current ORT shipping path uses exported ONNX weights staged under
-`models/distill-any-depth/`.
+That constraint is deliberate. It keeps the plug-in easier to install, debug, and ship.

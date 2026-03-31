@@ -3,9 +3,17 @@
 dist-mac/
 release-assets/
 
+# Local/private repo operations
+.git-history/
+.tools/
+_investigation_backups/
+releases_draft/
+beta/
+Z-Soda-main/
+Z-Soda-main.zip
+01 Z-Soda._git-backup-*/
+
 build/
-!docs/build/
-!docs/build/**
 build-*/
 dist/
 Microsoft/
@@ -34,9 +42,21 @@ artifacts/ae_output_templates.*
 artifacts/backbone_compare_gui/
 artifacts/tmp_runner_probe/
 artifacts/*
-!artifacts/windows/
-artifacts/windows/*
-!artifacts/windows/README.md
 
 *.resolved
 docs/research/qc_opus.md
+
+# Internal planning / handoff docs stay local only
+AGENTS.md
+PLAN.md
+PROGRESS.md
+TEAM.md
+docs/build/
+docs/perf/
+docs/research/
+docs/scripts/
+
+# Public docs assets remain tracked
+!docs/
+!docs/assets/
+!docs/assets/**
