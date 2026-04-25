@@ -12,7 +12,7 @@
 #include "ae/AeCommandRouter.h"
 #include "ae/AeHostAdapter.h"
 #include "ae/ZSodaAeFlags.h"
-#include "inference/ManagedInferenceEngine.h"
+#include "inference/InferenceEngine.h"
 
 namespace {
 
@@ -85,6 +85,64 @@ void TraceTest(const char* name) {
   std::fflush(stderr);
 }
 
+class RouterTestInferenceEngine final : public zsoda::inference::IInferenceEngine {
+ public:
+  const char* Name() const override { return "RouterTestInferenceEngine"; }
+
+  bool Initialize(const std::string& model_id, std::string* error) override {
+    return SelectModel(model_id, error);
+  }
+
+  bool SelectModel(const std::string& model_id, std::string* error) override {
+    active_model_id_ = model_id.empty() ? "distill-any-depth-base" : model_id;
+    if (error != nullptr) {
+      error->clear();
+    }
+    return true;
+  }
+
+  std::vector<std::string> ListModelIds() const override {
+    return {"distill-any-depth-base", "distill-any-depth-large"};
+  }
+
+  std::string ActiveModelId() const override { return active_model_id_; }
+
+  bool Run(const zsoda::inference::InferenceRequest& request,
+           zsoda::core::FrameBuffer* out_depth,
+           std::string* error) const override {
+    if (request.source == nullptr || out_depth == nullptr) {
+      if (error != nullptr) {
+        *error = "invalid inference request";
+      }
+      return false;
+    }
+
+    auto desc = request.source->desc();
+    desc.channels = 1;
+    desc.format = zsoda::core::PixelFormat::kGray32F;
+    out_depth->Resize(desc);
+    for (int y = 0; y < desc.height; ++y) {
+      for (int x = 0; x < desc.width; ++x) {
+        out_depth->at(x, y, 0) = static_cast<float>(x + y) * 0.01F;
+      }
+    }
+    if (error != nullptr) {
+      error->clear();
+    }
+    return true;
+  }
+
+ private:
+  std::string active_model_id_ = "distill-any-depth-base";
+};
+
+std::shared_ptr<RouterTestInferenceEngine> MakeRouterTestEngine() {
+  auto engine = std::make_shared<RouterTestInferenceEngine>();
+  std::string error;
+  assert(engine->Initialize("distill-any-depth-base", &error));
+  return engine;
+}
+
 void TestStubCommandAndDispatchMapping() {
   assert(zsoda::ae::MapStubCommandId(0) == zsoda::ae::AeCommand::kAbout);
   assert(zsoda::ae::MapStubCommandId(1) == zsoda::ae::AeCommand::kGlobalSetup);
@@ -147,7 +205,7 @@ void TestAeGlobalOutFlagsDoNotAdvertiseFloatColorAwareWithoutSmartFx() {
 
 void TestParamSetupAndModelMenu() {
   TraceTest("TestParamSetupAndModelMenu/create_engine");
-  auto engine = std::make_shared<zsoda::inference::ManagedInferenceEngine>("models");
+  auto engine = MakeRouterTestEngine();
   std::string error;
   TraceTest("TestParamSetupAndModelMenu/initialize");
   assert(engine->Initialize("distill-any-depth-base", &error));
@@ -189,7 +247,7 @@ void TestParamSetupAndModelMenu() {
 }
 
 void TestRenderUsesCurrentAndOverrideParams() {
-  auto engine = std::make_shared<zsoda::inference::ManagedInferenceEngine>("models");
+  auto engine = MakeRouterTestEngine();
   std::string error;
   assert(engine->Initialize("distill-any-depth-base", &error));
   auto pipeline = std::make_shared<zsoda::core::RenderPipeline>(engine);
@@ -253,7 +311,7 @@ void TestRuntimeParamSlotMapping() {
 void TestRenderBridgeFrameHashCacheBehavior() {
   ScopedEnvironmentOverride force_temporal_alpha("ZSODA_TEMPORAL_ALPHA", "1");
 
-  auto engine = std::make_shared<zsoda::inference::ManagedInferenceEngine>("models");
+  auto engine = MakeRouterTestEngine();
   std::string error;
   assert(engine->Initialize("distill-any-depth-base", &error));
   auto pipeline = std::make_shared<zsoda::core::RenderPipeline>(engine);
@@ -524,7 +582,7 @@ void TestSdkFrameLifecycleKeepsFrameDataDisabled() {
 void TestExecuteHostBufferRenderBridge() {
   ScopedEnvironmentOverride force_temporal_alpha("ZSODA_TEMPORAL_ALPHA", "1");
 
-  auto engine = std::make_shared<zsoda::inference::ManagedInferenceEngine>("models");
+  auto engine = MakeRouterTestEngine();
   std::string error;
   assert(engine->Initialize("distill-any-depth-base", &error));
   auto pipeline = std::make_shared<zsoda::core::RenderPipeline>(engine);
@@ -554,7 +612,7 @@ void TestExecuteHostBufferRenderBridge() {
 }
 
 void TestRouterPayloadValidation() {
-  auto engine = std::make_shared<zsoda::inference::ManagedInferenceEngine>("models");
+  auto engine = MakeRouterTestEngine();
   std::string error;
   assert(engine->Initialize("distill-any-depth-base", &error));
   auto pipeline = std::make_shared<zsoda::core::RenderPipeline>(engine);

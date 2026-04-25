@@ -443,7 +443,7 @@ void TestRuntimeBackendOptions() {
     assert(Contains(status.fallback_reason, "onnx runtime"));
     assert(HasOrtInitializationDiagnostic(status.fallback_reason));
   } else {
-#if defined(ZSODA_WITH_ONNX_RUNTIME_API)
+#if defined(ZSODA_WITH_ONNX_RUNTIME_API) && ZSODA_WITH_ONNX_RUNTIME_API
     const auto active_backend = engine.ActiveBackend();
     const bool valid_active_backend = active_backend == zsoda::inference::RuntimeBackend::kCpu ||
                                       active_backend == zsoda::inference::RuntimeBackend::kCuda ||
@@ -987,7 +987,7 @@ void TestOnnxBackendValidationScaffold() {
   const auto valid_model = temp_dir.path() / "distill_any_depth_base.onnx";
   WriteTextFile(valid_model, "dummy");
   error.clear();
-#if defined(ZSODA_WITH_ONNX_RUNTIME_API)
+#if defined(ZSODA_WITH_ONNX_RUNTIME_API) && ZSODA_WITH_ONNX_RUNTIME_API
   assert(!backend->SelectModel("distill-any-depth-base", valid_model.string(), &error));
   assert(HasOrtRunOrExecutionDiagnostic(error));
 #else
